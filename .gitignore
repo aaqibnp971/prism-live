@@ -1,0 +1,154 @@
+# ---------------------------------------------------------------------------
+# Prism Live
+# ---------------------------------------------------------------------------
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Packaging / dependency tooling
+pip-log.txt
+pip-delete-this-directory.txt
+.pdm.toml
+__pypackages__/
+
+# Test, coverage, type and lint caches
+.pytest_cache/
+.tox/
+.nox/
+.cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+nosetests.xml
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# --- Logs and session captures --------------------------------------------
+# The host writes per-session logs here. Never committed.
+logs/
+*.log
+
+# --- Local configuration and secrets --------------------------------------
+.env
+.env.*
+!.env.example
+*.local.toml
+local_settings.py
+
+# --- Audio working files --------------------------------------------------
+# The four delivered stems live in assets/ and ARE tracked. Everything below
+# is intermediate: DAW sessions, bounces, scratch renders and waveform caches.
+#
+# Convention: put anything you are still working on under a working/ or _wip/
+# folder and it stays out of the repo.
+working/
+_wip/
+bounces/
+renders/
+scratch/
+assets/**/working/
+assets/**/_wip/
+
+# DAW project and session files
+*.als
+*.alp
+*.flp
+*.rpp
+*.rpp-bak
+*.logicx
+*.ptx
+*.ptf
+*.aup
+*.aup3
+*.band
+*.cpr
+*.npr
+*.song
+*.sesx
+*.reason
+*.RPP
+
+# Waveform / peak / analysis caches
+*.asd
+*.reapeaks
+*.sfk
+*.pkf
+*.peak
+*.otio
+*.aup3-wal
+*.aup3-shm
+
+# Uncompressed intermediates and raw captures. Delivered stems are added
+# explicitly with `git add -f assets/<name>.wav` if they match these.
+*.rf64
+*.w64
+*.caf
+*.pcm
+*.raw
+*_render.wav
+*_bounce.wav
+*_scratch.wav
+*-take[0-9]*.wav
+
+# --- Editors and OS -------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Unity (stretch goal; unity/ does not exist yet) ----------------------
+unity/[Ll]ibrary/
+unity/[Tt]emp/
+unity/[Oo]bj/
+unity/[Bb]uild/
+unity/[Bb]uilds/
+unity/[Ll]ogs/
+unity/[Uu]ser[Ss]ettings/
+unity/[Mm]emoryCaptures/
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
