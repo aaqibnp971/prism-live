@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1**
+# **Prism Live: Experience Script v1.1**
 
 &nbsp;
 
@@ -345,6 +345,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | Version | Date | Change |
 | :---- | :---- | :---- |
 | 1.0 | 7 Sep 2026 | Initial fill of the v1 template. §6 added: engine bindings and the six gaps between this script and the engine on main. |
+| 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. |
 
 &nbsp;
 

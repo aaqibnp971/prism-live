@@ -1,6 +1,6 @@
-# **Prism Live: Project Plan v1**
+# **Prism Live: Project Plan v1.1**
 
-**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 2 September 2026
+**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 11 September 2026
 
 ---
 
@@ -315,5 +315,6 @@ Transparent overdraw is the number one Quest performance killer, so heavy partic
 ## **15\. Version history**
 
 * v1, 2 September 2026, initial plan
+* v1.1, 11 September 2026: §4 and §6 replace eye control with reticle control, since the Quest 3S has no eye tracking. §7 adds the change log budget items, committed total \~1,738 to \~2,698 AED. §10 renames the gaze task to the reticle task. §11 and §13 are marked superseded by the message contract and the solo build plan.
 
 &nbsp;
