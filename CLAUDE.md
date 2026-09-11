@@ -119,12 +119,24 @@ No haptics. No controllers. No multiplayer. No app store build. No engine port t
 
 ---
 
-## Open questions, unanswered as of 10 Sep 2026
+## Open questions
 
-Do not guess at these. Flag them.
+Answered from the engine source on 11 Sep 2026, against upstream prism-core `acbfd50`. Evidence and options are in `docs/engine-findings.md`. Nothing has been run yet. Do not guess at the ones still open. Flag them.
 
 1. Does the engine expose a **host-settable master output gain** through the C ABI? Needed to fade to silence without an engine change.
+   **No.** Fade in the host instead: own the audio device (pull model, `prism_render`) and ramp the buffer. The resolve ending needs this too, because bed and sub can't be silenced through the PSV.
 2. Does `prism_crossfade_scene` **preserve loop playback phase** for a stem identical across two manifests? If it restarts, the seam becomes audible three times per session.
+   **No.** The incoming scene always starts at sample 0, so an identical bed or sub restarts and is crossfaded against itself. **Needs an architectural decision before prompt 2.7.**
 3. **How long does `prism_crossfade_scene` block?** Measure it. Set the pre-schedule lead to three times that.
+   **Still open**, measure in prompt 2.7. It decodes every stem of the new scene, identical ones included. With `align_to_loop_boundary = 0` the crossfade starts as soon as the decode finishes, so a lead of three times the block time starts it early.
 4. Can the host **inject a per-beat audio event into the engine's output**, or does it need its own audio device alongside?
+   **No injection.** Mix the `heartbeat_layer` into the engine's buffer in the host's own audio callback, one device. The host then owns the −1.0 dBTP ceiling and can filter 36–62 Hz out of the engine buffer first.
 5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration?
+   **Still open.** Needs the armband, prompt 1.0.
+
+Also found, not yet reflected elsewhere in this file:
+
+- Pin to upstream `acbfd50`; no tags exist. The only library built on this machine is older: no `prism_crossfade_scene`, and a PSV race fixed upstream. Build one from `acbfd50`.
+- The PSV goes in through `prism_set_mood_override`, which takes one confidence for all four values. Send each value as `0.5 + (v − 0.5) × authority`, with confidence 1.0.
+- The engine's limiter is −3 dBFS sample-peak, not −1.0 dBTP. The engine does not enforce 36–62 Hz. Authority 0 is a neutral PSV, which opens the `pulse` stem.
+- The audio callback can't be Python (hard rule 4). It needs a small native shim in this repo.
