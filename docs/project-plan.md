@@ -76,7 +76,12 @@ Every item here is a launch-date killer if it creeps back in.
 | Hard carrying case | 74 | Transport to events |
 | Sony WH-1000XM5 | 0 | Already owned |
 | Laptop | 0 | Existing |
-| **Committed total** | **\~1,738** | Roughly USD 473 |
+| Second Polar Verity Sense | \~380 | Single point of failure for the closed loop. One is worn while the other charges |
+| Travel router, 5 GHz | \~200 | Exhibition halls destroy 2.4 GHz WiFi. Never use venue WiFi |
+| Long USB-C cable and power bank | \~200 | Quest 3S runs about 2.5 h. A 50-person day is over 4 h of headset-on time |
+| Spare XM5 ear pads | \~150 | Leather absorbs sweat across dozens of users. Flagged in §12, never budgeted |
+| Gaffer tape, cable management | \~30 | Someone who cannot see the floor, a headphone cable and a power cable |
+| **Committed total** | **\~2,698** | Was \~1,738. Roughly USD 735 |
 
 Reserve, not yet committed:
 
