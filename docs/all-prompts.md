@@ -54,7 +54,9 @@ GitHub will open a browser to sign in. Approve it.
 
 If anything comes back not found, paste me what it says.
 
-## 0.4 Answer three open questions from the engine source
+## 0.4 Answer open questions 1, 2 and 4 only, from the engine source
+
+**Scope:** items 1, 2 and 3 below answer CLAUDE.md open questions 1, 2 and 4. Item 4 is a field-name check, not an open question. Q3 cannot be read from the code: it must be measured at runtime, in prompt 2.7. Q5 needs the armband in hand.
 
 > The Prism Engine source is at D:\ANP\prism-core. Read it. Do not modify anything in it.
 >
