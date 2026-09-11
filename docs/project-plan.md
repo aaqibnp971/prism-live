@@ -35,7 +35,7 @@ We measure this literally. After every test run in Week 5, we ask one open quest
 | Time | What happens | What they feel |
 | ----- | ----- | ----- |
 | 0:00 to 0:45 | Neutral field. They sit and look around. The system learns their normal. | Settling. Nothing dramatic. |
-| 0:45 to 2:00 | A light attention task. Something drifts, splits, they follow it with their eyes. It gets harder. | Focused, slightly pushed, heart rate up |
+| 0:45 to 2:00 | A light attention task. Something drifts, splits, they follow it. It gets harder. | Focused, slightly pushed, heart rate up |
 | 2:00 to 3:15 | The system takes over and works on them. Sound and visuals shift together. | The pull down. This is the moment. |
 | 3:15 to 4:00 | It resolves. Their own trace appears. | "That was me." |
 
@@ -62,7 +62,7 @@ Every item here is a launch-date killer if it creeps back in.
 3. Single user. No multiplayer, no shared sessions.  
 4. No haptics in v1. Seat transducer is a v1.1 add and costs one day when we want it.  
 5. No engine port to the headset. The engine runs on a laptop.  
-6. No controllers. Eyes only.  
+6. No controllers. Reticle only.  
 7. No personalised email or printed trace. They photograph the screen.  
 8. No elaborate particle work. See section 12\.
 
@@ -146,6 +146,8 @@ The person is tethered to the laptop by a headphone cable. This is a seated demo
 
 ## **11\. Message contract, frozen by end of Week 1 day two**
 
+**SUPERSEDED as of 10 September 2026 by docs/message-contract-v1.md. Do not build against this section.**
+
 Two message types over UDP or WebSocket on a local router. Both devs build against a fake sender and a fake receiver and do not block each other until Week 4\.
 
 **Type 1: `beat`** (sent per detected heartbeat)
@@ -188,6 +190,8 @@ Same Snapdragon XR2 Gen 2 as the Quest 3, so performance headroom is unchanged. 
 Transparent overdraw is the number one Quest performance killer, so heavy particle work is both the thing a small team does badly and the thing that tanks frame rate. Restraint reads as premium. Spectacle done badly reads as a student project. This is not a compromise, it is the correct choice.
 
 ## **13\. Full task list**
+
+**SUPERSEDED as of 10 September 2026 by docs/solo-build-plan.md. This task list assumed two developers over six weeks. Do not follow it.**
 
 ### **Week 0: this week, 2 to 6 September**
 
