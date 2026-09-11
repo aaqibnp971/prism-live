@@ -180,7 +180,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 
 # PHASE 2: WEEK B
 
-**Blocked on 0.4 being answered.** Do not start 2.5 or 2.6 without those findings.
+**0.4 is answered.** Read docs/engine-findings.md before 2.5. Prompts 2.5 to 2.7 were rewritten on 11 September to match the engine as it is: prism-live owns the audio device, one scene for the whole session, no crossfades.
 
 ## 2.1 HRV and baseline
 
@@ -225,48 +225,69 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Emit segment, segment_elapsed_ms and segment_nominal_ms in every state message.
 
-## 2.5 Engine wrapper
+## 2.5 Engine wrapper, the audio shim, and the PSV feed
 
-**Needs 0.4 answer 4.**
+**Needs a library built from prism-core `acbfd50`.** Where it gets built is still undecided (CLAUDE.md open question 7). The DLL already on this machine is older and will not do.
 
-> Build `bridge/engine.py`: load the Prism Engine shared library with ctypes and wrap the C ABI calls we need. Read docs/engine-findings.md first.
+> Read docs/engine-findings.md first, all of it. The engine has no master gain, no way to inject audio, and its only PSV input is `prism_set_mood_override`. prism-live owns the audio device (CLAUDE.md hard rule 8). Two pieces.
 >
-> Set cadence_ms = 2000, check_interval_ms = 50, significant_delta = 0.05, using the real field names from the findings.
+> **`native/`, the audio shim.** A small C++ shared library with its own C ABI, driven from Python by ctypes. It owns the output device, and its callback is the only place `prism_render` is ever called. Per block, in this order:
 >
-> Feed PSV and confidence across the actuation input. The engine never receives a heart rate.
+> 1. `prism_render(core, buf, n)` into a preallocated mono float32 buffer. 48 kHz, no resampling anywhere.
+> 2. High-pass the engine buffer at 62 Hz, 24 dB/oct. This is the 36 to 62 Hz reservation, enforced in code rather than trusted to the stems.
+> 3. Apply a static engine trim (start at −6 dB, tune in Week B) and the session gain: a smoothed value the bridge sets as a target plus a ramp time. It carries the resolve ending, bed, sub and air to silence from T−22 s to T−10 s, and the 3 s fade at stop. Between visitors it is 0.
+> 4. Add the heartbeat layer (2.6). It has its own level envelope and is not under the session gain, so it holds while the engine material leaves.
+> 5. True-peak limit at −1.0 dBTP. This is the last stage. The engine's own limiter is −3 dBFS sample-peak and protects nothing the host needs.
+> 6. Write to the device, duplicated to stereo if the device wants it.
 >
-> Implement stop as: ramp the master gain to zero over 3 seconds, then call prism_device_stop. If engine-findings.md says no host-settable gain exists, stop and tell me rather than working around it.
+> Never call `prism_device_start` or `prism_device_stop`. Stop is: ramp the session gain and the heartbeat level to zero over 3 s, wait, then stop the shim's own stream. The engine keeps rendering between visitors so its phase keeps advancing; only the session gain sits at 0.
 >
-> Verify the cadence change by logging emission timestamps across a four-minute run. Expect roughly 120 emissions, not 8.
+> Shim ABI: open, start, stop, close; `set_session_gain(target, ramp_ms)`; `push_beat` and `set_heartbeat_level` (2.6); `frames_rendered()`, the number of frames passed to `prism_render` since `prism_load_scene`. That count is the engine's phase, and 2.7 depends on it being exact. Everything the callback touches is preallocated. No allocation, no locks, no logging, no I/O (hard rule 4). miniaudio is fine for the device; the engine uses it too.
+>
+> **`bridge/engine.py`.** ctypes over the engine's C ABI, for the control thread only: `prism_create`, `prism_load_scene`, `prism_set_mood_override`, `prism_clear_mood_override`, `prism_sample_rate`, `prism_destroy`. ctypes over the shim as well. After loading the scene, refuse to start unless `prism_sample_rate()` is 48000. Set `cadence_ms = 2000`, `check_interval_ms = 50`, `significant_delta = 0.05` in `prism_config` (field names in the findings), but do not call `prism_start`: the bridge is the only PSV writer, which also avoids a two-writer race described in the findings. Test that audio renders and the override is honoured without `prism_start`. If it is not, tell me; the fallback is `prism_start` with `cadence_ms` huge and `significant_delta = 2.0`, and it carries a sequence-number quirk noted in the findings.
+>
+> **The PSV feed.** Every 2 s, and at every segment boundary, the bridge sends one `prism_mood_override` from its control thread: `mode_hint` NULL, `confidence` 1.0, valence 0.5, and arousal, cognitive_load and readiness from whichever source is active:
+>
+> - `body`: `0.5 + (v − 0.5) × authority` per dimension, v being the body-derived value from psv.py and authority the value from authority.py. Authority 0 sends a neutral PSV, which the engine plays at 2,282 Hz with the pulse stem open.
+> - `pose`: a designed effective PSV per segment from a small table in `bridge/poses.py`, with the body's arousal allowed to move the arousal input inside a per-segment range. Starting values are in docs/engine-findings.md.
+>
+> The source must switch at runtime without a restart, from a local control in the bridge (a key in the bridge console is fine). Not from a message on the WebSocket link, which is frozen. Log every update: the source, the values sent, and what the engine's mapping will do with them (cutoff, gates, gains), from a Python mirror of the mapping in the findings, used for logging and tests only. Until the Week B decision, the `state` message keeps reporting the body-derived `psv` and `confidence` whatever the engine is being fed. Never report a pose as if it were a reading.
+>
+> Hysteresis: hold the effective arousal and load inputs clear of the density thresholds 0.35 and 0.55 by a margin wide enough that a 2 s update cannot flip a gate during its 1.5 s ramp (2.7 explains the ramp). A flip mid-ramp parks the stem at a partial level until its next loop boundary.
+>
+> Tests: the pre-blend reproduces per-dimension authority exactly against the mapping formula; the shim's callback path is allocation-free under a tripwire allocator or ASan; a four-minute offline render through the shim with the heartbeat at its loudest scripted level never exceeds −1.0 dBTP; after the high-pass, the engine buffer's 36 to 62 Hz band is at least 24 dB down.
 
-## 2.6 The per-beat audio path
+## 2.6 The heartbeat layer
 
-**Needs 0.4 answer 3. The riskiest piece in the project.**
+**The riskiest piece in the project.** The engine cannot carry it (findings, Q4), so it lives in the shim.
 
-> Read docs/engine-findings.md answer 3, then propose how to get the per-beat heartbeat sound into the output. Do not write code yet, give me two options with trade-offs.
+> Build the heartbeat layer inside `native/`, summed in the shim's callback at step 4 of 2.5: after the high-pass and the session gain, before the limiter. It never passes through the engine's filter or limiter.
 >
-> Requirements either way:
-> - 44 Hz fundamental, energy confined to 36 to 62 Hz, roll-off 24 dB/oct above 120 Hz
-> - 8 ms attack, decay min(220 ms, 0.55 times current RR) so beats never overlap
-> - Fires at `t_play`, never on arrival
-> - Beat events cross into audio through a lock-free ring buffer
-> - Nothing allocates, locks, logs or touches a file inside the audio callback
+> - Beat events come from Python through a lock-free single-producer single-consumer ring buffer: `t_play`, `rr_ms`, `quality`. Rejected beats are never pushed.
+> - The shim converts `t_play` (T_engine, monotonic milliseconds) to a sample index in its own stream. Anchor the stream's first frame to T_engine at start, then correct the anchor against the device's reported position by slewing at no more than 1 ms per second of stream time, never in a step. Log the measured error between scheduled and actual onset.
+> - A beat whose `t_play` has already passed when the callback sees it is dropped and counted, never played late.
+> - Voice: 44 Hz fundamental, energy confined to 36 to 62 Hz, roll-off 24 dB/oct above 120 Hz. 8 ms attack. Decay min(220 ms, 0.55 × the beat's RR), so beats never overlap. Preallocated; nothing is allocated per beat.
+> - Level: a target in dBFS peak plus a ramp, set by the bridge per segment from docs/experience-script.md §2: −18 → −13 across the first 12 s of baseline; −13 at HR_base rising to −9 at HR_base + 15 bpm in load, clamped; −9 → −11 in regulate; −11 held in resolve, then an equal-power fade to silence over the final 3 s. The bridge sets targets, the shim smooths.
 >
-> This is called the heartbeat layer everywhere in code. Never call it "pulse", because the `pulse` stem is a different thing.
-
-Paste the two options to me before choosing.
-
-## 2.7 Scene manifests and crossfade scheduling
-
-**Needs 0.4 answers 2 and 3.**
-
-> Build `bridge/scenes.py`: four scene manifests, one per segment, from the audio spec in docs/experience-script.md section 2.
+> This is called `heartbeat_layer` everywhere in code. Never call it "pulse"; the `pulse` stem is a different thing.
 >
-> Scene changes go through prism_crossfade_scene, which blocks for the decode. Call it ahead of the boundary on a dedicated control thread, never from a frame or audio loop. Pass align_to_loop_boundary = 0.
+> Tests, offline through the shim with the recorded fixture: onset error against `t_play` under 1 ms once the anchor has settled; no two beats overlap; energy above 120 Hz at least 24 dB below the 44 Hz fundamental; the final 3 s fade is equal-power and ends at digital silence; the summed output never exceeds −1.0 dBTP.
+
+## 2.7 One scene, placeholder stems, and gate timing
+
+**Decided 11 September: one scene for the whole session, coprime loops kept, no crossfades.** Read docs/engine-findings.md Q2 and its mapping section first.
+
+> Build `bridge/scene.py` and `assets/scenes.json`: one manifest, one scene, and it must be the `default_scene`. Four stems: bed, sub, pulse, air. No `lead`. Load it once per handle with `prism_load_scene` on the control thread. It blocks for the decode; measure how long and write the number into docs/engine-findings.md. It only ever happens at startup or after a crash, never during a session. `prism_crossfade_scene` is never called.
 >
-> Measure the actual block duration and set the pre-schedule lead to three times that, not a guess. Write the measurement into docs/engine-findings.md.
+> Placeholder stems, until the real ones arrive: `tools/make_placeholder_stems.py`. Mono, 48 kHz, 32-bit float, exact sample counts 912,000 / 816,000 / 624,000 / 528,000, seamless loops, D minor, all high-passed at 62 Hz, 24 dB/oct, in the file. Bed with harmonic content to at least 6 kHz so the filter has something to work on. Verify the counts and the 36 to 62 Hz band on the files, not by ear. docs/sound-brief-v1.md is the spec.
 >
-> If docs/engine-findings.md says loop phase is NOT preserved for identical stems across manifests, stop and tell me. That breaks "the seam the person must not hear" and needs an architectural decision, not a workaround.
+> Gate timing, from the findings: the engine opens or closes pulse and air only at that stem's next loop boundary counted from scene load (every 11 s for pulse, every 13 s for air), then fades over a fixed 1.5 s, and it takes a boundary only if the crossing PSV was consumed at least one render block before it. Build `bridge/phase.py` on the shim's `frames_rendered()`: every stem's phase, its next boundary, and when to send a gate-crossing PSV so it lands one block before a chosen boundary.
+>
+> Session start alignment. Amend the state machine from 2.4: after the attendant presses start, baseline begins only when the engine's phase puts a pulse boundary exactly at load t=0, 45 s later, i.e. phase mod 11 s = 10 s. That is a wait of up to 11 s; show it as a countdown on the attendant control and log it. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
+>
+> The air moves in the script have been re-scripted to fit the engine: air gates out before pulse, in one 1.5 s fade, and there is no air tail in resolve. Do not try to build either.
+>
+> Tests, offline through the shim with the PSV log of a fixture session: pulse is silent for the whole of baseline and opens within one block of the aligned boundary at load t=0; pulse is gone within 1.5 s of its first boundary after the regulate PSV; air never sounds while pulse is closed; a jittering input inside the hysteresis band never flips a gate; loop phase is continuous from the first block to the last, checked by cross-correlating the bed in the output against the stem file at the end of the session.
 
 ## 2.8 BLE bridge
 
