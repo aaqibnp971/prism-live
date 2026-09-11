@@ -48,8 +48,10 @@ def test_packets_carry_zero_one_or_two_intervals():
     counts = [len(parse_hrm(n.payload).rr_raw) for n in run()]
     assert set(counts) <= {0, 1, 2}
     assert {1, 2} <= set(counts)
+    # Not the default profile: at 68 bpm no packet ever carries zero intervals, so that path
+    # needs a slower heart to exercise it.
     slow = [len(parse_hrm(n.payload).rr_raw) for n in run(profile=Profile.from_spec("40:20"))]
-    assert 0 in slow  # at 40 bpm some seconds close no beat at all
+    assert 0 in slow
 
 
 def test_rr_present_flag_tracks_the_payload():
