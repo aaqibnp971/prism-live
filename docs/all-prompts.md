@@ -56,7 +56,7 @@ If anything comes back not found, paste me what it says.
 
 ## 0.4 Answer open questions 1, 2 and 4 only, from the engine source
 
-**Scope:** items 1, 2 and 3 below answer CLAUDE.md open questions 1, 2 and 4. Item 4 is a field-name check, not an open question. Q3 cannot be read from the code: it must be measured at runtime, in prompt 2.7. Q5 needs the armband in hand.
+**Scope:** items 1, 2 and 3 below answer CLAUDE.md open questions 1, 2 and 4. Item 4 is a field-name check, not an open question. Q3 cannot be read from the code: it must be measured at runtime, in prompt 2.7. Q5 needs the armband in hand; see prompt 1.0.
 
 > The Prism Engine source is at D:\ANP\prism-core. Read it. Do not modify anything in it.
 >
@@ -78,7 +78,29 @@ If anything comes back not found, paste me what it says.
 
 # PHASE 1: WEEK A
 
-Nothing here needs the armband or the engine.
+Nothing here needs the armband or the engine, except 1.0, which runs the day the armband arrives.
+
+## 1.0 RR-present check
+
+**The day the armband arrives, before anything else.** Whatever else is in progress, stop and run this first.
+
+> Write `tools/rr_flag_check.py`, a single throwaway script. It imports nothing from `bridge/` and has no dependency on the rest of ble.py. It exists to answer one question.
+>
+> Using bleak, scan for the Polar Verity Sense by matching a device name containing "Polar", and print every device found if nothing matches. Connect, and subscribe to the Heart Rate Measurement characteristic 0x2A37 on service 0x180D.
+>
+> For every notification, print:
+> - the raw packet as hex
+> - the flags byte in binary
+> - whether the RR-present bit (bit 4, 0x10) is set
+> - the sensor contact bits (bits 1 and 2), so a missing RR flag with no skin contact is not mistaken for the answer
+>
+> Run for 60 seconds, then print a summary: packets received, and how many had the RR-present bit set.
+>
+> This is twenty minutes of work. Do not build it out any further.
+
+Put the armband on properly, sit still, and run it.
+
+**If the RR-present flag is not set, stop and tell me immediately.** The HRV plan is wrong, and so is the synthetic generator's fixture, because prompt 1.1 builds it with that bit set. Everything after 1.1 would be developed against a device that does not behave that way. This answers CLAUDE.md open question 5.
 
 ## 1.1 Python scaffold and synthetic heart rate
 
