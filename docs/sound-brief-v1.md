@@ -83,9 +83,9 @@ Author with the assumption that a filter is going to move across your work const
 
 ## 5. The spectral reservation, and why it is the one rule that cannot bend
 
-**36 Hz to 62 Hz belongs to the engine's heartbeat layer alone. Nothing you make may put energy there.**
+**36 Hz to 62 Hz belongs to the system's heartbeat layer alone. Nothing you make may put energy there.**
 
-The engine generates a sub-bass event on every one of the person's actual heartbeats. 44 Hz fundamental, energy confined to 36 to 62 Hz, 8 ms attack. That sound is the entire argument of the demo. The person is supposed to hear their own pulse speed up and slow down, and understand without being told that the system is reading them.
+The system generates a sub-bass event on every one of the person's actual heartbeats. 44 Hz fundamental, energy confined to 36 to 62 Hz, 8 ms attack. That sound is the entire argument of the demo. The person is supposed to hear their own pulse speed up and slow down, and understand without being told that the system is reading them.
 
 If your `sub` stem has energy in that band, it masks the heartbeat. Not entirely, and not obviously. The piece will still sound good. The heartbeat will just become mud, nobody will notice in the studio, and the one thing this demo exists to prove will quietly stop being true.
 
