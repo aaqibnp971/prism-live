@@ -57,7 +57,7 @@ Two more effects of any scene change:
 - The incoming deck starts with pulse, lead and air closed and bed and sub at a default level (`engine.cpp:12`, `:64-68`). It does not inherit the PSV steering the outgoing deck. Only a PSV published after the swap is serviced reaches it, and gated stems then open only at their own first loop boundary plus 1.5 s.
 - The engine's tests never check phase. The ABI test crossfades a manifest to itself and checks return codes; the render tests use constant stems (`tests/core/abi_test.cpp:288-290`, `tests/pgae/render_test.cpp:180-181`). The engine's own stems are all exactly 16.000 s (commit `ab7b381`), so coprime loops were never exercised.
 
-**This needs an architectural decision before prompt 2.7**, which says to stop if phase is not preserved. Options that need no engine change:
+**Decided 11 September: option 1, one scene, no crossfades.** The options that were considered, none needing an engine change:
 
 1. **One scene for the whole session.** Never crossfade. All four stems stay on one deck with continuous coprime phase, and segments differ only through the PSV. Trade-off: no segment-specific stem sets, and a neutral PSV opens the pulse stem (see "Authority 0 is not silence"), so baseline can't be bed and sub only.
 2. **The host plays bed and sub itself.** In the pull model the host loops bed and sub in its own callback, where it controls phase. Engine scenes carry only pulse and air, where a restart is a musical choice. Trade-off: more real-time code in the host's native audio shim.
@@ -67,9 +67,9 @@ Making the crossfade itself phase-preserving would be an engine change.
 
 ---
 
-## Q3. How long does `prism_crossfade_scene` block? **Not answerable from code.**
+## Q3. How long does `prism_crossfade_scene` block? **Moot since 11 September.**
 
-CLAUDE.md open question 3. Measure it at runtime in prompt 2.7.
+CLAUDE.md open question 3. It is never called (decision 1 below). The only blocking call left is `prism_load_scene`, once per handle at startup; prompt 2.7 measures that. What follows is kept for the record.
 
 From the code: the call blocks while it reads the manifest, parses the JSON and decodes every stem of the new scene, identical stems included (`core/src/prism_core.cpp:520-549`). It returns `PRISM_ERROR_BUSY` while a crossfade is in flight (`prism_core.h:257`). An armed swap waits until something renders, and `prism_stop` drops one that was never consumed (`:252-254`).
 
@@ -134,6 +134,89 @@ Gated stems also change only at their own loop boundary, up to 11 s for pulse an
 
 ---
 
+## The mapping: what one scene can reach
+
+Added 11 September 2026, after the decision to use one scene. From reading `pgae/src/mapping.cpp`, `pgae/src/engine.cpp` and `psv/include/psv/rt.h` on `acbfd50`, checked by an independent derivation and two adversarial verifiers. Nothing has been run or listened to.
+
+### The mapping
+
+With `a`, `l`, `r` = effective arousal, cognitive_load, readiness minus 0.5 (`mapping.cpp:39-76`):
+
+| Output | Formula | Notes |
+|---|---|---|
+| brightness | `clamp01(0.55 + 0.9a − 0.8l)` | cutoff = 300 × 40^brightness, 300 Hz to 12 kHz, log scale |
+| density | `clamp01(0.5 + 0.9a − 1.0l)` | one number, gates every optional stem |
+| bed gain | `clamp01(0.6 + 0.6l)` | always on; floor 0.3 |
+| sub gain | `clamp01(0.5 − 0.6r)` | always on; floor 0.2 |
+| pulse gain | `clamp01(0.5 + 0.7a − 0.6l)` | sounds only if density ≥ 0.35 |
+| air gain | `clamp01(0.5 + 0.5a − 0.6l)` | sounds only if density ≥ 0.55 |
+
+Level amplitude = 0.4 × gain^1.5 (`engine.cpp:18-21`), so a gain change g1 → g2 is 30·log10(g2/g1) dB. Valence and `mode_hint` are never read. Nothing but the PSV moves the cutoff or the gains inside a scene: `PgaeOptions` is default-constructed and unreachable from the ABI, the manifest `key` is parsed and never read, and `prism_config` only touches inference. Levels smooth with a 0.25 s one-pole (fully settled inside a 2 s update); the cutoff with 0.6 s (about 96% of the way by the next update). Before any PSV arrives the cutoff sits at 2,400 Hz (`engine.h:41`) with pulse and air closed (`engine.cpp:12`).
+
+### The gates are nested, and tied to the filter
+
+Air sounds only at density ≥ 0.55 and pulse at ≥ 0.35, on the same density number. **Air can never sound while pulse is closed.** And since brightness − density = 0.05 + 0.2·(load − 0.5), the gates follow the cutoff:
+
+| Cutoff | Pulse | Air |
+|---|---|---|
+| below 907 Hz | forced off | forced off |
+| 907 – 1,897 Hz | off only if the load input is high enough | forced off |
+| 1,897 – 3,968 Hz | forced on | on only if the load input is low enough |
+| above 3,968 Hz | forced on | forced on |
+
+Pulse's gain is set by the cutoff to within ±0.011 (pulse = 0.5 + 0.78·(brightness − 0.55) + 0.02·l), so pulse level cannot move independently of the filter. While its gate is open, pulse gain never drops below 0.33 and air gain never below 0.51: no stem can be faded to nothing through its gain. A stem leaves through its gate, in one fixed 1.5 s fade.
+
+### The filter points the script uses
+
+| Cutoff | Brightness | Gates at that cutoff |
+|---|---|---|
+| 1,400 Hz | 0.418 | pulse closed only if the load input > 0.588; air forced off |
+| 3,600 Hz | 0.674 | pulse forced on; air on if the load input ≤ 0.868 |
+| 620 Hz | 0.197 | both forced off |
+| 900 Hz | 0.298 | both forced off, by 0.002 at load input 0 |
+| neutral PSV | 0.55 → 2,282 Hz | pulse on, air off |
+
+### Per segment: what some PSV can reach, and what none can
+
+Values are effective arousal / load / readiness. The load input is held at 0.65 through baseline and load so bed does not step at that boundary; the price is a 0.012 margin under the pulse gate in baseline.
+
+**Baseline. Reachable.** 0.486 / 0.65 / 0.50 gives 1,400 Hz, density 0.338, pulse and air closed, bed 0.69. Pulse is closed by any PSV with density below 0.35: a load input ≥ 0.65 alone, or arousal ≤ 0.33 alone. No PSV near neutral does it, and pulse's gain cannot close it. Cost: bed at least 1.1 dB above its neutral level (2.1 dB at this pose). If the first PSV after loading is this one, pulse and air never open at all.
+
+**Load. Mostly reachable.** Load 0.65, arousal 0.486 → 0.771 sweeps 1,400 → 3,600 Hz; pulse opens at arousal 0.50 (about 1,470 Hz) and air at 0.722 (about 3,070 Hz); bed and sub unchanged. Unreachable: pulse rising 8 dB (at most +5.8, because its gain follows the cutoff); air falling after it opens (it rises with the cutoff); "transient density down" (there is no such parameter).
+
+**Regulate. Partly reachable.** From the load end, move to 0.506 / 0.948 / 0.11: 620 Hz, both gates closed, bed +3.0 dB and sub +5.0 dB against the load end. Along the way air closes first (density < 0.55), then pulse (density < 0.35, at a cutoff of about 1,600 Hz). Unreachable: air still sounding while pulse closes (nested gates); air falling 10 dB while audible (1 to 3 dB at most, then the 1.5 s gate-out); an 18 s pulse fade (about 4 dB of gain glide, then a 1.5 s gate-out at an 11 s boundary; pulse gone also forces the cutoff below 1,897 Hz by then); bed and sub thickening in the script's own directions, because bed rises only when the load input rises and sub only when readiness falls.
+
+**Resolve. Partly reachable.** Arousal 0.506 → 0.618 with load 0.948 and readiness 0.11 sweeps 620 → 900 Hz with bed and sub held and both gates closed. Unreachable: the 10 s air tail. Air is forced off below 1,897 Hz; the most it can do is a close left pending from regulate, which holds until air's next 13 s boundary and then fades in 1.5 s. Bed and sub cannot be silenced through any PSV; that is the host's session gain.
+
+### At the script's own regulate targets, regulate comes out inverted
+
+Arousal 0.32, cognitive_load 0.28, readiness 0.62 gives brightness 0.564 → **2,403 Hz**, density 0.558 → **pulse on and air on**, bed 0.47 and sub 0.43, both **thinner** than neutral. The script asks for 620 Hz, everything subtracted, bed and sub thicker. The body's own directions push the mapping the wrong way: falling load thins the bed and rising readiness thins the sub.
+
+Under the authority plan as first written, no segment follows the script: baseline is a neutral PSV, 2,282 Hz with pulse opening at its first 11 s boundary; load at a 0.20 ceiling moves the cutoff about 50 Hz when arousal and load rise together and air never opens (the whole reachable span at 0.20 is 1,219 to 4,272 Hz, only with arousal and load at opposite extremes); regulate ends inverted as above; resolve tapers back to 2,282 Hz with pulse on. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B (decision 3).
+
+### Gate timing
+
+A gate change is scheduled at the stem's next loop boundary counted from scene load, strictly after the phase at the start of the render block that consumed the PSV (`fade.h:22-24`, `engine.cpp:168-179`), then runs as a fixed 1.5 s equal-power ramp. So a crossing lands on a boundary only if its PSV was consumed at least one block before it, and a scripted instant is reachable only if a boundary falls there. The engine has no hysteresis: a threshold that flips back mid-ramp reschedules the ramp and parks the stem at a partial level until the next boundary (`engine.cpp:198`). The host must hold its inputs clear of 0.35 and 0.55 through every ramp.
+
+In the pull model the host knows every stem's phase exactly: frames passed to `prism_render` since `prism_load_scene`, modulo the stem's length. Only `prism_load_scene` and a scene crossfade reset it. Stopping the host stream pauses phase without resetting it.
+
+### Session start must align with the engine's phase
+
+Boundaries sit at fixed multiples of 11 s (pulse) and 13 s (air) from scene load, not from the session. For pulse to open exactly at load t=0, a pulse boundary must fall 45 s after baseline starts, so baseline must start when **phase mod 11 s = 10 s**: a wait of up to 11 s after the attendant presses start. Started at an arbitrary phase, pulse is either audible about 1 s before load or up to 10 s late. Pulse and air cannot be aligned at the same time (11 and 13 are coprime, by design); air lands on its nearest boundary, up to 6.5 s from the scripted moment. A fresh handle per visitor does not help: phase 0 puts pulse boundaries at 44 and 55 s.
+
+### Starting poses for the `pose` source
+
+For prompt 2.5, as a starting point only; Week B tunes by ear. Effective values. The body may move arousal inside each segment's range.
+
+| Segment | arousal | load | readiness | Engine state |
+|---|---|---|---|---|
+| baseline | 0.486 | 0.65 | 0.50 | 1,400 Hz, both gates closed, bed 0.69 |
+| load | 0.486 → 0.771 | 0.65 | 0.50 | 1,400 → 3,600 Hz; pulse opens at 0.50 (~1,470 Hz), air at 0.722 (~3,070 Hz); bed unchanged |
+| regulate | 0.771 → 0.506 | 0.65 → 0.948 | 0.50 → 0.11 | 3,600 → 620 Hz; air then pulse gate out; bed +3 dB, sub +5 dB. Front-load the first part so pulse's crossing is consumed before its first boundary in regulate |
+| resolve | 0.506 → 0.618 | 0.948 | 0.11 | 620 → 900 Hz; bed and sub held; the host's session gain does the ending |
+
+---
+
 ## Corrections to other prism-live documents
 
 | Document says | Source shows |
@@ -144,11 +227,15 @@ Gated stems also change only at their own loop boundary, up to 11 s for pulse an
 | Set the pre-schedule lead to three times the block time (CLAUDE.md open question 3) | With `align_to_loop_boundary = 0` that starts the crossfade early. See Q3 |
 | Scene changes go through `prism_crossfade_scene` (CLAUDE.md "Audio facts") | True on `acbfd50` only. It is not in the library built on this machine |
 
+CLAUDE.md was corrected on 11 September. The experience script and sound brief rows still stand; the script carries a note in §2.
+
 ---
 
-## Decisions needed before Phase 2
+## Decisions, 11 September 2026
 
-1. **Pin the engine to `acbfd50`** and decide where to build a library from it without touching `D:\ANP\prism-core`.
-2. **Choose how to avoid the scene-change seam** (Q2, options 1 to 3). This also decides whether baseline can be bed and sub only.
-3. **Confirm the pull model with a native audio shim in prism-live.** It carries the fade, the resolve ending, the heartbeat mix, the 36–62 Hz filter and the −1.0 dBTP ceiling.
-4. **Rewrite prompts 2.5, 2.6 and 2.7** to match: no master gain, the heartbeat mixed in the host's callback, and scene changes per decision 2.
+1. **One scene, all four stems, coprime loops kept. No crossfades.** Closes open question 2 and makes open question 3 moot.
+2. **Air is re-scripted to fit the engine:** it gates out before pulse in one 1.5 s fade, and there is no air tail in resolve. Nothing moves out of the engine.
+3. **Body-derived versus designed-pose PSV is deferred to Week B**, to be decided by listening, not on paper. Prompt 2.5 makes the source switchable at runtime.
+4. **prism-live owns the audio device** (CLAUDE.md hard rule 8) through a native shim: pull with `prism_render`, 62 Hz high-pass, heartbeat layer, session gain, true-peak limiter. Prompts 2.5 to 2.7 were rewritten to match.
+
+Still open: **where the `acbfd50` library gets built.** The clone this document was written from was deleted on 11 September; `D:\ANP\prism-core` has never been fetched and holds an older revision. No tags exist on either remote.
