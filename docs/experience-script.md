@@ -102,6 +102,8 @@ SPECTATOR SCREEN        foregrounded
 
 Timings inside a segment are written as offsets from that segment's own start (t) or end (T), never as absolute session times — regulate is adaptive, so absolute times are a lie after 2:00.
 
+**Note, 11 September 2026.** The audio arc in this section has not been validated against the engine's PSV-to-audio mapping. Read against that mapping (`docs/engine-findings.md`), regulate currently comes out inverted: at this section's own targets (arousal 0.32, cognitive_load 0.28, readiness 0.62) the engine sits at about 2,400 Hz with the `pulse` stem open and bed and sub thinner, not at 620 Hz with everything subtracted. The pulse and air gates are tied to the filter and to loop boundaries, so the air moves written below (a gradual fall in regulate, a tail in resolve) cannot be produced. Decision of 11 September: air gates out before pulse in one 1.5 s fade, and there is no air tail. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B. The numbers below are unchanged until then.
+
 ### Segment 1 — BASELINE
 
 | Field | Value |
@@ -345,7 +347,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | Version | Date | Change |
 | :---- | :---- | :---- |
 | 1.0 | 7 Sep 2026 | Initial fill of the v1 template. §6 added: engine bindings and the six gaps between this script and the engine on main. |
-| 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. |
+| 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. §2 carries a note that the audio arc is unvalidated against the engine mapping and that regulate currently inverts. |
 
 &nbsp;
 
