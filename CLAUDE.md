@@ -16,13 +16,14 @@ It is shown at exhibitions and university stalls. It is **not a product**. No ap
 
 ## Hard rules
 
-1. **Never commit to the `prism-engine` repo.** The engine is consumed as a built library through its C ABI, pinned to a tag. If something seems to require an engine change, stop and say so rather than working around it.
+1. **Never commit to the `prism-engine` repo.** The engine is consumed as a built library through its C ABI, pinned to upstream commit `acbfd50` until a tag exists. If something seems to require an engine change, stop and say so rather than working around it.
 2. **36 Hz to 62 Hz belongs to the heartbeat layer alone.** Nothing else may put energy there. This is the demo's entire claim and it fails silently when broken.
 3. **Beats are scheduled, never fired on arrival.** Every beat carries `t_play`, a time at least 300 ms in the future. Both audio and visuals render at `t_play`.
 4. **Nothing allocates, locks, logs, or touches a file inside an audio callback.** Beat events cross into audio through a lock-free ring buffer.
 5. **No health, wellness or efficacy claims in any user-facing string.** Describe what the system does, never what it achieves.
 6. **The message contract is frozen.** See `docs/message-contract-v1.md`. A new field requires updating that document first.
 7. **Clients never decide anything.** Segment, timing and authority are host decisions. A disconnected client freezes on its last state and shows a visible marker. It does not improvise.
+8. **prism-live owns the audio device.** The engine is pulled with `prism_render` from prism-live's own audio callback, in `native/`; `prism_device_start` and `prism_device_stop` are never called. That callback high-passes the engine buffer at 62 Hz, mixes the heartbeat layer, applies the session gain, and true-peak limits to −1.0 dBTP as the last stage. The engine's own limiter is −3 dBFS sample-peak and enforces neither the ceiling nor the 36 to 62 Hz reservation.
 
 ---
 
@@ -33,6 +34,7 @@ Polar Verity Sense  --BLE-->  bridge (Python)
                                   |
                        beat scheduler, HRV, baseline,
                        PSV + confidence, authority,
+                       PSV source (body or pose),
                        session state machine
                                   |
                     +-------------+-------------+
@@ -40,19 +42,25 @@ Polar Verity Sense  --BLE-->  bridge (Python)
               Prism Engine                WebSocket server
            (built library, C ABI)               |
                     |                    +------+------+
-              audio out (wired)          |             |
-                                    task screen   spectator screen
+           native audio shim             |             |
+      (owns the device, prism_render,  task screen   spectator screen
+       62 Hz high-pass, heartbeat layer,
+       session gain, true-peak limiter)
+                    |
+              audio out (wired)
 ```
 
 **The host is this repo. The engine is a tool it calls.**
 
-The engine never learns what a heartbeat is. The bridge computes the four PSV values and their confidences and hands them across the PSV interface to the engine's actuation input. The engine receives what it always receives.
+The engine never learns what a heartbeat is. Its only PSV input is `prism_set_mood_override`: four values and **one** confidence shared by all four. There is no per-dimension confidence input. The bridge therefore pre-blends: it sends each value as `0.5 + (v − 0.5) × authority`, valence as 0.5, confidence 1.0 and `mode_hint` NULL. The engine reads confidence only as `effective = 0.5 + (value − 0.5) × confidence`, so this reproduces per-dimension authority exactly. The engine's inference thread is never started (`prism_start` is not called); the bridge is the only PSV writer. Never read authority or confidence back from `prism_get_psv`; the `state` message is the only source.
 
 ### PSV
 
 Four values, 0.0 to 1.0, each with its own confidence: `arousal`, `valence`, `cognitive_load`, `readiness`.
 
 **`valence` confidence is exactly 0.0, always.** It is not obtainable from a pulse. This is deliberate and is a selling point, not a bug. Any code or UI that shows valence moving is wrong.
+
+**Two PSV sources, switchable at runtime.** `body`: the authority-scaled values above; authority 0 is a neutral PSV, which is not silence. `pose`: a designed effective PSV per segment, with the body moving arousal inside a range. Which one ships is decided by listening in Week B (prompt 2.5), not on paper.
 
 ### Authority
 
@@ -80,12 +88,15 @@ Four values, 0.0 to 1.0, each with its own confidence: `arousal`, `valence`, `co
 
 ## Language and layout
 
-Python first. Drop to C++ only where the audio path genuinely requires it.
+Python first. C++ only in `native/`, because the audio callback cannot be Python (hard rule 4).
 
 ```
 bridge/     Python. BLE, beat scheduler, HRV, PSV, authority,
             state machine, WebSocket server, logging.
-            Calls the engine C ABI via ctypes.
+            Calls the engine C ABI and the audio shim via ctypes.
+native/     C++. The audio shim: owns the device, calls prism_render,
+            62 Hz high-pass, heartbeat layer, session gain, true-peak
+            limiter. The only audio callback in the project. Hard rule 8.
 web/        Task screen and spectator screen. Plain HTML/JS.
 tools/      fake_sender, fake_receiver, synthetic RR generator.
 assets/     The four audio stems.
@@ -98,10 +109,12 @@ logs/       gitignored.
 
 ## Audio facts
 
-- Engine is **mono float32, 48 kHz, no resampler**. A file at any other rate is rejected outright.
-- Four stems, coprime loops: `bed` 19 s, `sub` 17 s, `air` 13 s, `pulse` 11 s. Exact integer sample counts.
-- **Two different things are called "pulse."** The `pulse` **stem** is a musical rhythmic layer. The **per-beat layer** is the heartbeat sub-bass generated live at 44 Hz. Never confuse them in code or naming. Prefer `heartbeat_layer` for the second.
-- Scene changes go through `prism_crossfade_scene`, which **blocks for the decode**. Call it ahead of the boundary on a control thread, never from a frame or audio loop. Pass `align_to_loop_boundary = 0`.
+- Engine is **mono float32 with no resampler**. It takes its rate from the first stem and rejects a stem at any other rate. This project's rate is **48 kHz**: every stem is delivered at 48 kHz, and the bridge refuses to start unless `prism_sample_rate()` is 48000.
+- Four stems, coprime loops: `bed` 19 s, `sub` 17 s, `air` 13 s, `pulse` 11 s. Exact integer sample counts. No `lead`.
+- **One scene for the whole session.** All four stems in one manifest scene, the `default_scene`. `prism_crossfade_scene` is never called: an incoming scene restarts every stem from sample 0, which puts an audible seam at every boundary. Segments differ only through the PSV.
+- **Two different things are called "pulse."** The `pulse` **stem** is a musical rhythmic layer. The **per-beat layer** is the heartbeat sub-bass generated live at 44 Hz, in `native/`, never in the engine. Never confuse them in code or naming. Prefer `heartbeat_layer` for the second.
+- **Stem gates follow the filter, not the clock.** The engine turns the PSV into a cutoff and per-stem gains through fixed curves the host cannot change. `pulse` sounds only at density ≥ 0.35 and `air` at ≥ 0.55, on one density number tied to the cutoff, so air can never sound while pulse is closed. A gate changes only at that stem's next loop boundary (every 11 s for pulse, 13 s for air), then fades over a fixed 1.5 s. The bridge tracks the engine's phase from frames rendered and times its PSVs against it. Numbers: `docs/engine-findings.md`.
+- The engine's limiter is −3 dBFS sample-peak. It does not enforce −1.0 dBTP and does not keep 36 to 62 Hz clear. prism-live does both (hard rule 8).
 
 ---
 
@@ -121,22 +134,17 @@ No haptics. No controllers. No multiplayer. No app store build. No engine port t
 
 ## Open questions
 
-Answered from the engine source on 11 Sep 2026, against upstream prism-core `acbfd50`. Evidence and options are in `docs/engine-findings.md`. Nothing has been run yet. Do not guess at the ones still open. Flag them.
+Questions 1 to 4 were answered from the engine source on 11 Sep 2026, against upstream prism-core `acbfd50`. Evidence and options: `docs/engine-findings.md`. Nothing has been run yet.
 
-1. Does the engine expose a **host-settable master output gain** through the C ABI? Needed to fade to silence without an engine change.
-   **No.** Fade in the host instead: own the audio device (pull model, `prism_render`) and ramp the buffer. The resolve ending needs this too, because bed and sub can't be silenced through the PSV.
-2. Does `prism_crossfade_scene` **preserve loop playback phase** for a stem identical across two manifests? If it restarts, the seam becomes audible three times per session.
-   **No.** The incoming scene always starts at sample 0, so an identical bed or sub restarts and is crossfaded against itself. **Needs an architectural decision before prompt 2.7.**
-3. **How long does `prism_crossfade_scene` block?** Measure it. Set the pre-schedule lead to three times that.
-   **Still open**, measure in prompt 2.7. It decodes every stem of the new scene, identical ones included. With `align_to_loop_boundary = 0` the crossfade starts as soon as the decode finishes, so a lead of three times the block time starts it early.
-4. Can the host **inject a per-beat audio event into the engine's output**, or does it need its own audio device alongside?
-   **No injection.** Mix the `heartbeat_layer` into the engine's buffer in the host's own audio callback, one device. The host then owns the −1.0 dBTP ceiling and can filter 36–62 Hz out of the engine buffer first.
-5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration?
-   **Still open.** Needs the armband, prompt 1.0.
+Closed:
 
-Also found, not yet reflected elsewhere in this file:
+1. Does the engine expose a **host-settable master output gain** through the C ABI? **No.** prism-live fades its own buffer (hard rule 8). The resolve ending needs this too, because bed and sub cannot be silenced through the PSV.
+2. Does `prism_crossfade_scene` **preserve loop playback phase** for a stem identical across two manifests? **No.** The incoming scene always starts at sample 0. Decision: one scene, no crossfades.
+3. **How long does `prism_crossfade_scene` block?** **Moot.** It is never called. `prism_load_scene` blocks once per handle at startup; prompt 2.7 measures that.
+4. Can the host **inject a per-beat audio event into the engine's output**? **No.** The heartbeat layer is mixed in prism-live's own callback, one device (hard rule 8).
 
-- Pin to upstream `acbfd50`; no tags exist. The only library built on this machine is older: no `prism_crossfade_scene`, and a PSV race fixed upstream. Build one from `acbfd50`.
-- The PSV goes in through `prism_set_mood_override`, which takes one confidence for all four values. Send each value as `0.5 + (v − 0.5) × authority`, with confidence 1.0.
-- The engine's limiter is −3 dBFS sample-peak, not −1.0 dBTP. The engine does not enforce 36–62 Hz. Authority 0 is a neutral PSV, which opens the `pulse` stem.
-- The audio callback can't be Python (hard rule 4). It needs a small native shim in this repo.
+Still open. Do not guess at these. Flag them.
+
+5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration? Needs the armband, prompt 1.0.
+6. **Body-derived or designed-pose PSV?** Under body-derived values the script's regulate comes out inverted (`docs/engine-findings.md`). Decided by listening in Week B, prompt 2.5.
+7. **Where the `acbfd50` engine library gets built.** No tags exist. The only library on this machine is older and will not do.
