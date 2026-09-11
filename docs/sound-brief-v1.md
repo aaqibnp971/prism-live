@@ -15,7 +15,7 @@ The engine plays all four at once, at gains it decides moment to moment from the
 
 There is no arrangement, no arc, no development. A listener hearing your four files on their own should find them slightly boring. That is correct.
 
-**You are also not making the heartbeat.** The heartbeat sound is generated live by the engine from the person's actual pulse. Read section 5 carefully, because the one way to break this demo is to put your material where the heartbeat lives.
+**You are also not making the heartbeat.** The heartbeat sound is generated live by the system from the person's actual pulse. Read section 5 carefully, because the one way to break this demo is to put your material where the heartbeat lives.
 
 ---
 
@@ -106,7 +106,7 @@ This has caused confusion already, so, explicitly:
 | Name | What it is | Who makes it |
 |---|---|---|
 | The `pulse` **stem** | A musical rhythmic layer, 11 s loop, 96 BPM implied, non-melodic, no downbeat | **You** |
-| The **per-beat layer** | A sub-bass thump on the person's real heartbeat, 44 Hz, 36 to 62 Hz | The engine, live |
+| The **per-beat layer** | A sub-bass thump on the person's real heartbeat, 44 Hz, 36 to 62 Hz | The system, live |
 
 The `pulse` stem must not be low. It must not be in 36 to 62 Hz. It must not sound like a heartbeat. It is a mid-range rhythmic texture whose job is to add pressure during the load segment, and it closes down entirely during regulate.
 
