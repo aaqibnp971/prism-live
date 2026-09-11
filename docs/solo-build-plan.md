@@ -1,5 +1,7 @@
 # Prism Live: Solo Build Plan
 
+> **PARTIALLY SUPERSEDED.** Where this document disagrees with CLAUDE.md or all-prompts.md, those win. Specifically: tasks A.7, A.8 and B.1 describe work inside the engine repo, which CLAUDE.md hard rule 1 forbids. Those items are host-side or blocked on open question 1. Week A does not require the armband; the BLE bridge moved to all-prompts.md prompt 2.8.
+
 **Replaces:** Project Plan v1 §13 task list
 **Reason:** one person is now Dev A, Dev B and Ridhwan. The original plan assumed three.
 **Written:** 10 September 2026. Showing is 15 October 2026, five weeks out.
