@@ -7,6 +7,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+audio = ["sounddevice>=0.4", "numpy>=1.26"]  # tools/click_track.py only
 
 [build-system]
 requires = ["setuptools>=68"]
