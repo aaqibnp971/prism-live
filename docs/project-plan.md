@@ -136,7 +136,7 @@ The engine does not go on the headset. The headset is a thin visuals client.
 | Audio generation and output | Booth laptop, XM5 wired into it |
 | Per-beat pulse layer | Booth laptop |
 | Spectator screen | Booth laptop, second display output |
-| Visuals, session flow, gaze task | Quest 3S, Unity, over local WiFi |
+| Visuals, session flow, reticle task | Quest 3S, Unity, over local WiFi |
 
 This avoids three things that would each cost a week or more: an ARM64 Android build of the core, a Unity native plugin bridging the C ABI on device, and Bluetooth peripheral access on Quest, which is restricted and unreliable.
 
