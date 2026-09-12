@@ -3,7 +3,7 @@ name = "prism-live"
 version = "0.1.0"
 description = "Prism Live host: BLE bridge, beat scheduler, PSV, WebSocket server, tools"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["websockets>=15"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
@@ -22,6 +22,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"bridge/server.py" = ["E402"]  # the run-as-a-module guard has to precede the imports
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
