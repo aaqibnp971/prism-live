@@ -1,6 +1,6 @@
-# Prism Live: Message Contract v1
+# Prism Live: Message Contract v1.1
 
-**Status:** FROZEN as of 10 September 2026
+**Status:** FROZEN as of 10 September 2026. v1.1 (13 September 2026) turns five gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -27,6 +27,12 @@ Nothing is added or removed after this date without both sides updating together
 - Every message has `type` and `v` (schema version, currently `1`).
 - Clients: the task screen, the spectator screen, and later the Quest. All subscribe to the same stream. The laptop does not care how many are connected.
 - **Why not UDP:** UDP means writing packet-loss and ordering handling twice, once per client. On a router you own, with four messages per second, TCP's cost is invisible and WebSocket works in a browser with no extra work.
+
+### Numbers
+
+- **No integer on the link is beyond ±(2^53 − 1)**, in either direction. Past that a JavaScript client cannot hold the number exactly.
+- **Laptop timestamps are whole milliseconds:** `t_play`, and `t_engine` in `state` and in the `clock` pong.
+- **Client times and durations may be fractional:** `t_client_sent`, `t_client`, `dwell_ms` and `split_interval_ms`. Browser clocks such as `performance.now()` are.
 
 ### Clock
 
@@ -98,16 +104,22 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | `psv` | Four values, 0.0 to 1.0 |
 | `confidence` | 0.0 to 1.0 per dimension. `valence` is always exactly `0.0` (Script §6.4) |
 | `authority` | `min(confidence, segment_ceiling)`. Computed once on the laptop so audio and visuals can never disagree |
+| `hr_bpm` | Current heart rate. `null` before the first accepted interval |
+| `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended |
 | `signal` | Feeds the honesty display. `contact` comes from the armband's own sensor-contact bit |
 
 **Segment ceilings**, applied laptop-side before sending:
 
 | Segment | arousal | valence | cognitive_load | readiness |
 |---|---|---|---|---|
+| `idle` | 0.00 | 0.00 | 0.00 | 0.00 |
 | `baseline` | 0.00 | 0.00 | 0.00 | 0.00 |
 | `load` | 0.20 | 0.00 | 0.20 | 0.00 |
 | `regulate` | 1.00 | 0.00 | 1.00 | 1.00 |
 | `resolve` | taper entry value to 0.00 linearly across T−45 s to T−12 s | | | |
+| `reset` | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Nothing acts outside a session, so `idle` and `reset` are 0 on every dimension.
 
 ### Type `clock`
 
@@ -126,6 +138,11 @@ offset = t_engine + rtt/2 - t_client_now
 ```
 
 Keep a rolling median of the last 9 offsets. Discard any sample whose `rtt` is more than twice the median rtt. Ping every 2 seconds.
+
+Two rules keep the estimate from getting stuck:
+
+- **The median rtt is taken over the last 9 rtts observed, discarded samples included.** Over kept samples only, a lasting rise in network delay would get every later sample discarded, forever.
+- **"Twice the median rtt" is never less than 4 ms.** On localhost the median rtt is a fraction of a millisecond, and twice nearly nothing would discard almost every sample.
 
 To schedule a beat locally: `t_local = t_play - offset`.
 
@@ -197,3 +214,4 @@ Record one good JSONL session in Week A and use it as the fake sender's input fo
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 10 Sep 2026 | Frozen. State cadence 30 s to 2 s. Beat scheduling via `t_play`. Added `task_event`, `hello`, `clock`. Transport fixed to WebSocket. Authority moved laptop-side. |
+| 1.1 | 13 Sep 2026 | Five gaps made explicit, all as already implemented in `bridge/contract.py` and `bridge/clock_sync.py`. No field added or removed; `v` stays `1`. §1: no integer past 2^53 − 1; laptop timestamps are whole ms, client times may be fractional. §2 `state`: `hr_bpm` and `hr_base` may be `null`, and when. §2 ceilings: `idle` and `reset` are 0. §2 `clock`: the median rtt covers every observed rtt, and twice the median is never under 4 ms. |

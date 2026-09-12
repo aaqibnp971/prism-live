@@ -16,7 +16,7 @@ the median rtt, and ping every 2 s.
 An estimate belongs to one connection. The bridge's T_engine starts again at 0 when it
 restarts, so build a new ClockSync on every connect; never carry one across a reconnect.
 
-Two readings the contract leaves open, both chosen so the estimate can never get stuck:
+Contract v1.1 adds two rules, so the estimate can never get stuck:
 
 - The median rtt is taken over the last 9 rtts *observed*, discarded samples included. If it
   were taken over kept samples only, a lasting rise in network delay would get every later

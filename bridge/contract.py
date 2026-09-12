@@ -5,8 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-Where the document is silent this module has had to choose. Each choice is marked
-"Reading:" and is worth confirming the next time the contract is revised.
+It follows contract v1.1.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ _ZERO = dict.fromkeys(DIMENSIONS, 0.0)
 # §2 segment ceilings: authority = min(confidence, ceiling). Resolve's ceiling tapers from its
 # entry value to 0 across T-45 s to T-12 s; the row below is only its starting bound, and the
 # taper is checked from the segment clock in _state.
-# Reading: idle and reset are not in the table. Nothing is allowed to act in them, so 0.
+# idle and reset are 0: nothing acts outside a session (§2, v1.1).
 CEILINGS = {
     "idle": _ZERO,
     "baseline": _ZERO,
@@ -46,7 +45,7 @@ CEILINGS = {
 RESOLVE_TAPER_MS = 33_000  # the ceiling falls from T-45 s ...
 RESOLVE_SILENT_MS = 12_000  # ... to 0 at T-12 s, and stays there
 AUTHORITY_ROUNDING = 0.001  # authority is sent to 3 decimals
-# Reading: a number past 2**53 cannot reach a JavaScript client intact, so none may be sent.
+# No integer on the link past 2**53 - 1: a JavaScript client cannot hold it exactly (§1, v1.1).
 MAX_SAFE_INT = 2**53 - 1
 
 _OUT = ("beat", "state", "clock")  # laptop to client
@@ -162,8 +161,7 @@ def _state(msg: dict, _direction: str) -> None:
                     f"state: authority.{dim} {authority[dim]} is over the resolve taper "
                     f"{bound:.3f} at {msg['segment_elapsed_ms']} ms"
                 )
-    # Reading: heart rate is unknown before the first accepted interval, and the baseline
-    # rate before baseline ends, so both may be null.
+    # hr_bpm is null before the first accepted interval, hr_base until baseline ends (§2, v1.1).
     _positive(msg, "hr_bpm", nullable=True)
     _positive(msg, "hr_base", nullable=True)
     signal = msg["signal"]
@@ -188,8 +186,7 @@ def _clock(msg: dict, direction: str) -> None:
     else:
         _fields(msg, "role", "t_client_sent")
         _one_of(msg, "role", ("ping",))
-    # Reading: client clocks are fractional (performance.now()), so client times are numbers.
-    # The laptop's own timestamps are whole milliseconds.
+    # Client times may be fractional; laptop timestamps are whole milliseconds (§1, v1.1).
     _time(msg, "t_client_sent")
 
 

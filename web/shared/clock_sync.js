@@ -1,8 +1,8 @@
 // The client side of the clock exchange (docs/message-contract-v1.md §2, `clock`).
 //
-// A line-for-line port of bridge/clock_sync.py, which explains the two readings of the
-// contract made here. tests/test_clock_sync.py checks that both give identical offsets from
-// the same pongs, so change them together.
+// A line-for-line port of bridge/clock_sync.py, which explains the two rules from contract
+// v1.1 that keep the estimate from getting stuck. tests/test_clock_sync.py checks that both
+// give identical offsets from the same pongs, so change them together.
 //
 // An estimate belongs to one connection. The bridge's T_engine starts again at 0 when it
 // restarts, so build a new ClockSync on every connect; never carry one across a reconnect.

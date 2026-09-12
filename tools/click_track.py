@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import queue
 import sys
-import time
+import time  # perf_counter throughout: time.monotonic moves in 15.6 ms steps on Windows
 from collections.abc import Sequence
 
 from bridge.beat_scheduler import REJECTED, BeatEvent, BeatScheduler
@@ -37,7 +37,7 @@ def _click(freq_hz: float, length_ms: float, gain: float):
 
 
 class ClickPlayer:
-    """Mixes clicks into the output stream at their scheduled monotonic times.
+    """Mixes clicks into the output stream at their scheduled times on time.perf_counter.
 
     Frame 0 of the first block is taken to play at the moment the first callback runs, so
     every click lands a constant output latency late. That is fine for listening.
@@ -56,7 +56,7 @@ class ClickPlayer:
         if status:
             print(status, file=sys.stderr)
         if self.origin_ms is None:
-            self.origin_ms = time.monotonic() * 1000
+            self.origin_ms = time.perf_counter() * 1000
         out.fill(0)
         block_start_ms = self.origin_ms + self.frames_done * 1000 / FS
         while True:
@@ -104,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     clicks = {"ok": _click(1200, 30, 0.6), "interpolated": _click(600, 45, 0.35)}
     player = ClickPlayer()
     sched = BeatScheduler()
-    start = time.monotonic()
+    start = time.perf_counter()
 
     def handle(event: BeatEvent) -> None:
         print(
@@ -126,16 +126,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     break
                 due = start + note.t_s + args.latency_ms / 1000
                 while True:
-                    now = time.monotonic()
+                    now = time.perf_counter()
                     for event in sched.tick(now * 1000):
                         handle(event)
                     if now >= due:
                         break
                     time.sleep(min(0.02, due - now))
-                for event in sched.on_packet(time.monotonic() * 1000, note.payload).events:
+                for event in sched.on_packet(time.perf_counter() * 1000, note.payload).events:
                     handle(event)
             for _ in range(75):  # let the last scheduled beats play out
-                for event in sched.tick(time.monotonic() * 1000):
+                for event in sched.tick(time.perf_counter() * 1000):
                     handle(event)
                 time.sleep(0.02)
     except KeyboardInterrupt:

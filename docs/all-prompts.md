@@ -184,6 +184,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 
 ## 2.1 HRV and baseline
 
+> Read docs/known-limits.md first. The beat scheduler's accepted intervals have four limits this code must handle: artefacts that pass its filter, accepted intervals that are not adjacent, packet loss with no marker, and weak filtering of the first three intervals.
+>
 > Build `bridge/hrv.py` and `bridge/baseline.py`, consuming accepted beats from the scheduler.
 >
 > hrv.py: RMSSD over a rolling 60 second window, plus mean HR. Also expose ln(rmssd), which behaves better for linear mapping. Do NOT implement LF/HF; it needs several minutes and its interpretation is contested, so claiming it off 60 seconds is indefensible.
