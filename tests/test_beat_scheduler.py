@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from bridge.beat_scheduler import BeatEvent, BeatScheduler, Interval, Tuning
-from bridge.hrm import parse_hrm
+from bridge.hrm import encode_hrm, parse_hrm
 from tools.synthetic_rr import DEFAULT_PROFILE, Fault, Profile, generate
 
 LATENCY_MS = 40  # the link
@@ -182,3 +182,55 @@ def test_tuning_is_a_knob():
     run = replay(tuning=Tuning(buffer_ms=1500.0))
     assert all(e.t_play - e.t_emitted >= 300 for e in run.beats)
     assert bpm(between(run.beats, 5, 45)) == pytest.approx(68, abs=2)
+
+
+# --- tags for HRV (docs/known-limits.md) ---
+
+
+def test_intervals_are_tagged_where_a_packet_was_lost_and_while_bootstrapping():
+    run = replay("disconnect@15:4", profile=Profile.from_spec("68:30"))
+    breaks = [k for k, i in enumerate(run.intervals) if not i.contiguous]
+    assert breaks[0] == 0 and len(breaks) == 2
+    assert run.intervals[breaks[1]].arrival - run.intervals[breaks[1] - 1].arrival > 4_000
+    accepted = [i for i in run.intervals if i.accepted]
+    assert [i.bootstrap for i in accepted[:4]] == [True, True, True, False]
+    assert not any(i.bootstrap for i in accepted[3:])
+
+
+def test_a_window_reset_bootstraps_again():
+    run = replay(profile=Profile.from_spec("60:20,90:20"))
+    assert run.sched.stats.window_resets >= 1
+    late = [k for k, i in enumerate(run.intervals) if i.bootstrap and k > 2]
+    assert len(late) == 3 * run.sched.stats.window_resets
+
+
+def test_a_link_gap_ended_by_an_empty_packet_still_reanchors():
+    """Below 60 bpm a packet can carry no interval. The gap must not be forgotten."""
+    sched = BeatScheduler()
+    for n in range(1, 6):
+        sched.on_packet(n * 1000.0, encode_hrm(50, [1229]))
+    sched.on_packet(9000.0, encode_hrm(50))  # the first packet after a 4 s gap is empty
+    (after,) = sched.on_packet(10_000.0, encode_hrm(50, [1229])).intervals
+    assert not after.contiguous
+    assert 10_000 - 1200 <= after.t_beat <= 10_000 - 20
+
+
+def test_a_zero_interval_is_rejected_without_crashing():
+    sched = BeatScheduler()
+    for n in range(1, 6):
+        sched.on_packet(n * 1000.0, encode_hrm(70, [880]))
+    result = sched.on_packet(6000.0, encode_hrm(70, [895, 0, 462]))
+    assert [i.accepted for i in result.intervals] == [True, False, False]
+    assert all(e.rr_ms > 0 for e in result.events)
+    replay("artefact_burst@40:5", seed=7, profile=Profile.from_spec("100:90"))  # made a raw 0
+
+
+@pytest.mark.parametrize(
+    ("fault", "seed"),
+    [("disconnect@30:4", 15), ("artefact_burst@30:5", 2)],
+    ids=["disconnect", "burst"],
+)
+def test_a_restart_never_plays_on_top_of_a_beat_already_sent(fault, seed):
+    run = replay(fault, seed=seed)
+    for a, b in zip(run.beats, run.beats[1:], strict=False):
+        assert b.t_play - a.t_play >= 0.95 * a.interval_ms, (a, b)

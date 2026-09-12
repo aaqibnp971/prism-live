@@ -92,12 +92,19 @@ class BeatEvent:
 
 @dataclass(frozen=True)
 class Interval:
-    """One reported interval, placed on the reconstructed timeline. HRV reads the accepted ones."""
+    """One reported interval, placed on the reconstructed timeline.
+
+    bridge/hrv.py decides which are clean enough for HRV, and needs the two tags to do it
+    (docs/known-limits.md): a lost packet leaves no interval behind, and an interval accepted
+    before the median window had anything in it was barely checked.
+    """
 
     t_beat: float  # T_engine ms, reconstructed
     rr_ms: float
     accepted: bool
     arrival: float
+    contiguous: bool = True  # the beat right after the previous reported one: no lost packet
+    bootstrap: bool = False  # accepted on plausibility alone, before the window held enough
 
 
 @dataclass(frozen=True)
@@ -130,10 +137,14 @@ class BeatScheduler:
         self._rejects_in_a_row = 0
         self._last_arrival: float | None = None
         self._last_accepted_arrival: float | None = None
+        self._needs_anchor = (
+            True  # at start, and after any link gap, even one ended by an empty packet
+        )
         # The played timeline.
         self._play_next: float | None = None  # t_play of the next beat; None while stopped
         self._last_t_play: float | None = None
         self._phase_error = 0.0  # where the lattice should be minus where it is
+        self._last_sent_t_play: float | None = None  # survives a stop, unlike _last_t_play
         self._seq = 0
 
     @property
@@ -152,19 +163,31 @@ class BeatScheduler:
         link_gap = self._last_arrival is not None and now - self._last_arrival > t.link_timeout_ms
         if link_gap:
             self.stats.link_gaps += 1
+            self._needs_anchor = True
 
         intervals: list[Interval] = []
         events: list[BeatEvent] = []
         if rrs:
-            if self._chain_t is None or link_gap:
+            anchored = self._needs_anchor
+            if anchored:
                 self._anchor(now, rrs)
-            for rr in rrs:
+                self._needs_anchor = False
+            for k, rr in enumerate(rrs):
                 self._chain_t += rr
                 # A beat cannot be reported before it happened. If the chain says so, the chain
                 # is running late: pull it back.
                 self._chain_t = min(self._chain_t, now - t.min_lag_ms)
-                accepted = self._accept(rr)
-                intervals.append(Interval(self._chain_t, rr, accepted, now))
+                accepted, bootstrap = self._accept(rr)
+                intervals.append(
+                    Interval(
+                        self._chain_t,
+                        rr,
+                        accepted,
+                        now,
+                        contiguous=not (anchored and k == 0),
+                        bootstrap=bootstrap,
+                    )
+                )
                 if accepted:
                     self.stats.accepted += 1
                     self._interval = (
@@ -176,14 +199,21 @@ class BeatScheduler:
                     self._last_accepted_arrival = now
                 else:
                     self.stats.rejected += 1
-                    events.append(self._event(self._chain_t + t.buffer_ms, rr, REJECTED, now, 0.0))
+                    if rr > 0:  # a zero interval is still rejected, but has no rate to report
+                        events.append(
+                            self._event(self._chain_t + t.buffer_ms, rr, REJECTED, now, 0.0)
+                        )
         self._last_arrival = now
 
         if self._interval is not None and self._ref_t is not None:
             target = self._ref_t + t.buffer_ms
             if self._play_next is None:
-                # Nothing is playing: start the lattice on the newest real beat.
+                # Nothing is playing: start the lattice on the newest real beat. Beats sent
+                # before a stop are still on their way, so never restart on top of one.
                 self._play_next = target
+                if self._last_sent_t_play is not None:
+                    while self._play_next < self._last_sent_t_play + 0.95 * self._interval:
+                        self._play_next += self._interval
                 self._last_t_play = None
                 self._phase_error = 0.0
                 self.stats.starts += 1
@@ -207,13 +237,15 @@ class BeatScheduler:
         self._chain_t = guess - sum(rrs)
         self.stats.anchors += 1
 
-    def _accept(self, rr: float) -> bool:
+    def _accept(self, rr: float) -> tuple[bool, bool]:
+        """(accepted, bootstrap): bootstrap if it was accepted on plausibility alone."""
         t = self.t
         lo, hi = t.plausible_ms
+        bootstrap = False
         if not lo <= rr <= hi:
             plausible = False
         elif len(self._window) < t.bootstrap:
-            plausible = True
+            plausible = bootstrap = True
         else:
             centre = median(self._window)
             plausible = abs(rr - centre) <= t.reject_fraction * centre
@@ -227,7 +259,7 @@ class BeatScheduler:
                 self._window.clear()
                 self._rejects_in_a_row = 0
                 self.stats.window_resets += 1
-        return plausible
+        return plausible, bootstrap
 
     # --- beats out ---
 
@@ -258,7 +290,7 @@ class BeatScheduler:
         step = max(-limit, min(limit, self._phase_error))
         self._phase_error -= step
         self._play_next = max(t_play + self._interval + step, t_play + t.min_spacing_ms)
-        self._last_t_play = t_play
+        self._last_t_play = self._last_sent_t_play = t_play
         return self._event(t_play, rr, INTERPOLATED if stale else OK, now, step)
 
     def _event(self, t_play: float, rr: float, quality: str, now: float, step: float) -> BeatEvent:
