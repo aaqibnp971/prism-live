@@ -4,8 +4,9 @@
 // v1.1 that keep the estimate from getting stuck. tests/test_clock_sync.py checks that both
 // give identical offsets from the same pongs, so change them together.
 //
-// An estimate belongs to one connection. The bridge's T_engine starts again at 0 when it
-// restarts, so build a new ClockSync on every connect; never carry one across a reconnect.
+// An estimate belongs to one connection (contract v1.2). The bridge's T_engine starts again
+// at 0 when it restarts, so build a new ClockSync on every connect; never carry one across a
+// reconnect.
 //
 //   import { ClockSync, PING_INTERVAL_MS } from "../shared/clock_sync.js";
 //   let sync, pinger;

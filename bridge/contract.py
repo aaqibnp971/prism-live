@@ -5,7 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-It follows contract v1.1.
+It follows contract v1.2.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-# Prism Live: Message Contract v1.1
+# Prism Live: Message Contract v1.2
 
-**Status:** FROZEN as of 10 September 2026. v1.1 (13 September 2026) turns five gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
+**Status:** FROZEN as of 10 September 2026. v1.1 and v1.2 (13 September 2026) turn seven gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -64,11 +64,13 @@ Sent once per detected heartbeat, **scheduled ahead**, not on arrival.
 | Field | Type | Meaning |
 |---|---|---|
 | `session` | string | Session id. Changes on every reset. Never a person's name |
-| `seq` | int | Increments per beat, per session. Lets a client spot a gap |
+| `seq` | int | Increments per beat, per session. Lets a client spot a gap. `beat` has its own counter, separate from `state`'s |
 | `t_play` | int ms | The moment on `T_engine` when this beat should sound and flash. Always in the future when sent |
 | `rr_ms` | float | The interval this beat closed, in milliseconds |
 | `hr_bpm` | float | Instantaneous rate implied by `rr_ms` |
 | `quality` | enum | `ok`, `interpolated`, `rejected`. `rejected` beats are sent for logging and must not be rendered |
+
+**Sequence rule.** `beat` and `state` each keep their own `seq`, per session. A gap is a missing number within one message type in one session. A new session starts both counters again, and that is not a gap. Rejected beats are sent, so they take a number like any other beat.
 
 **Scheduling rule.** The laptop chooses `t_play` at least **300 ms** in the future. Both the audio thread and every client render at `t_play`, not on receipt. A client that receives a `beat` whose `t_play` has already passed drops it silently and does not catch up.
 
@@ -98,6 +100,7 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 
 | Field | Notes |
 |---|---|
+| `seq` | Increments per `state`, per session. `state` has its own counter, separate from `beat`'s |
 | `t_session` | Milliseconds since the attendant pressed start. `null` when `segment` is `idle` |
 | `segment` | `idle`, `baseline`, `load`, `regulate`, `resolve`, `reset` |
 | `segment_elapsed_ms` / `segment_nominal_ms` | **Clients must draw progress from these, never from a local clock.** Regulate is adaptive and can run 30 s over |
@@ -143,6 +146,8 @@ Two rules keep the estimate from getting stuck:
 
 - **The median rtt is taken over the last 9 rtts observed, discarded samples included.** Over kept samples only, a lasting rise in network delay would get every later sample discarded, forever.
 - **"Twice the median rtt" is never less than 4 ms.** On localhost the median rtt is a fraction of a millisecond, and twice nearly nothing would discard almost every sample.
+
+**An estimate belongs to one connection.** `T_engine` starts again at 0 whenever the laptop's process restarts, so an estimate from before a reconnect can be wrong by the laptop's whole uptime. A client builds a new estimate on every connect and never carries one across a reconnect. A new estimate is usable after its first pong.
 
 To schedule a beat locally: `t_local = t_play - offset`.
 
@@ -215,3 +220,4 @@ Record one good JSONL session in Week A and use it as the fake sender's input fo
 |---|---|---|
 | 1.0 | 10 Sep 2026 | Frozen. State cadence 30 s to 2 s. Beat scheduling via `t_play`. Added `task_event`, `hello`, `clock`. Transport fixed to WebSocket. Authority moved laptop-side. |
 | 1.1 | 13 Sep 2026 | Five gaps made explicit, all as already implemented in `bridge/contract.py` and `bridge/clock_sync.py`. No field added or removed; `v` stays `1`. §1: no integer past 2^53 − 1; laptop timestamps are whole ms, client times may be fractional. §2 `state`: `hr_bpm` and `hr_base` may be `null`, and when. §2 ceilings: `idle` and `reset` are 0. §2 `clock`: the median rtt covers every observed rtt, and twice the median is never under 4 ms. |
+| 1.2 | 13 Sep 2026 | Two more gaps made explicit, both as already implemented. No field added or removed; `v` stays `1`. §2 `beat` and `state`: each message type keeps its own `seq` counter per session; a gap is a missing number within one type in one session, and a new session is not a gap. §2 `clock`: an offset estimate belongs to one connection and is rebuilt on every reconnect, because `T_engine` restarts with the laptop's process. |
