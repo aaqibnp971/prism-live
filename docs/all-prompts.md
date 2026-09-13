@@ -226,6 +226,20 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > Implement the regulate success threshold: regulated when any 20 second rolling window has mean HR at or below HR_load minus max(5 bpm, 0.5 times rise), where rise = HR_load minus HR_base.
 >
 > Emit segment, segment_elapsed_ms and segment_nominal_ms in every state message.
+>
+> **End of baseline: wait for hr_base.** The baseline capture closes at 45 s, but its result arrives 3.4 to 10.2 s later, because every interval is classified 3 to 7.5 s late (docs/known-limits.md). At the end of the 45 s, hold the session in baseline until `hr_base` is available, for at most 12 s, then enter load. If it is still not available at 12 s, enter load anyway and mark the baseline degraded: `signal.baseline_quality` goes out as 0.0, `hr_base` stays null, and the session log records why. The contract is frozen, so degraded is carried by those two values, not by a new field.
+>
+> - This amends "baseline 45 s fixed" in CLAUDE.md and docs/experience-script.md §2. The capture stays 45 s; the segment runs 45 to 57 s.
+> - While holding, `segment` stays `baseline`, `segment_nominal_ms` stays 45000 and `segment_elapsed_ms` keeps counting past it. Authority stays at the baseline ceilings, so nothing acts.
+> - A result that is ready but fails the quality gate is not degraded. That is the experience script's re-seat and restart, unchanged.
+> - The hold moves load t=0 off the pulse boundary that 2.7 aligns to 45 s. See the note in 2.7.
+>
+> **rmssd_base is optional everywhere downstream.** It can be None while the quality gate passes, after a few artefacts in the last 30 s of baseline. Nothing may assume it exists. Load's secondary criterion (RMSSD over its final 30 s at or below 0.80 × baseline) and regulate's recorded RMSSD return are skipped and logged as unavailable when it is None; the heart rate criteria decide alone.
+>
+> Assumed here, not yet decided:
+>
+> - With a degraded baseline there is no HR_base, so neither load's activation nor regulate's success threshold can be computed. Regulate then runs its nominal 75 s with no extension, because the extension only waits for a threshold that cannot be judged, and the log records why.
+> - An RMSSD criterion is also skipped when either of its 30 s windows has fewer than 20 clean differences. Below that, a 30 s RMSSD is more than 20 % off in about one run in five (docs/known-limits.md), enough to call a person activated when they were not.
 
 ## 2.5 Engine wrapper, the audio shim, and the PSV feed
 
@@ -284,6 +298,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > Placeholder stems, until the real ones arrive: `tools/make_placeholder_stems.py`. Mono, 48 kHz, 32-bit float, exact sample counts 912,000 / 816,000 / 624,000 / 528,000, seamless loops, D minor, all high-passed at 62 Hz, 24 dB/oct, in the file. Bed with harmonic content to at least 6 kHz so the filter has something to work on. Verify the counts and the 36 to 62 Hz band on the files, not by ear. docs/sound-brief-v1.md is the spec.
 >
 > Gate timing, from the findings: the engine opens or closes pulse and air only at that stem's next loop boundary counted from scene load (every 11 s for pulse, every 13 s for air), then fades over a fixed 1.5 s, and it takes a boundary only if the crossing PSV was consumed at least one render block before it. Build `bridge/phase.py` on the shim's `frames_rendered()`: every stem's phase, its next boundary, and when to send a gate-crossing PSV so it lands one block before a chosen boundary.
+>
+> **Undecided, 13 September: the baseline hold moves load t=0.** 2.4 holds baseline past 45 s until `hr_base` arrives, for up to 12 s, so a pulse boundary aligned to 45 s no longer lands at load t=0. The wait is never under 3.4 s, so a boundary at 45 s is always missed. Three options: align the boundary to 56 s and hold to it, which covers every measured wait (at most 10.2 s) and makes the effective cap 11 s; hold to the first boundary after `hr_base` arrives, which comes to the same thing; or let pulse open at its next boundary after load t=0, up to 11 s late, as air already does. Decide before building this.
 >
 > Session start alignment. Amend the state machine from 2.4: after the attendant presses start, baseline begins only when the engine's phase puts a pulse boundary exactly at load t=0, 45 s later, i.e. phase mod 11 s = 10 s. That is a wait of up to 11 s; show it as a countdown on the attendant control and log it. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
 >
