@@ -62,7 +62,7 @@ def test_an_artefact_burst_does_not_move_the_baseline(pipeline):
 
 
 def test_one_misplaced_beat_in_the_tail_does_not_inflate_rmssd_base(pipeline):
-    """No rejection anywhere. The earlier pair test let this through at 57.9 ms, 62 % high."""
+    """No rejection anywhere. The earlier pair test let this through at 57.9 ms, 62.5 % high."""
     clean = capture(pipeline("60:60", seed=4))
     late = capture(pipeline("60:60", "artefact_burst@35:0.5", seed=4))
     assert late.passed and late.rmssd_base_ms is not None
@@ -131,3 +131,45 @@ def test_ready_gives_up_waiting_when_the_armband_goes_quiet():
     baseline = BaselineCapture(10_000.0)
     assert not baseline.ready(74_999)
     assert baseline.ready(75_000)
+
+
+def test_the_heart_rate_spread_ignores_an_artefact_burst(pipeline):
+    clean, burst = capture(pipeline("68:60")), capture(pipeline("68:60", "artefact_burst@35"))
+    assert clean.hr_sd_bpm is not None
+    assert burst.hr_sd_bpm == pytest.approx(clean.hr_sd_bpm, rel=0.25)
+
+
+def test_rmssd_base_says_how_many_differences_it_rests_on(pipeline):
+    from bridge.hrv import summarise
+
+    run = pipeline("68:60")
+    baseline = capture(run)
+    tail = summarise(run.classified, baseline.end_ms - 30_000, baseline.end_ms)
+    assert baseline.rmssd_base_differences == tail.differences >= 25
+
+
+def test_progress_and_provisional_quality_grow_into_the_result(pipeline):
+    run = pipeline("68:60")
+    live = BaselineCapture(0)
+    assert live.progress() == 0.0 and live.provisional_quality() is None
+    halfway = [c for c in run.classified if c.t_beat <= 20_000]
+    live.add(halfway)
+    assert 0.3 < live.progress() < 0.7
+    live.add(run.classified[len(halfway) :])
+    result = live.result()
+    assert live.progress() == 1.0 and result.passed
+    assert live.provisional_quality() == result.baseline_quality
+
+
+@pytest.mark.parametrize("seed", [2, 3, 4])
+def test_the_heart_rate_spread_matches_the_true_beats(pipeline, monkeypatch, seed):
+    """A spread large enough to leave psv.py's 4 bpm floor, checked against the same robust
+    estimate taken over the true beats of the same 30 s."""
+    import tools.synthetic_rr as synthetic
+    from bridge.baseline import _robust_sd
+
+    monkeypatch.setattr(synthetic, "RR_SD_MS_AT_60_BPM", 90.0)
+    run = pipeline("68:60", seed=seed)
+    truth = [60_000 / b.rr_ms for b in run.true_beats() if 15 < b.t_s <= 45]
+    assert capture(run).hr_sd_bpm == pytest.approx(_robust_sd(truth), rel=0.1)
+    assert _robust_sd(truth) > 4.5

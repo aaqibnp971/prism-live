@@ -220,7 +220,8 @@ Prompt 2.4 holds baseline until `hr_base` is available, for at most 12 s, then e
 the baseline degraded if it never came. Every measured wait fits inside the 12 s.
 
 `hr_base`, the slope and the quality gate all use accepted, non-bootstrap intervals, which need no
-classification. Only `rmssd_base` does. `BaselineCapture` waits for all of it together. Splitting
+classification. Only `rmssd_base`, and `hr_sd_bpm`, the spread `bridge/psv.py` uses for its
+arousal unit, do. `BaselineCapture` waits for all of it together. Splitting
 the two would give `hr_base` about one interval plus the reporting delay after the window ends,
 shortening the hold. That is not built and not measured.
 
@@ -258,3 +259,34 @@ at or below 0.80 × baseline. A baseline 20 % high makes a person look activated
 Prompt 2.4 treats `rmssd_base` as optional and skips an RMSSD criterion that has too few differences
 behind it.
 
+---
+
+## The PSV, for Week B and for validation
+
+**Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns
+the VR handoff. `bridge/psv.py` was built and tuned on the synthetic armband only.
+
+- **Every constant is provisional.** At the 4 bpm unit, the arousal scale reads +6 bpm as 0.67, +15
+  as 0.85 and +37 as 0.99. Readiness confidence stops at 0.6. None of it has met a real heart.
+- **The RMSSD term's rate correction is exact only for the generator.** `ln RMSSD + 2 ln HR` removes
+  the part of RMSSD that follows from heart rate alone, which is what the synthetic armband's
+  variability does by construction. The term carries 20 % of arousal until a real recording shows
+  how RMSSD and heart rate move together.
+- **The person's own heart rate spread stays under its 4 bpm floor on settled synthetic
+  baselines.** They spread about 1 to 3 bpm, so the personal part of the arousal unit is exercised
+  only by tests that inject a spread. Baselines falling steeply spread wider, but score quality 0.
+- **Mean confidence cannot reach 1.** Valence is 0 and cognitive_load is 0 without task events, so
+  the mean of the four is at most 0.295 in baseline (`MEAN_CONFIDENCE_MAX_IN_BASELINE`) and 0.4 over
+  a session. docs/vr-handoff.md maps mean confidence from 0 to 1 onto fog, light and horizon in
+  baseline, which would move the world less than a third of its range. Remap to 0.295, or decide
+  otherwise, before building that mapping.
+- **A baseline taken while heart rate is still falling steeply gives no confidence once its result
+  is in, for the rest of the session.** At quality 0, everything measured against it is untrusted,
+  so nothing the body does acts on the engine for that visitor. During the capture the bars still
+  climb to about 0.38 and fall back as the slope shows. Honest, and possibly common off a loud floor.
+- **A degraded baseline sends `hr_base` null for the rest of the session.** The contract says null
+  only until baseline has ended. It needs a clarification, with the contract's owner, before prompt
+  2.4 is built.
+- **The contact bit is unverified.** Whether the Verity Sense reports contact at all, and whether it
+  keeps sending RR intervals without it, are open. A sensor that does not report contact is read as
+  in contact.

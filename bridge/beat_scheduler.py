@@ -111,6 +111,7 @@ class Interval:
 class PacketResult:
     intervals: tuple[Interval, ...]  # everything the packet carried, accepted or not
     events: tuple[BeatEvent, ...]  # rejected beats, for logging; never rendered
+    contact: bool | None = None  # the packet's sensor-contact bit; None when it reports none
 
 
 @dataclass
@@ -159,7 +160,8 @@ class BeatScheduler:
 
     def on_packet(self, now: float, payload: bytes) -> PacketResult:
         t = self.t
-        rrs = parse_hrm(payload).rr_ms
+        packet = parse_hrm(payload)
+        rrs = packet.rr_ms
         link_gap = self._last_arrival is not None and now - self._last_arrival > t.link_timeout_ms
         if link_gap:
             self.stats.link_gaps += 1
@@ -219,7 +221,7 @@ class BeatScheduler:
                 self.stats.starts += 1
             elif any(i.accepted for i in intervals):
                 self._phase_error = _wrap(target - self._play_next, self._interval)
-        return PacketResult(tuple(intervals), tuple(events))
+        return PacketResult(tuple(intervals), tuple(events), packet.contact_detected)
 
     def _anchor(self, now: float, rrs: Sequence[float]) -> None:
         """Place this packet's last beat somewhere in the notification window it closed, then

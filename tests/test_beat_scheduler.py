@@ -234,3 +234,10 @@ def test_a_restart_never_plays_on_top_of_a_beat_already_sent(fault, seed):
     run = replay(fault, seed=seed)
     for a, b in zip(run.beats, run.beats[1:], strict=False):
         assert b.t_play - a.t_play >= 0.95 * a.interval_ms, (a, b)
+
+
+def test_a_packet_result_carries_the_contact_bit_as_sent():
+    scheduler = BeatScheduler()
+    assert scheduler.on_packet(1000, encode_hrm(70, [700])).contact is True
+    assert scheduler.on_packet(2000, encode_hrm(70, [700], contact_detected=False)).contact is False
+    assert scheduler.on_packet(3000, encode_hrm(70, [700], contact_supported=False)).contact is None

@@ -89,6 +89,16 @@ def test_disconnect_goes_silent_then_resumes():
     assert len(base) - len(run("disconnect@100:8")) >= 7
 
 
+def test_contact_lost_clears_only_the_contact_bit_for_its_window():
+    base, lost = run(), run("contact_lost@100:5")
+    assert [n.t_s for n in lost] == [n.t_s for n in base]
+    for before, after in zip(base, lost, strict=True):
+        was, now = parse_hrm(before.payload), parse_hrm(after.payload)
+        assert (now.hr_bpm, now.rr_raw, now.contact_supported) == (was.hr_bpm, was.rr_raw, True)
+        assert now.contact_detected is not (100 <= after.t_s < 105)
+    assert Fault.from_spec("contact_lost@100") == Fault("contact_lost", 100.0, 5.0)
+
+
 def test_doubled_beat_splits_one_interval_under_300_ms():
     base, faulty = rr_sequence(run()), rr_sequence(run("doubled_beat@60"))
     i = next(i for i, (a, b) in enumerate(zip(base, faulty, strict=False)) if a != b)

@@ -9,6 +9,7 @@ import pytest
 from bridge.beat_scheduler import BeatScheduler, Interval
 from bridge.hrm import parse_hrm
 from bridge.hrv import HrvInterval, IntervalCleaner
+from bridge.psv import PsvEstimate, PsvModel
 from tools.synthetic_rr import Beat, Fault, Profile, apply_beat_faults, generate, true_beats
 
 LATENCY_MS = 40
@@ -93,3 +94,60 @@ def true_hr(beats: list[Beat], start_s: float, end_s: float) -> float:
 @pytest.fixture
 def pipeline():
     return run_pipeline
+
+
+@dataclass
+class Session:
+    """A synthetic session through scheduler and PsvModel, read like the bridge reads it."""
+
+    model: PsvModel
+    estimates: dict[float, PsvEstimate]  # by read time, T_engine ms
+    baseline_start_ms: float | None
+
+    def at(self, t_s: float) -> PsvEstimate:
+        """The estimate read at or just before t_s."""
+        times = [t for t in self.estimates if t <= t_s * 1000]
+        return self.estimates[max(times)]
+
+    def series(self, from_s: float, until_s: float) -> list[PsvEstimate]:
+        return [e for t, e in self.estimates.items() if from_s * 1000 <= t <= until_s * 1000]
+
+
+def run_session(
+    spec: str,
+    *faults: str,
+    seed: int = 1,
+    baseline_at_s: float | None = 20.0,
+    tick_ms: float = 2000.0,
+    phase_ms: float = 0.0,
+    extra_reads_s: tuple[float, ...] = (),
+) -> Session:
+    """Packets arrive LATENCY_MS after the device sends them. Estimates are read every tick_ms
+    from phase_ms, through disconnects too, plus at extra_reads_s; a baseline starts at
+    baseline_at_s, just before the read at that time."""
+    profile = Profile.from_spec(spec)
+    notes = list(generate(profile, [Fault.from_spec(f) for f in faults], seed))
+    end_ms = profile.duration_s * 1000
+    reads = {phase_ms + k * tick_ms for k in range(int((end_ms - phase_ms) // tick_ms) + 1)}
+    reads |= {s * 1000 for s in extra_reads_s}
+    start_ms = None if baseline_at_s is None else baseline_at_s * 1000
+    scheduler, model = BeatScheduler(), PsvModel()
+    estimates: dict[float, PsvEstimate] = {}
+    started = start_ms is None
+    k = 0
+    for read in sorted(reads):
+        while k < len(notes) and notes[k].t_s * 1000 + LATENCY_MS <= read:
+            now = notes[k].t_s * 1000 + LATENCY_MS
+            if not started and now >= start_ms:
+                started = model.start_baseline(start_ms)
+            model.on_packet(now, scheduler.on_packet(now, notes[k].payload))
+            k += 1
+        if not started and read >= start_ms:
+            started = model.start_baseline(start_ms)
+        estimates[read] = model.estimate(read)
+    return Session(model, estimates, start_ms)
+
+
+@pytest.fixture
+def session():
+    return run_session

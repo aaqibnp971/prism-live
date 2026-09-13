@@ -96,15 +96,22 @@ def true_beats(profile: Profile, rng: random.Random) -> Iterator[Beat]:
 
 # --- faults ----------------------------------------------------------------------------------
 
-FAULT_KINDS = ("dropped_packet", "doubled_beat", "missed_beat", "artefact_burst", "disconnect")
-DEFAULT_FAULT_SECONDS = {"artefact_burst": 5.0, "disconnect": 10.0}
+FAULT_KINDS = (
+    "dropped_packet",
+    "doubled_beat",
+    "missed_beat",
+    "artefact_burst",
+    "disconnect",
+    "contact_lost",
+)
+DEFAULT_FAULT_SECONDS = {"artefact_burst": 5.0, "disconnect": 10.0, "contact_lost": 5.0}
 
 
 @dataclass(frozen=True)
 class Fault:
     kind: str
     at_s: float  # device time at which it fires
-    seconds: float = 0.0  # length, for artefact_burst and disconnect
+    seconds: float = 0.0  # length, for artefact_burst, disconnect and contact_lost
 
     @classmethod
     def from_spec(cls, spec: str) -> Fault:
@@ -199,6 +206,8 @@ def apply_packet_faults(
             notes = _drop_one(notes, fault.at_s)
         elif fault.kind == "disconnect":
             notes = _drop_window(notes, fault.at_s, fault.at_s + fault.seconds)
+        elif fault.kind == "contact_lost":
+            notes = _lose_contact(notes, fault.at_s, fault.at_s + fault.seconds)
     return notes
 
 
@@ -217,6 +226,19 @@ def _drop_window(
     for note in notes:
         if not from_s <= note.t_s < until_s:
             yield note
+
+
+def _lose_contact(
+    notes: Iterator[Notification], from_s: float, until_s: float
+) -> Iterator[Notification]:
+    """The sensor-contact bit reads false, and everything else is sent as before. Whether the
+    Verity Sense keeps sending RR intervals without contact is not known yet."""
+    for note in notes:
+        if from_s <= note.t_s < until_s:
+            packet = parse_hrm(note.payload)
+            payload = encode_hrm(packet.hr_bpm, packet.rr_raw, contact_detected=False)
+            note = Notification(note.t_s, payload)
+        yield note
 
 
 # --- notifications ---------------------------------------------------------------------------

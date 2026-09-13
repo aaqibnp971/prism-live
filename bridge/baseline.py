@@ -6,6 +6,7 @@ more about the walk than about them.
 
 - hr_base uses every interval the scheduler accepted (not bootstrap), the set the gate trusts,
   so it exists whenever the gate passes. A stray false interval moves a 30 s mean very little.
+  Fed through bridge/psv.py, "accepted" also means sent with sensor contact.
 - rmssd_base uses only HRV-clean successive differences (bridge/hrv.py), because one false
   interval moves RMSSD a lot. After a few artefacts it can be None while the gate passes; that
   is honest, and whatever reads it must cope.
@@ -20,7 +21,7 @@ The quality gate (experience script §2 BASELINE) is separate, and it is about t
 the person: at least 35 of the 45 s of clean data and at least 30 accepted intervals. Failing it
 means the attendant re-seats the armband and restarts. "Clean data" here is time covered by
 intervals the scheduler accepted, not the stricter HRV-clean set: a single artefact costs HRV
-about 13 intervals, and that must not send a well-seated armband back.
+about 12 intervals, and that must not send a well-seated armband back.
 
     baseline = BaselineCapture(start_ms=t_engine_at_baseline_start)
     baseline.add(cleaner.add(result.intervals))  # the same classified stream HRV uses
@@ -62,6 +63,11 @@ class Baseline:
     accepted_intervals: int  # accepted by the scheduler, not bootstrap
     passed: bool  # the quality gate
     problems: tuple[str, ...]  # why it failed, for the attendant; empty when it passed
+    # For bridge/psv.py. The spread of instantaneous heart rate over the last TAIL_MS, robust to
+    # the odd false interval (1.4826 x the median absolute deviation, HRV-clean intervals only),
+    # and how many differences rmssd_base rests on.
+    hr_sd_bpm: float | None = None
+    rmssd_base_differences: int = 0
 
 
 class BaselineCapture:
@@ -82,10 +88,28 @@ class BaselineCapture:
         """True once every interval inside the window has been classified."""
         return self._classified_past_end or now_ms >= self.end_ms + READY_TIMEOUT_MS
 
+    def progress(self) -> float:
+        """How far the intervals classified so far go towards passing the gate, 0 to 1."""
+        trusted = self._trusted()
+        accepted_ms = sum(covered_ms(i, self.start_ms, self.end_ms) for i in trusted)
+        return min(1.0, accepted_ms / MIN_CLEAN_MS, len(trusted) / MIN_ACCEPTED)
+
+    def provisional_quality(self) -> float | None:
+        """baseline_quality from the intervals classified so far; None before there is a slope."""
+        slope = _slope_bpm_per_min(self._trusted())
+        return None if slope is None else _quality(slope)
+
+    def provisional_rmssd_differences(self) -> int:
+        """How many differences rmssd_base would rest on, from what has been classified so far."""
+        return summarise(self._intervals, self.end_ms - TAIL_MS, self.end_ms).differences
+
+    def _trusted(self) -> list[HrvInterval]:
+        return [i for i in self._intervals if i.accepted and not i.bootstrap]
+
     def result(self) -> Baseline:
         start, end = self.start_ms, self.end_ms
         tail = summarise(self._intervals, end - TAIL_MS, end, MIN_DIFFERENCES)
-        trusted = [i for i in self._intervals if i.accepted and not i.bootstrap]
+        trusted = self._trusted()
         accepted_ms = sum(covered_ms(i, start, end) for i in trusted)
         trusted_tail = [i for i in trusted if i.t_beat > end - TAIL_MS]
         tail_rr = sum(i.rr_ms for i in trusted_tail)
@@ -113,6 +137,10 @@ class BaselineCapture:
             accepted_intervals=len(trusted),
             passed=not problems,
             problems=tuple(problems),
+            hr_sd_bpm=_robust_sd(
+                [60_000 / i.rr_ms for i in self._intervals if i.clean and i.t_beat > end - TAIL_MS]
+            ),
+            rmssd_base_differences=tail.differences,
         )
 
 
@@ -128,6 +156,14 @@ def _slope_bpm_per_min(intervals: list[HrvInterval]) -> float | None:
         if x2 != x1
     ]
     return median(slopes) if slopes else None
+
+
+def _robust_sd(values: list[float]) -> float | None:
+    """1.4826 x the median absolute deviation: the standard deviation, if the data were normal."""
+    if len(values) < MIN_SLOPE_POINTS:
+        return None
+    centre = median(values)
+    return 1.4826 * median(abs(v - centre) for v in values)
 
 
 def _quality(slope: float | None) -> float:

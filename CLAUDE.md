@@ -145,6 +145,6 @@ Closed:
 
 Still open. Do not guess at these. Flag them.
 
-5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration? Needs the armband, prompt 1.0.
+5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration? Needs the armband, prompt 1.0. The same run answers two more: does it report **sensor contact** at all, and does it keep sending RR intervals while contact reads false? `bridge/psv.py` reads a sensor that reports no contact as in contact, and keeps intervals sent without contact out of heart rate and HRV.
 6. **Body-derived or designed-pose PSV?** Under body-derived values the script's regulate comes out inverted (`docs/engine-findings.md`). Decided by listening in Week B, prompt 2.5.
 7. **Where the `acbfd50` engine library gets built.** No tags exist. The only library on this machine is older and will not do.

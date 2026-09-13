@@ -232,6 +232,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > **Before building this, the contract needs a clarification** (hard rule 6), agreed with its owner: it says `hr_base` is null only until baseline has ended, and a degraded session keeps it null to the end. No field changes.
 >
 > - CLAUDE.md and docs/experience-script.md §2 say so: the capture stays 45 s, and the segment runs 45 to 57 s.
+> - `bridge/psv.py` owns the capture: `PsvModel.start_baseline(t)` when baseline begins, `PsvModel.baseline` for the result, `PsvModel.mark_baseline_degraded()` at 12 s.
 > - While holding, `segment` stays `baseline`, `segment_nominal_ms` stays 45000 and `segment_elapsed_ms` keeps counting past it. Authority stays at the baseline ceilings, so nothing acts.
 > - A result that is ready but fails the quality gate is not degraded. That is the experience script's re-seat and restart, unchanged.
 > - The hold moves load t=0 off the pulse boundary that 2.7 aligns to 45 s. See the note in 2.7.
@@ -354,6 +355,8 @@ Armband on, press start, four minutes, no manual intervention. Sound changes wit
 > Emit `task_event` messages from the task screen per docs/message-contract-v1.md section 3: split, lock, miss, abandon, with dwell_ms, split_interval_ms and a difficulty value from 0.0 to 1.0.
 >
 > On the bridge side, feed those into cognitive_load in psv.py, replacing the stub. Task events are the primary source; heart rate is secondary. Confidence on cognitive_load rises with the number of events received.
+>
+> The stub is in place: `PsvModel.add_task_event(t_engine_ms, event, difficulty, dwell_ms, split_interval_ms)` stores events, `PsvModel._task_load` returns nothing yet, and `blend_cognitive_load` already combines a `TaskLoad` with heart rate so that heart rate never adds confidence alone. Stamp each event with its arrival time on T_engine: `task_event` carries only the client's clock, and the server's `on_task_event(msg, client)` callback does not pass the arrival time yet.
 
 ## 3.3 Spectator screen, fed live
 
