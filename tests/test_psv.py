@@ -12,9 +12,10 @@ from conftest import LATENCY_MS, run_session
 
 import tools.synthetic_rr as synthetic
 from bridge import psv
+from bridge.authority import authority
 from bridge.baseline import Baseline
 from bridge.beat_scheduler import BeatScheduler, Interval, PacketResult
-from bridge.contract import CEILINGS, validate
+from bridge.contract import validate
 from bridge.psv import (
     BaselinePhase,
     Confidences,
@@ -78,7 +79,9 @@ def assert_sound(estimate: PsvEstimate, where: str = "") -> None:
 
 def state_message(estimate: PsvEstimate, segment: str) -> dict:
     confidence = estimate.confidence.to_wire()
-    authority = {d: min(c, CEILINGS[segment][d]) for d, c in confidence.items()}
+    granted = authority(
+        confidence, segment, segment_elapsed_ms=1000, segment_nominal_ms=75_000, resolve_entry=None
+    )
     signal = estimate.signal
     return {
         "type": "state",
@@ -92,7 +95,7 @@ def state_message(estimate: PsvEstimate, segment: str) -> dict:
         "segment_nominal_ms": 75_000,
         "psv": estimate.psv.to_wire(),
         "confidence": confidence,
-        "authority": authority,
+        "authority": granted,
         "hr_bpm": estimate.hr_bpm,
         "hr_base": None,
         "signal": {

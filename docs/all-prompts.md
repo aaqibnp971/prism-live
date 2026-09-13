@@ -230,7 +230,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Implement the regulate success threshold: regulated when any 20 second rolling window has mean HR at or below HR_load minus max(5 bpm, 0.5 times rise), where rise = HR_load minus HR_base.
 >
-> Emit segment, segment_elapsed_ms and segment_nominal_ms in every state message.
+> Emit segment, segment_elapsed_ms and segment_nominal_ms in every state message. Build every state message with `bridge/state.py`'s `StateStream`, one per session: it computes authority once, with `bridge/authority.py`, and remembers where resolve's taper starts.
 >
 > **End of baseline: wait for hr_base.** The baseline capture closes at 45 s, but its result arrives 3.4 to 10.2 s later, because every interval is classified 3 to 7.5 s late (docs/known-limits.md). A packet lost just after the window moves that to between 2.0 and 10.6 s. At the end of the 45 s, hold the session in baseline until `hr_base` is available, for at most 12 s, then enter load. If it is still not available at 12 s, enter load anyway and mark the baseline degraded: `signal.baseline_quality` goes out as 0.0, `hr_base` stays null, and the session log records why. The contract is frozen, so degraded is carried by those two values, not by a new field.
 >
@@ -272,7 +272,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > **The PSV feed.** Every 2 s, and at every segment boundary, the bridge sends one `prism_mood_override` from its control thread: `mode_hint` NULL, `confidence` 1.0, valence 0.5, and arousal, cognitive_load and readiness from whichever source is active:
 >
-> - `body`: `0.5 + (v − 0.5) × authority` per dimension, v being the body-derived value from psv.py and authority the value from authority.py. Authority 0 sends a neutral PSV, which the engine plays at 2,282 Hz with the pulse stem open.
+> - `body`: `0.5 + (v − 0.5) × authority` per dimension, v being the body-derived value from psv.py and authority the value the latest state message carries, from `bridge/state.py`. Read it from there; never call `bridge/authority.py` a second time. Authority 0 sends a neutral PSV, which the engine plays at 2,282 Hz with the pulse stem open.
 > - `pose`: a designed effective PSV per segment from a small table in `bridge/poses.py`, with the body's arousal allowed to move the arousal input inside a per-segment range. Starting values are in docs/engine-findings.md.
 >
 > The source must switch at runtime without a restart, from a local control in the bridge (a key in the bridge console is fine). Not from a message on the WebSocket link, which is frozen. Log every update: the source, the values sent, and what the engine's mapping will do with them (cutoff, gates, gains), from a Python mirror of the mapping in the findings, used for logging and tests only. Until the Week B decision, the `state` message keeps reporting the body-derived `psv` and `confidence` whatever the engine is being fed. Never report a pose as if it were a reading.

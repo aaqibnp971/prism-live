@@ -7,9 +7,10 @@ offline, on a simulated T_engine with 20 ms ticks and 40 ms of link latency, and
 the laptop would send through bridge/logging.py, exactly as a live session is logged.
 
 The beats are real output of bridge/beat_scheduler.py. The state messages are not real yet:
-the state machine (prompt 2.4), psv.py (2.2) and authority.py (2.3) do not exist, so the
-stand-in below makes plausible values that obey the contract. Build clients against the
-stream's shape and timing, and tune nothing to its PSV numbers. Re-record once 2.4 lands.
+the state machine (prompt 2.4) does not exist, so the stand-in below makes plausible PSV and
+confidence values that obey the contract. Authority is the real rule, bridge/authority.py, applied
+to those stand-in confidences. Build clients against the stream's shape and timing, and tune
+nothing to its PSV numbers. Re-record once 2.4 lands.
 
 Regulate deliberately runs 15 s past its nominal 75 s, so every client built against this
 meets segment_elapsed_ms > segment_nominal_ms.
@@ -25,15 +26,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from bridge.authority import authority as grant
 from bridge.beat_scheduler import BeatScheduler, Interval
-from bridge.contract import (
-    CEILINGS,
-    DIMENSIONS,
-    MIN_LEAD_MS,
-    RESOLVE_TAPER_MS,
-    STATE_INTERVAL_MS,
-    validate,
-)
+from bridge.contract import MIN_LEAD_MS, STATE_INTERVAL_MS, validate
 from bridge.hrm import parse_hrm
 from bridge.logging import SessionLog
 from tools.synthetic_rr import Profile, generate
@@ -76,14 +71,14 @@ def clamp01(x: float) -> float:
 
 
 class StandIn:
-    """Plausible state values until psv.py, authority.py and the state machine exist."""
+    """Plausible PSV and confidence values until the state machine feeds real ones."""
 
     def __init__(self) -> None:
         self.intervals: list[Interval] = []
         self.contact = True
         self.hr_base: float | None = None
         self.baseline_quality = 0.0
-        self.last_regulate_authority: dict[str, float] | None = None
+        self.last_authority: dict[str, float] | None = None
         self.resolve_entry: dict[str, float] | None = None
 
     def state(self, now: int, span: Span, start_ms: int, seq: int, session: str) -> dict:
@@ -123,16 +118,16 @@ class StandIn:
             "readiness": round(clamp01(0.5 - 0.6 * (arousal - 0.5)), 3),
         }
 
-        if segment == "resolve":
-            if self.resolve_entry is None:
-                self.resolve_entry = self.last_regulate_authority or dict.fromkeys(DIMENSIONS, 0.0)
-            taper = 1 - min(1.0, elapsed / RESOLVE_TAPER_MS)
-            ceiling = {d: self.resolve_entry[d] * taper for d in DIMENSIONS}
-        else:
-            ceiling = CEILINGS[segment]
-        authority = {d: round(min(confidence[d], ceiling[d]), 3) for d in DIMENSIONS}
-        if segment == "regulate":
-            self.last_regulate_authority = authority
+        if segment == "resolve" and self.resolve_entry is None:
+            self.resolve_entry = self.last_authority
+        authority = grant(
+            confidence,
+            segment,
+            segment_elapsed_ms=elapsed,
+            segment_nominal_ms=span.nominal_ms,
+            resolve_entry=self.resolve_entry,
+        )
+        self.last_authority = authority
 
         return {
             "type": "state",
