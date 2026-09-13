@@ -154,9 +154,10 @@ If D.1 takes more than a day, VR is out again and you fall back to Path 1 with f
 |---|---|---|
 | E.1 | **20 runs on people who do not work here** | Start recruiting in Week C, not this week |
 | E.2 | After each run, ask **"Did you notice anything change in you, and what?"** and write down the exact words | The primary success measure |
+| E.2a | After each run, also ask **"Did it feel too long?"** and write the exact words down beside the answer to E.2 | Decides whether the 4:00 run is shortened (experience script §0) |
 | E.3 | Fix whatever breaks across the 20 runs | |
 | E.4 | Noise test: 80 dB crowd noise beside the chair, full run, repeat | |
-| E.5 | One-page attendant runbook | |
+| E.5 | One-page attendant runbook | Must say: seat the visitor at the greet, so the pitch happens sitting down. That, not the armband order, buys settling time before the baseline (project plan §8) |
 | E.6 | Hygiene kit, packing list, case loadout | |
 | E.7 | Full dry run with the complete booth setup | |
 | E.8 | Consent and exclusion script finalised | See below |

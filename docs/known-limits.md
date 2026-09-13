@@ -223,8 +223,8 @@ A packet lost in the first 2 s after the window changes both ends. Over 2,000 ru
 seeds, a dropped packet at 45.0 to 47.0 s), the result came 2.0 to 10.6 s after the window, and in
 609 runs sooner than 3.4 s.
 
-Prompt 2.4 holds baseline until `hr_base` is available, for at most 12 s, then enters load, marking
-the baseline degraded if it never came. Every measured wait fits inside the 12 s.
+Prompts 2.4 and 2.7 hold baseline to 56 s, where load starts on a pulse boundary, and enter load
+degraded if `hr_base` has not come by then. Every measured wait fits inside those 11 s.
 
 `hr_base`, the slope and the quality gate all use accepted, non-bootstrap intervals, which need no
 classification. Only `rmssd_base`, and `hr_sd_bpm`, the spread `bridge/psv.py` uses for its

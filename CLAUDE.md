@@ -77,7 +77,7 @@ Four values, 0.0 to 1.0, each with its own confidence: `arousal`, `valence`, `co
 
 | Segment | Duration | Notes |
 |---|---|---|
-| baseline | 45 s capture, then held up to 12 s for hr_base (prompt 2.4) | Engine observes, does not act |
+| baseline | 45 s capture, then held to 56 s, when load starts on a pulse boundary (prompts 2.4, 2.7) | Engine observes, does not act |
 | load | 75 s fixed | Attention task. Heart rate must rise. This segment carries the demo |
 | regulate | 75 s, **adaptive**, up to +30 s | The payoff. Subtraction, not addition |
 | resolve | 45 s | Last 7 s are the heartbeat alone, then a 3 s fade to silence |

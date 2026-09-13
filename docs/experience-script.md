@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.2**
+# **Prism Live: Experience Script v1.3**
 
 &nbsp;
 
@@ -19,7 +19,7 @@ Two rules this document was written under:
 
 | Field | Value |
 | :---- | :---- |
-| Total target duration | 4:00 nominal, 4:30 hard cap |
+| Total target duration | 4:00 nominal (provisional, see the note below), **4:45 hard cap**. The worst case is a 12 s baseline hold plus regulate's 30 s extension, 4:42. Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. |
 | PSV emission cadence | 30 s nominal — **but see §6.1**, the demo runs it at 2 s |
 | Baseline window | 45 s |
 | Authority rule | authority \= min(confidence, segment\_ceiling), per dimension, no exceptions |
@@ -28,6 +28,10 @@ Two rules this document was written under:
 | **Loudness you tune at** | **Flat reference monitoring only** — open-back studio headphones or nearfields. Author and balance there, then *verify* on the XM5 with ANC on. **Never tune on the XM5**: its bass shelf flatters the per-beat layer, and anything balanced on it will be written too quiet in the sub and will vanish on reference. Attendant sets headphone volume once at setup, marks it on the laptop, and never adjusts it per person. |
 | Frame rate target | 90 fps |
 | Claims tier | Marketing. Describe what the system does, never what it achieves. |
+
+&nbsp;
+
+**Note, 13 September 2026: the 4:00 nominal duration is provisional and under review.** Four minutes may be too long for someone wearing a headset. It is decided in Week E against the 20 real runs, not on paper (`docs/solo-build-plan.md` E.2a). If it needs shortening, cut from baseline (45 s, could go to 35 s) and resolve (45 s, could go to 35 s, but the final 7 s of heartbeat alone is untouchable). **Do not shorten load or regulate.** Load raises the heart rate and regulate brings it down, and those two are what the demo proves. A shorter baseline also means re-setting its quality gate, which asks for 35 s of clean data, and the baseline visual curve, which reaches full travel only at about 45 s. With load starting on the pulse boundary at 56 s (prompt 2.7), the nominal run is already 4:11.
 
 &nbsp;
 
@@ -104,7 +108,7 @@ Timings inside a segment are written as offsets from that segment's own start (t
 
 **Note, 11 September 2026.** The audio arc in this section has not been validated against the engine's PSV-to-audio mapping. Read against that mapping (`docs/engine-findings.md`), regulate currently comes out inverted: at this section's own targets (arousal 0.32, cognitive_load 0.28, readiness 0.62) the engine sits at about 2,400 Hz with the `pulse` stem open and bed and sub thinner, not at 620 Hz with everything subtracted. The pulse and air gates are tied to the filter and to loop boundaries, so the air moves written below (a gradual fall in regulate, a tail in resolve) cannot be produced. Decision of 11 September: air gates out before pulse in one 1.5 s fade, and there is no air tail. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B. The numbers below are unchanged until then.
 
-**Note, 13 September 2026.** The baseline capture is still 45 s, but its result, and with it HR\_base, arrives 2.0 to 10.6 s after the window closes. The session now holds in baseline until HR\_base is available, for at most 12 s more, then enters load (`docs/all-prompts.md` prompt 2.4). Duration and Exit below describe the capture, and absolute times are unreliable from 0:45, not only after 2:00.
+**Note, 13 September 2026.** The baseline capture is still 45 s, but its result, and with it HR\_base, arrives 2.0 to 10.6 s after the window closes. The session now holds in baseline to 56 s, when load starts on a pulse boundary, and enters load without HR\_base if it has still not come (`docs/all-prompts.md` prompts 2.4 and 2.7). Duration and Exit below describe the capture, and absolute times are unreliable from 0:45, not only after 2:00.
 
 ### Segment 1 — BASELINE
 
@@ -351,6 +355,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.0 | 7 Sep 2026 | Initial fill of the v1 template. §6 added: engine bindings and the six gaps between this script and the engine on main. |
 | 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. §2 carries a note that the audio arc is unvalidated against the engine mapping and that regulate currently inverts. |
 | 1.2 | 13 Sep 2026 | §2 BASELINE: the visual driver is the mean confidence of the three dimensions a pulse can inform, rescaled so the range a settled baseline actually reaches maps to the full visual travel, and a note on the end-of-baseline hold for HR\_base. §2 LOAD: the RMSSD criterion needs at least 20 clean differences in each 30 s window. §2 REGULATE: no extension without HR\_base. |
+| 1.3 | 13 Sep 2026 | §0: hard cap 4:30 to 4:45, since the baseline hold and regulate's extension together reach 4:42. The 4:00 nominal is provisional until Week E, and any cut comes from baseline and resolve, never load or regulate. §2: the hold runs to the pulse boundary at 56 s. |
 
 &nbsp;
 

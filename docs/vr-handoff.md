@@ -166,7 +166,7 @@ Everything you draw is controlled by exactly seven values. You will be given ten
 
 `arousal`, `cognitive_load` and `confidence` arrive in the `state` message. `heartbeat` comes from `beat` messages.
 
-**Baseline** (45 s, and up to 12 s more while the laptop waits for a heart rate figure)
+**Baseline** (45 s, then held to 56 s while the laptop waits for a heart rate figure)
 - **baseline confidence**, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
 - compute it from each `state` message as `min(1.0, (confidence.arousal + confidence.cognitive_load + confidence.readiness) / 3 / 0.393)`
 - leave valence out: its confidence is always exactly 0.0, so a mean over all four could never get past 0.75
@@ -182,7 +182,7 @@ Draw the baseline frames against this curve, the median of 400 synthetic baselin
 | Mean of the three confidences | 0.000 | 0.030 | 0.100 | 0.137 | 0.219 | 0.298 | 0.374 | 0.393 |
 | Baseline confidence, after ÷ 0.393 | 0.00 | 0.08 | 0.25 | 0.35 | 0.56 | 0.76 | 0.95 | 1.00 |
 
-A 5 s artefact burst 30 s into the baseline leaves it around 0.58 at 45 s, and a person still settling gently around 0.77. Both are real readings, not faults. Baseline always runs a few seconds past 45 s, by up to 12 s, while the laptop waits for a heart rate figure. The value usually stays where it is then, rises after an artefact, and can dip slightly for someone still settling, so keep driving the field from it until load begins. The recorded fixture's confidences are stand-ins (§16) and will not show this curve until it is re-recorded after prompt 2.4.
+A 5 s artefact burst 30 s into the baseline leaves it around 0.58 at 45 s, and a person still settling gently around 0.77. Both are real readings, not faults. Baseline runs on to 56 s while the laptop waits for a heart rate figure; the contract allows up to 12 s over. The value usually stays where it is then, rises after an artefact, and can dip slightly for someone still settling, so keep driving the field from it until load begins. The recorded fixture's confidences are stand-ins (§16) and will not show this curve until it is re-recorded after prompt 2.4.
 
 The world **resolves as the system learns them**. That is the idea: it starts vague and becomes clear as confidence builds.
 
