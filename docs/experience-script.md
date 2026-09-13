@@ -19,7 +19,7 @@ Two rules this document was written under:
 
 | Field | Value |
 | :---- | :---- |
-| Total target duration | 4:00 nominal (provisional, see the note below), **4:45 hard cap**. The worst case is a 12 s baseline hold plus regulate's 30 s extension, 4:42. Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. |
+| Total target duration | **4:11 nominal** (provisional, see the note below), **4:45 hard cap**. 4:11 because baseline is held to 56 s, where load starts on a pulse boundary (prompt 2.7, option 1). The worst case is a 12 s baseline hold plus regulate's 30 s extension, 4:42. Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. |
 | PSV emission cadence | 30 s nominal — **but see §6.1**, the demo runs it at 2 s |
 | Baseline window | 45 s |
 | Authority rule | authority \= min(confidence, segment\_ceiling), per dimension, no exceptions |
@@ -31,7 +31,10 @@ Two rules this document was written under:
 
 &nbsp;
 
-**Note, 13 September 2026: the 4:00 nominal duration is provisional and under review.** Four minutes may be too long for someone wearing a headset. It is decided in Week E against the 20 real runs, not on paper (`docs/solo-build-plan.md` E.2a). If it needs shortening, cut from baseline (45 s, could go to 35 s) and resolve (45 s, could go to 35 s, but the final 7 s of heartbeat alone is untouchable). **Do not shorten load or regulate.** Load raises the heart rate and regulate brings it down, and those two are what the demo proves. A shorter baseline also means re-setting its quality gate, which asks for 35 s of clean data, and the baseline visual curve, which reaches full travel only at about 45 s. With load starting on the pulse boundary at 56 s (prompt 2.7), the nominal run is already 4:11.
+**Note, 13 September 2026: the nominal duration is provisional and under review.** It is now 4:11 rather than 4:00, because option 1 in prompt 2.7 holds baseline to 56 s. Four minutes or more may be too long for someone wearing a headset. It is decided in Week E against the 20 real runs, not on paper (`docs/solo-build-plan.md` E.2a). **Do not shorten load or regulate.** Load raises the heart rate and regulate brings it down, and those two are what the demo proves. If the run needs shortening:
+
+- **Resolve is the cheap cut:** 45 s down to 35 s, and the final 7 s of the heartbeat alone is untouchable.
+- **Baseline is not cheap.** Cutting its capture from 45 s to 35 s means re-setting the quality gate, which asks for 35 of 45 s of clean data. The baseline visual would also stop fully resolving: at 35 s the confidence curve reaches only about 0.76 of its rescaled travel, where it reaches 1.0 at 45 s.
 
 &nbsp;
 
