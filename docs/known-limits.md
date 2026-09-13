@@ -156,21 +156,83 @@ first the recorded real session in `tools/fixtures/` once it exists, and ideally
 dataset with real ectopic beats. At both thresholds, check the firing rate on clean stretches and
 the detection of beats known to be misplaced.
 
-### What the cleaner costs in time
-
-Classifying an interval needs a guard's length of what follows it: 3 s or 6 beats, whichever is
-longer, so 3 to 7.5 s at seated heart rates, plus the armband's reporting delay of up to 1.2 s.
-`RollingHrv.reading(now, cleaner.horizon_ms)` ends its 60 s window where classification has reached
-and reports the difference from now as `lag_ms`. The baseline result is ready once the first
-interval past the end of the 45 s is classified: in the held-out sweep, 3.4 to 10.2 s after the
-baseline ended, with a median of 8.6 s at 48 bpm and 4.3 s at 130 bpm. Whatever consumes it during
-the first seconds of load must wait for it.
-
 ### What the baseline takes from where
 
 `hr_base` and the slope behind `baseline_quality` use every accepted, non-bootstrap interval: the set
 the quality gate trusts, so `hr_base` exists whenever the gate passes, and the slope spans the whole
 window. The slope is a Theil-Sen fit, so a stray false interval cannot drag an end of it. `rmssd_base`
-uses only HRV-clean differences from the last 30 s, and is None when there are fewer than 10: after
-a few artefacts in the tail the gate can pass with no RMSSD baseline.
+uses only HRV-clean differences from the last 30 s, and is None when there are fewer than 10.
 
+---
+
+## HRV and baseline timing, for the session state machine
+
+**Handled by:** `bridge/session.py`, prompt 2.4, as rewritten on 13 September (docs/all-prompts.md).
+Three consequences of the section above.
+
+### 1. Intervals are classified 3 to 7.5 s late
+
+Classifying an interval needs a guard's length of what follows it: 3 s or 6 beats, whichever is
+longer. That is 3 s at fast rates and 7.5 s at 48 bpm, plus the armband's reporting delay of up to
+1.2 s. `RollingHrv.reading(now, cleaner.horizon_ms)` ends its 60 s window where classification has
+reached, and reports how far that is behind now as `lag_ms`.
+
+Heart rate alone does not have to wait. Whether the scheduler accepted an interval, and whether it
+was bootstrap, is known the moment the interval arrives.
+
+### 2. The baseline result arrives 3.4 to 10.2 s after the baseline window ends
+
+`BaselineCapture.ready()` is true once the first interval past the end of the 45 s has been
+classified. At 45 s there is no `hr_base`.
+
+Held-out sweep, 5,600 runs across every fault case: 3.4 to 10.2 s after the window ended, median
+6.1 s. On clean runs it depends on the rate:
+
+| Heart rate | Fastest | Median | Slowest |
+|---|---|---|---|
+| 48 bpm | 7.5 s | 8.6 s | 9.5 s |
+| 68 bpm | 5.9 s | 6.6 s | 7.5 s |
+| 95 bpm | 4.0 s | 4.7 s | 5.5 s |
+| 130 bpm | 3.5 s | 4.3 s | 5.0 s |
+
+Prompt 2.4 holds baseline until `hr_base` is available, for at most 12 s, then enters load, marking
+the baseline degraded if it never came.
+
+`hr_base`, the slope and the quality gate all use accepted, non-bootstrap intervals, which need no
+classification. Only `rmssd_base` does. `BaselineCapture` waits for all of it together. Splitting
+the two would give `hr_base` about one interval plus the reporting delay after the window ends,
+shortening the hold. That is not built and not measured.
+
+### 3. rmssd_base can be empty while the quality gate passes
+
+The gate counts accepted intervals. `rmssd_base` needs at least 10 clean successive differences in
+the last 30 s, and each artefact costs about 12 intervals. The test suite has a run where the gate
+passes and `rmssd_base` is None. In the held-out sweep, one fault 30 s into baseline left it None in
+this many of 800 runs:
+
+| Fault at 30 s | Runs with rmssd_base None |
+|---|---|
+| Missed beat | 83 |
+| Artefact burst, 2 s | 70 |
+| Artefact burst, 1 s | 44 |
+| Artefact burst, 0.5 s | 39 |
+| Doubled beat | 4 |
+| None | 0 |
+
+**When it is there, a 30 s rmssd_base can still be far off,** mostly because the guard leaves few
+differences behind. Reading ÷ true RMSSD of the same 30 s, held-out seeds, the cases above and a 5 s
+burst at 20 s, pooled:
+
+| Clean differences behind it | Runs | More than 20 % high | More than 20 % low |
+|---|---|---|---|
+| 10 to 14 | 924 | 9.7 % | 17.1 % |
+| 15 to 19 | 1,017 | 5.6 % | 8.0 % |
+| 20 to 24 | 442 | 4.8 % | 4.1 % |
+| 25 to 29 | 570 | 2.8 % | 2.3 % |
+| 30 to 39 | 1,074 | 0.7 % | 1.8 % |
+| 40 or more | 1,223 | 0.2 % | 0.4 % |
+
+This matters wherever `rmssd_base` is compared against, above all load's secondary criterion, RMSSD
+at or below 0.80 × baseline. A baseline 20 % high makes a person look activated when they were not.
+Prompt 2.4 treats `rmssd_base` as optional and skips an RMSSD criterion that has too few differences
+behind it.
