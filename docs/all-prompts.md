@@ -219,7 +219,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 
 > Build `bridge/session.py`. States: idle, baseline, load, regulate, resolve, reset.
 >
-> Durations from docs/experience-script.md: baseline 45 s fixed, load 75 s fixed, regulate 75 s adaptive with a +30 s cap, resolve 45 s.
+> Durations from docs/experience-script.md: baseline 45 s of capture plus the hold below, load 75 s fixed, regulate 75 s adaptive with a +30 s cap, resolve 45 s.
 >
 > Every segment has a hard timeout. Regulate must proceed to resolve when the cap is hit regardless of physiology. Time-driven with physiological modulation, never physiology-driven with a hopeful timer. There is a queue of people and a seven-minute cycle.
 >
@@ -227,9 +227,11 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Emit segment, segment_elapsed_ms and segment_nominal_ms in every state message.
 >
-> **End of baseline: wait for hr_base.** The baseline capture closes at 45 s, but its result arrives 3.4 to 10.2 s later, because every interval is classified 3 to 7.5 s late (docs/known-limits.md). At the end of the 45 s, hold the session in baseline until `hr_base` is available, for at most 12 s, then enter load. If it is still not available at 12 s, enter load anyway and mark the baseline degraded: `signal.baseline_quality` goes out as 0.0, `hr_base` stays null, and the session log records why. The contract is frozen, so degraded is carried by those two values, not by a new field.
+> **End of baseline: wait for hr_base.** The baseline capture closes at 45 s, but its result arrives 3.4 to 10.2 s later, because every interval is classified 3 to 7.5 s late (docs/known-limits.md). A packet lost just after the window moves that to between 2.0 and 10.6 s. At the end of the 45 s, hold the session in baseline until `hr_base` is available, for at most 12 s, then enter load. If it is still not available at 12 s, enter load anyway and mark the baseline degraded: `signal.baseline_quality` goes out as 0.0, `hr_base` stays null, and the session log records why. The contract is frozen, so degraded is carried by those two values, not by a new field.
 >
-> - This amends "baseline 45 s fixed" in CLAUDE.md and docs/experience-script.md §2. The capture stays 45 s; the segment runs 45 to 57 s.
+> **Before building this, the contract needs a clarification** (hard rule 6), agreed with its owner: it says `hr_base` is null only until baseline has ended, and a degraded session keeps it null to the end. No field changes.
+>
+> - CLAUDE.md and docs/experience-script.md §2 say so: the capture stays 45 s, and the segment runs 45 to 57 s.
 > - While holding, `segment` stays `baseline`, `segment_nominal_ms` stays 45000 and `segment_elapsed_ms` keeps counting past it. Authority stays at the baseline ceilings, so nothing acts.
 > - A result that is ready but fails the quality gate is not degraded. That is the experience script's re-seat and restart, unchanged.
 > - The hold moves load t=0 off the pulse boundary that 2.7 aligns to 45 s. See the note in 2.7.
@@ -299,7 +301,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Gate timing, from the findings: the engine opens or closes pulse and air only at that stem's next loop boundary counted from scene load (every 11 s for pulse, every 13 s for air), then fades over a fixed 1.5 s, and it takes a boundary only if the crossing PSV was consumed at least one render block before it. Build `bridge/phase.py` on the shim's `frames_rendered()`: every stem's phase, its next boundary, and when to send a gate-crossing PSV so it lands one block before a chosen boundary.
 >
-> **Undecided, 13 September: the baseline hold moves load t=0.** 2.4 holds baseline past 45 s until `hr_base` arrives, for up to 12 s, so a pulse boundary aligned to 45 s no longer lands at load t=0. The wait is never under 3.4 s, so a boundary at 45 s is always missed. Three options: align the boundary to 56 s and hold to it, which covers every measured wait (at most 10.2 s) and makes the effective cap 11 s; hold to the first boundary after `hr_base` arrives, which comes to the same thing; or let pulse open at its next boundary after load t=0, up to 11 s late, as air already does. Decide before building this.
+> **Undecided, 13 September: the baseline hold moves load t=0.** 2.4 holds baseline past 45 s until `hr_base` arrives, for up to 12 s, so a pulse boundary aligned to 45 s no longer lands at load t=0. The result needs an interval from after the window, so it can never be ready at 45 s, and a boundary there is always missed. Three options: align the boundary to 56 s and hold to it, which covers every measured wait (at most 10.6 s, with a packet lost just after the window) and makes the effective cap 11 s; hold to the first boundary after `hr_base` arrives, which comes to the same thing; or let pulse open at its next boundary after load t=0, up to 11 s late, as air already does. Decide before building this.
 >
 > Session start alignment. Amend the state machine from 2.4: after the attendant presses start, baseline begins only when the engine's phase puts a pulse boundary exactly at load t=0, 45 s later, i.e. phase mod 11 s = 10 s. That is a wait of up to 11 s; show it as a countdown on the attendant control and log it. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
 >

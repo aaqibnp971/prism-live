@@ -104,6 +104,8 @@ Timings inside a segment are written as offsets from that segment's own start (t
 
 **Note, 11 September 2026.** The audio arc in this section has not been validated against the engine's PSV-to-audio mapping. Read against that mapping (`docs/engine-findings.md`), regulate currently comes out inverted: at this section's own targets (arousal 0.32, cognitive_load 0.28, readiness 0.62) the engine sits at about 2,400 Hz with the `pulse` stem open and bed and sub thinner, not at 620 Hz with everything subtracted. The pulse and air gates are tied to the filter and to loop boundaries, so the air moves written below (a gradual fall in regulate, a tail in resolve) cannot be produced. Decision of 11 September: air gates out before pulse in one 1.5 s fade, and there is no air tail. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B. The numbers below are unchanged until then.
 
+**Note, 13 September 2026.** The baseline capture is still 45 s, but its result, and with it HR\_base, arrives 2.0 to 10.6 s after the window closes. The session now holds in baseline until HR\_base is available, for at most 12 s more, then enters load (`docs/all-prompts.md` prompt 2.4). Duration and Exit below describe the capture, and absolute times are unreliable from 0:45, not only after 2:00.
+
 ### Segment 1 — BASELINE
 
 | Field | Value |
