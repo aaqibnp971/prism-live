@@ -14,6 +14,20 @@ def capture(run, start_ms=0.0):
     return baseline.result()
 
 
+def test_the_result_as_of_a_moment_uses_only_what_had_been_classified_by_then(pipeline):
+    run = pipeline("68:60")
+    early = [i for i in run.classified if i.t_beat <= 30_000]
+    late = [i for i in run.classified if i.t_beat > 30_000]
+    baseline = BaselineCapture(0.0)
+    baseline.add(early, 33_000)
+    baseline.add(late, 48_000)
+    whole = capture(run)
+    for as_of in (33_000, 47_999):
+        so_far = baseline.result(as_of)
+        assert so_far.accepted_intervals < whole.accepted_intervals and not so_far.passed
+    assert baseline.result(48_000) == whole and baseline.result() == whole
+
+
 def test_a_settled_person_passes_with_a_flat_trustworthy_baseline(pipeline):
     run = pipeline("68:60")
     b = capture(run)

@@ -8,7 +8,7 @@ import math
 import random
 
 import pytest
-from conftest import LATENCY_MS, run_session
+from conftest import LATENCY_MS, run_session, true_hr
 
 import tools.synthetic_rr as synthetic
 from bridge import psv
@@ -570,6 +570,118 @@ def test_a_finished_baseline_cannot_be_marked_degraded(spec, faults):
     assert before.phase in (BaselinePhase.READY, BaselinePhase.FAILED)
     assert not run.model.mark_baseline_degraded()
     assert run.model.estimate(run.model._last_arrival) == before
+
+
+def test_heart_rate_over_a_window_is_the_true_rate_from_the_beats_hr_base_trusts():
+    beats = list(synthetic.true_beats(Profile.from_spec(ARC), random.Random("1:beats")))
+    model = PsvModel()
+    for now, result in packets(ARC):
+        model.on_packet(now, result)
+        if now >= 130_000:
+            break
+    window = model.heart_rate(95_000, 125_000)
+    assert window.bpm == pytest.approx(true_hr(beats, 95, 125), abs=0.3)
+    assert 29_000 <= window.covered_ms <= 30_000 and window.intervals > 30
+    # Only what has arrived: a window reaching past the newest beat covers less.
+    assert model.heart_rate(110_000, 140_000).covered_ms < 21_000  # beats up to about 130 s
+    for start, end in ((125_000, 95_000), (math.nan, 1.0), (None, 1.0), (0.0, "1")):
+        assert model.heart_rate(start, end) == psv.HeartRateWindow(None, 0.0, 0)
+    assert model.heart_rate(500_000, 530_000).bpm is None
+
+
+def test_heart_rate_takes_a_beat_at_the_window_end_but_not_at_its_start():
+    model = PsvModel()
+    for now, result in packets("68:60"):
+        model.on_packet(now, result)
+    beat = model._trusted[20][0]
+    ending = model.heart_rate(beat - 5_000, beat)
+    starting = model.heart_rate(beat, beat + 5_000)
+    assert (
+        ending.intervals + starting.intervals
+        == model.heart_rate(beat - 5_000, beat + 5_000).intervals
+    )
+    assert model.heart_rate(beat - 1, beat).intervals == 1
+    assert model.heart_rate(beat, beat + 1).intervals == 0
+    assert model.last_trusted_beat_ms == model._trusted[-1][0]
+    assert PsvModel().last_trusted_beat_ms is None
+
+
+def test_rmssd_is_known_the_moment_classification_reaches_the_window_end():
+    model = PsvModel()
+    for now, result in packets(ARC):
+        model.on_packet(now, result)
+        if now >= 100_000:
+            break
+    horizon = model._cleaner.horizon_ms
+    assert model.rmssd(horizon - 30_000, horizon) is not None
+    assert model.rmssd(horizon - 30_000, horizon + 0.001) is None
+
+
+def test_heart_rate_leaves_out_beats_sent_without_contact():
+    model = PsvModel()
+    for now, result in packets("68:60", "contact_lost@20:20"):
+        model.on_packet(now, result)
+    assert model.heart_rate(22_000, 38_000).intervals == 0
+    assert model.heart_rate(42_000, 58_000).intervals > 10
+
+
+def test_rmssd_over_a_window_waits_for_classification_to_pass_its_end():
+    model, asked = PsvModel(), []
+    for now, result in packets(ARC):
+        model.on_packet(now, result)
+        asked.append((now, model.rmssd(60_000, 90_000)))
+        if now >= 100_000:
+            break
+    horizon = model._cleaner.horizon_ms
+    assert all(r is None for now, r in asked if now < 90_000 + 3_000)
+    reading = model.rmssd(60_000, 90_000)
+    assert reading is not None and reading.differences >= 20 and reading.rmssd_ms > 0
+    assert model.rmssd(horizon - 30_000, horizon + 1) is None
+    assert model.rmssd(math.nan, 90_000) is None
+
+
+def test_closing_a_baseline_with_no_result_judges_the_gate_on_what_was_captured():
+    # Window 20 to 65 s. The armband dies 20 s in: nothing more is coming, and the gate fails.
+    model = run_session("68:40").model
+    assert model.estimate(77_000).phase is BaselinePhase.AWAITING and model.baseline is None
+    assert model.close_baseline(77_000) is BaselinePhase.FAILED
+    assert not model.baseline.passed and any("clean data" in p for p in model.baseline.problems)
+    assert model.estimate(77_000).confidence.arousal == 0.0
+    # It dies 2 s before the window closes: what was captured passes, only hr_base is missing.
+    model = run_session("68:63").model
+    assert model.close_baseline(77_000) is BaselinePhase.DEGRADED and model.baseline is None
+    assert model.estimate(77_000).phase is BaselinePhase.DEGRADED
+
+
+def test_closing_a_baseline_leaves_an_open_window_or_a_result_in_by_then_alone():
+    model = PsvModel()
+    assert model.close_baseline(10_000) is BaselinePhase.IDLE
+    model.start_baseline(0)
+    for as_of in (10_000, 44_999, math.nan, None, "77000"):
+        assert model.close_baseline(as_of) is BaselinePhase.CAPTURING
+    assert model.baseline_decided_ms is None
+    for spec, faults in ((ARC, ()), ("68:120", ("disconnect@30:12",))):
+        run = run_session(spec, *faults)
+        before, decided = run.model.estimate(262_000), run.model.baseline_decided_ms
+        assert 65_000 < decided < 77_000  # the arrival of the packet that completed it
+        assert run.model.close_baseline(decided) is before.phase
+        assert run.model.estimate(262_000) == before and run.model.baseline_decided_ms == decided
+
+
+def test_a_result_that_came_after_the_hold_ended_is_set_aside():
+    # Ready at about 71 s; the hold is taken to have ended at 67 s, before that.
+    run = run_session(ARC)
+    assert run.model.estimate(262_000).phase is BaselinePhase.READY
+    assert run.model.baseline_decided_ms > 67_000
+    assert run.model.close_baseline(67_000) is BaselinePhase.DEGRADED
+    assert run.model.baseline is None and run.model.baseline_decided_ms is None
+    assert run.model.estimate(262_000).confidence.arousal == 0.0
+    # Lost from 45 to 70 s: by 67 s too little had been classified, so the gate fails as of then.
+    run = run_session("68:120", "disconnect@45:25")
+    late = run.model.baseline_decided_ms
+    assert late > 67_000 and run.model.close_baseline(67_000) is BaselinePhase.FAILED
+    assert run.model.baseline_decided_ms == 67_000 and not run.model.baseline.passed
+    assert run.model.close_baseline(90_000) is BaselinePhase.FAILED  # decided by then: it stands
 
 
 def test_the_person_s_own_spread_sets_the_heart_rate_unit_inside_its_bounds():

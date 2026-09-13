@@ -58,7 +58,8 @@ immutable and can be handed to any thread.
     model.on_packet(now, scheduler.on_packet(now, payload))  # every packet, in order
     model.start_baseline(t)  # session.py, when the baseline segment begins
     model.baseline  # the result once it is ready: hr_base for the end-of-baseline hold
-    model.mark_baseline_degraded()  # session.py, when hr_base has not come 12 s after the end
+    model.close_baseline(cap)  # session.py, when hr_base had not come by the end of the hold
+    model.heart_rate(start, end), model.rmssd(start, end)  # session.py's windows
     model.estimate(now)  # for every state message
 """
 
@@ -71,7 +72,14 @@ from enum import Enum
 
 from bridge.baseline import Baseline, BaselineCapture
 from bridge.beat_scheduler import Interval, PacketResult, Tuning
-from bridge.hrv import MIN_DIFFERENCES, WINDOW_MS, HrvInterval, IntervalCleaner, summarise
+from bridge.hrv import (
+    MIN_DIFFERENCES,
+    WINDOW_MS,
+    HrvInterval,
+    HrvReading,
+    IntervalCleaner,
+    summarise,
+)
 
 # --- valence: not derivable from a pulse ---
 VALENCE = 0.5
@@ -196,6 +204,15 @@ class SignalQuality:
 
 
 @dataclass(frozen=True)
+class HeartRateWindow:
+    """Mean heart rate over a stretch of time, from the beats the baseline trusts."""
+
+    bpm: float | None  # None when no beat fell in the window
+    covered_ms: float  # how much of the window those beats' intervals cover
+    intervals: int
+
+
+@dataclass(frozen=True)
 class TaskLoad:
     """What task events say about cognitive load. Prompt 3.2 builds it; nothing does yet."""
 
@@ -286,6 +303,39 @@ class PsvModel:
         self._phase = BaselinePhase.DEGRADED
         return True
 
+    def close_baseline(self, as_of_ms: float) -> BaselinePhase:
+        """The end-of-baseline hold ended at as_of_ms, T_engine, with no result by then
+        (session.py). The quality gate is judged on what had been classified by as_of_ms: when that
+        fails it, the baseline FAILED, which is the re-seat path, with the problems in `baseline`;
+        when it passes, only hr_base was late, and the session is DEGRADED. A result that came
+        after as_of_ms is set aside, so the verdict does not depend on when this is called. A result
+        in by as_of_ms, a window still open at it, and a degraded or absent baseline are left alone.
+        Returns the phase."""
+        as_of, capture = _num(as_of_ms, *TIME_RANGE_MS), self._capture
+        decided = self._baseline_decided_ms
+        if (
+            as_of is None
+            or capture is None
+            or as_of < capture.end_ms
+            or self._phase is BaselinePhase.DEGRADED
+            or (decided is not None and decided <= as_of)
+        ):
+            return self._phase
+        so_far = capture.result(as_of)
+        if so_far.passed:
+            self._baseline, self._baseline_decided_ms = None, None
+            self._phase = BaselinePhase.DEGRADED
+        else:
+            self._baseline, self._baseline_decided_ms = so_far, as_of
+            self._phase = BaselinePhase.FAILED
+        return self._phase
+
+    @property
+    def baseline_decided_ms(self) -> float | None:
+        """When the baseline became READY or FAILED, T_engine: the arrival of the packet that
+        completed it, or the end of the hold that failed it. None before, and when degraded."""
+        return self._baseline_decided_ms
+
     @property
     def baseline(self) -> Baseline | None:
         """The baseline result once it is ready, passed or not; None before, and when degraded."""
@@ -307,6 +357,38 @@ class PsvModel:
             (t, event, level, _num(dwell_ms, 0.0, 60_000.0), _num(split_interval_ms, 0.0, 60_000.0))
         )
         return True
+
+    # --- windows, for the session state machine ---
+
+    def heart_rate(self, start_ms: float, end_ms: float) -> HeartRateWindow:
+        """Mean heart rate over (start_ms, end_ms]: accepted, non-bootstrap beats sent with
+        contact, the same set hr_base comes from. Known as soon as the beats arrive. Covers the
+        two minutes before the newest beat."""
+        start, end = _num(start_ms), _num(end_ms)
+        if start is None or end is None or end <= start:
+            return HeartRateWindow(None, 0.0, 0)
+        count, total, covered = 0, 0.0, 0.0
+        for t_beat, rr in self._trusted:
+            if start < t_beat <= end:
+                count += 1
+                total += rr
+                covered += max(0.0, t_beat - max(t_beat - rr, start))
+        bpm = _num(60_000 * count / total, *HR_RANGE_BPM) if count and total > 0 else None
+        return HeartRateWindow(bpm, covered, count)
+
+    @property
+    def last_trusted_beat_ms(self) -> float | None:
+        """The newest accepted, non-bootstrap beat sent with contact, T_engine; None before one."""
+        return self._trusted[-1][0] if self._trusted else None
+
+    def rmssd(self, start_ms: float, end_ms: float) -> HrvReading | None:
+        """RMSSD from HRV-clean successive differences over (start_ms, end_ms]. None until
+        classification has passed end_ms, 3 to 7.5 s after it. Covers about the last two minutes."""
+        start, end = _num(start_ms), _num(end_ms)
+        horizon = self._cleaner.horizon_ms
+        if start is None or end is None or horizon is None or horizon < end:
+            return None
+        return summarise(self._clean, start, end, MIN_DIFFERENCES)
 
     # --- the armband ---
 
@@ -361,7 +443,7 @@ class PsvModel:
         classified = self._cleaner.add(fed)
         self._clean.extend(c for c in classified if c.clean)
         if self._capture is not None:
-            self._capture.add(classified)
+            self._capture.add(classified, now)
         self._prune(now)
         self._update_heart_rate()
         self._update_baseline(now)
@@ -494,6 +576,7 @@ class PsvModel:
     def _start_session(self, capture: BaselineCapture | None) -> None:
         self._capture = capture
         self._baseline: Baseline | None = None
+        self._baseline_decided_ms: float | None = None
         self._phase = BaselinePhase.IDLE if capture is None else BaselinePhase.CAPTURING
         self._peak: float | None = None  # the highest heart rate since the baseline was ready
         self._z_rmssd: float | None = None  # held
@@ -530,8 +613,10 @@ class PsvModel:
         while self._reported and self._reported[0][0] <= now - ACCEPTED_WINDOW_MS:
             self._reported.popleft()
         if self._trusted:
+            # Two minutes, like the clean intervals. session.py looks back up to 32 s, and a stalled
+            # loop that then delivers a minute of packets at once must not prune what it reads.
             newest = self._trusted[-1][0]
-            while self._trusted and self._trusted[0][0] <= newest - WINDOW_MS:
+            while self._trusted and self._trusted[0][0] <= newest - 2 * WINDOW_MS:
                 self._trusted.popleft()
         horizon = self._cleaner.horizon_ms
         if horizon is not None:
@@ -582,7 +667,7 @@ class PsvModel:
         if self._phase not in _CAPTURE_PHASES or not self._capture.ready(now):
             return
         result = self._capture.result()
-        self._baseline = result
+        self._baseline, self._baseline_decided_ms = result, now
         usable = (
             result.passed
             and _num(result.hr_base_bpm, *HR_RANGE_BPM) is not None

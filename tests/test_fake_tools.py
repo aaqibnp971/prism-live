@@ -24,12 +24,16 @@ def fixture_records():
 
 
 def test_the_fixture_is_one_clean_session_that_obeys_the_contract():
-    records = fixture_records()
-    assert all(r["dir"] == "out" for r in records)
+    everything = fixture_records()
+    assert {r["dir"] for r in everything} == {"out", "event"}  # as the bridge logs a session
+    events = [r for r in everything if r["dir"] == "event"]
+    assert events[0]["event"] == "session_start" and events[-1]["event"] == "session_end"
+    assert events[-1]["outcome"] == "completed"
+    records = [r for r in everything if r["dir"] == "out"]
     for r in records:
         validate(r["msg"], "out")
     msgs = [r["msg"] for r in records]
-    assert len({m["session"] for m in msgs}) == 1
+    assert {m["session"] for m in msgs} == {events[0]["session"]}
     beats = [r for r in records if r["msg"]["type"] == "beat"]
     assert len(beats) > 280
     assert all(b["msg"]["quality"] == "ok" for b in beats)
@@ -40,7 +44,7 @@ def test_the_fixture_is_one_clean_session_that_obeys_the_contract():
 
 
 def test_the_fixture_walks_every_segment_and_overruns_regulate():
-    states = [r["msg"] for r in fixture_records() if r["msg"]["type"] == "state"]
+    states = [r["msg"] for r in fixture_records() if r.get("msg", {}).get("type") == "state"]
     order = []
     for s in states:
         if not order or order[-1] != s["segment"]:
@@ -57,8 +61,9 @@ def test_the_fixture_walks_every_segment_and_overruns_regulate():
 def test_the_fixture_is_what_the_recorder_makes_today(tmp_path):
     made = record(tmp_path / "fixture.jsonl", today=date(2026, 9, 13))
     assert made["path"].read_bytes() == DEFAULT_FIXTURE.read_bytes(), (
-        "tools/fixtures/synthetic-clean.jsonl no longer matches the beat scheduler or the "
-        "stand-in. If that change was deliberate, re-record: python -m tools.record_fixture"
+        "tools/fixtures/synthetic-clean.jsonl no longer matches what the bridge makes of the "
+        "synthetic armband. If that change was deliberate, re-record: "
+        "python -m tools.record_fixture"
     )
 
 

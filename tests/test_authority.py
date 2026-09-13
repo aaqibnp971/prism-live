@@ -225,9 +225,8 @@ def test_nothing_but_authority_py_holds_the_ceilings_or_the_taper():
 
 
 def test_only_the_state_message_builder_calls_authority():
-    """Everything else reads authority from the state message. The recorder's stand-in is the one
-    exception until prompt 2.4 gives it a real state stream."""
-    allowed = {ROOT / "bridge" / "state.py", ROOT / "tools" / "record_fixture.py"}
+    """Everything else reads authority from the state message."""
+    allowed = {ROOT / "bridge" / "state.py"}
     calls = re.compile(r"bridge\.authority|from bridge import .*\bauthority\b|authority\.js")
     offenders = [
         str(path.relative_to(ROOT))

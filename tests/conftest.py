@@ -1,14 +1,20 @@
 """Shared test drivers: the synthetic armband through the scheduler and the HRV cleaner, offline."""
 
+import json
 import math
 import random
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 
 import pytest
 
+from bridge import session as machine
 from bridge.beat_scheduler import BeatScheduler, Interval
+from bridge.contract import MIN_LEAD_MS, validate
 from bridge.hrm import parse_hrm
 from bridge.hrv import HrvInterval, IntervalCleaner
+from bridge.logging import SessionLog
 from bridge.psv import PsvEstimate, PsvModel
 from tools.synthetic_rr import Beat, Fault, Profile, apply_beat_faults, generate, true_beats
 
@@ -151,3 +157,114 @@ def run_session(
 @pytest.fixture
 def session():
     return run_session
+
+
+TODAY = date(2026, 9, 13)
+
+
+class PinnedLog(SessionLog):
+    """Every session is dated TODAY, including those the state machine opens itself."""
+
+    def start_session(self, today: date | None = None) -> str:
+        return super().start_session(today or TODAY)
+
+
+@dataclass
+class Live:
+    """A synthetic armband through scheduler, PsvModel and a real Session, as the bridge runs it."""
+
+    session: machine.Session
+    model: PsvModel
+    sent: list[dict]  # every message published, in order
+    log_dir: Path
+    refusals: list[tuple[float, str | None]]  # (t_s, what start returned)
+
+    def states(self) -> list[dict]:
+        return [m for m in self.sent if m["type"] == "state"]
+
+    def beats(self) -> list[dict]:
+        return [m for m in self.sent if m["type"] == "beat"]
+
+    def records(self) -> list[tuple[str, dict]]:
+        """Every log line, as (file's session id, record), files in id order."""
+        out = []
+        for path in sorted(self.log_dir.glob("S-*.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                out.append((path.stem, json.loads(line)))
+        return out
+
+    def events(self, name: str) -> list[dict]:
+        return [r for _, r in self.records() if r.get("event") == name]
+
+    def segments(self) -> list[tuple[str, float]]:
+        """(segment, start on T_engine) for each segment entered, from the session log."""
+        return [(e["segment"], e["at_ms"]) for e in self.events("segment")]
+
+
+def run_live(
+    spec: str,
+    *faults: str,
+    log_dir: Path,
+    seed: int = 1,
+    start_s: tuple[float, ...] = (10.0,),
+    stop_s: tuple[float, ...] = (),
+    until_s: float | None = None,
+    tick_ms: float = 100.0,
+    tick_jitter_ms: float = 0.0,
+    skip_s: tuple[tuple[float, float], ...] = (),
+    timings: machine.Timings | None = None,
+) -> Live:
+    """Packets reach the scheduler and the model at their arrival, in order. The session ticks every
+    tick_ms, late by up to tick_jitter_ms, and not at all inside each (from, to) of skip_s. The
+    attendant presses start at each of start_s and stop at each of stop_s."""
+    profile = Profile.from_spec(spec)
+    notes = list(generate(profile, [Fault.from_spec(f) for f in faults], seed))
+    end_ms = (profile.duration_s if until_s is None else until_s) * 1000
+    clock = [0.0]
+    log = PinnedLog(log_dir, clock=lambda: clock[0])
+    log.start_session()
+    scheduler, model, sent, refusals = BeatScheduler(), PsvModel(), [], []
+
+    def publish(msg: dict) -> None:
+        validate(msg, "out")
+        if msg["type"] == "beat" and msg["quality"] != "rejected":
+            assert msg["t_play"] - clock[0] >= MIN_LEAD_MS - 1, msg
+        sent.append(msg)
+        log.message("out", msg, t_engine=clock[0])
+
+    session = machine.Session(model, log, publish, now_ms=0.0, timings=timings)
+    rng = random.Random(f"{seed}:ticks")
+    presses = sorted([(t * 1000, "start") for t in start_s] + [(t * 1000, "stop") for t in stop_s])
+    k, n = 0, 0
+    while n * tick_ms <= end_ms:
+        now = n * tick_ms + rng.uniform(0.0, tick_jitter_ms)
+        n += 1
+        if any(a * 1000 <= now < b * 1000 for a, b in skip_s):
+            continue
+        while presses and presses[0][0] <= now:
+            at, press = presses.pop(0)
+            while k < len(notes) and notes[k].t_s * 1000 + LATENCY_MS <= at:
+                k = _deliver(notes, k, scheduler, model, session, publish, clock)
+            clock[0] = max(clock[0], at)
+            if press == "start":
+                refusals.append((at / 1000, session.start(at)))
+            else:
+                session.stop(at)
+        while k < len(notes) and notes[k].t_s * 1000 + LATENCY_MS <= now:
+            k = _deliver(notes, k, scheduler, model, session, publish, clock)
+        clock[0] = max(clock[0], now)
+        for event in scheduler.tick(now):
+            publish(session.beat_message(event))
+        session.tick(now)
+    log.close()
+    return Live(session, model, sent, log_dir, refusals)
+
+
+def _deliver(notes, k, scheduler, model, session, publish, clock) -> int:
+    arrival = notes[k].t_s * 1000 + LATENCY_MS
+    clock[0] = max(clock[0], arrival)
+    result = scheduler.on_packet(arrival, notes[k].payload)
+    model.on_packet(arrival, result)
+    for event in result.events:
+        publish(session.beat_message(event))
+    return k + 1

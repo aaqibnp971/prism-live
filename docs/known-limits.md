@@ -268,6 +268,52 @@ windows has fewer than 20 clean differences.
 
 ---
 
+## The session state machine's own numbers
+
+**Handled by:** `bridge/session.py`, prompt 2.4. No document set these; each is provisional until
+real sessions say otherwise.
+
+- **HR_load needs 22.5 of its 30 s covered** by accepted beats, the same three quarters a regulate
+  window needs (15 of 20 s). With less, there is no threshold, and regulate runs a plain 75 s, as
+  after a degraded baseline. An error in HR_load moves the threshold one for one on its 5 bpm floor.
+- **HR_load is taken 2 s into regulate.** At load's last instant, the beats of its last second or
+  so have not arrived.
+- **Each regulate window is judged once, at the first tick past its end**, on a 500 ms grid. The
+  beats of its last second have mostly not arrived by then, so a clean window covers about 18 of
+  its 20 s when judged. A beat arriving later never changes a verdict.
+- **An extension ends "unjudged" 6.2 s after the last accepted beat**: the scheduler's 5 s grace
+  plus its 1.2 s reporting lag. A signal lost mid-regulate and back by 75 s still extends.
+- **Start is refused when no accepted beat has come in the last 6.2 s.**
+
+**Boundaries do not depend on when the loop ticks.** Load starts at the arrival of the packet that
+completed the baseline, and the end of the hold is judged on what had been classified by then,
+whenever the tick that notices comes. Every fixed boundary is its deadline. A stalled loop catches
+them all up, in order. Two verdicts do still depend on the tick:
+
+- A window judged after a stall has all of its last second's beats, where a punctual tick had
+  most of them. Near the threshold that can move the regulated moment by a grid step or two.
+- A signal lost and back again within one stall is never seen as lost.
+
+Heart rate windows reach back two minutes from the newest beat, so a stall of up to about a minute
+and a half keeps HR_load and every regulate window.
+
+**A hold that ends with no result judges the quality gate on what has been classified,** and the
+last guard's length before the armband went quiet never is. So an armband lost for good just before
+the window closes fails the gate, the re-seat path, where the same data would have passed with the
+tail classified. Synthetic armband, no faults, seeds 1 to 10, lost for good this long before the
+45 s window closed, what the session did at the end of the 12 s hold:
+
+| Heart rate | Fails the gate | Enters load degraded | Either |
+|---|---|---|---|
+| 48 bpm | 2 s or more before | at the close | 1 s before: 3 of 10 fail |
+| 68 bpm | 5 s or more before | 3 s or less | 4 s before: 7 of 10 fail |
+| 95 bpm | 7 s or more before | 5 s or less | 6 s before: 9 of 10 fail |
+
+An armband that comes back after the hold still gets that verdict. An armband lost for good gets no
+useful session either way, and the re-seat is the booth's quicker path.
+
+---
+
 ## The PSV, for Week B and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns

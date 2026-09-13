@@ -71,6 +71,11 @@ class SessionLog:
             return session
         raise RuntimeError(f"all 9999 session ids for {stamp} are taken in {self.directory}")
 
+    @property
+    def is_open(self) -> bool:
+        """Whether a session's file is open. After close, session still names the last one."""
+        return self._file is not None
+
     def message(
         self, direction: str, msg: dict, client: str | None = None, t_engine: float | None = None
     ) -> None:

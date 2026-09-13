@@ -5,7 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-It follows contract v1.3.
+It follows contract v1.4.
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ MIN_LEAD_MS = 300  # §2: t_play is at least this far in the future when a beat 
 STATE_INTERVAL_MS = 2000
 
 SEGMENTS = ("idle", "baseline", "load", "regulate", "resolve", "reset")
+# §2: how far past segment_nominal_ms a segment can run. Baseline waits for hr_base (v1.3);
+# regulate extends while its threshold has not been met.
+BASELINE_OVERRUN_MS = 12_000
+REGULATE_OVERRUN_MS = 30_000
 QUALITIES = ("ok", "interpolated", "rejected")
 TASK_EVENTS = ("split", "lock", "miss", "abandon")
 CLIENTS = ("task-screen", "spectator", "quest")

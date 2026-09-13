@@ -182,7 +182,7 @@ Draw the baseline frames against this curve, the median of 400 synthetic baselin
 | Mean of the three confidences | 0.000 | 0.030 | 0.100 | 0.137 | 0.219 | 0.298 | 0.374 | 0.393 |
 | Baseline confidence, after ÷ 0.393 | 0.00 | 0.08 | 0.25 | 0.35 | 0.56 | 0.76 | 0.95 | 1.00 |
 
-A 5 s artefact burst 30 s into the baseline leaves it around 0.58 at 45 s, and a person still settling gently around 0.77. Both are real readings, not faults. Baseline runs on to 56 s while the laptop waits for a heart rate figure; the contract allows up to 12 s over. The value usually stays where it is then, rises after an artefact, and can dip slightly for someone still settling, so keep driving the field from it until load begins. The recorded fixture's confidences are stand-ins (§16) and will not show this curve until it is re-recorded after prompt 2.4.
+A 5 s artefact burst 30 s into the baseline leaves it around 0.58 at 45 s, and a person still settling gently around 0.77. Both are real readings, not faults. Baseline runs on to 56 s while the laptop waits for a heart rate figure; the contract allows up to 12 s over. The value usually stays where it is then, rises after an artefact, and can dip slightly for someone still settling, so keep driving the field from it until load begins. The recorded fixture (§16) shows this curve, from a synthetic heart.
 
 The world **resolves as the system learns them**. That is the idea: it starts vague and becomes clear as confidence builds.
 
@@ -341,7 +341,7 @@ You will be given **`fake_sender`**, a small program that replays a recorded ses
 
 Build everything against that. You do not need the armband, the laptop, the Prism Engine, or Ridhwan's code. The two halves meet once, near the end.
 
-**The recorded session's numbers are placeholders.** The `psv`, `confidence` and `authority` values in its `state` messages are stand-ins until prompt 2.4, when the real inference is in on the laptop side. Build against the stream's shape and timing: the segment sequence, the 2-second state cadence, and beats scheduled ahead at `t_play`. Do not tune anything to its numbers, and expect a re-recorded session once the real inference is in.
+**The recorded session's heart is synthetic.** Since prompt 2.4 every value in it is real output of the laptop side: beats, segments, `psv`, `confidence` and `authority`. The heart it reads is a generated one, though, with no breathing and no real person behind it. Build against the stream's shape and timing: the segment sequence, the 2-second state cadence, beats scheduled ahead at `t_play`, and baseline and regulate both running past their nominal lengths. Do not tune anything to its numbers. A session recorded from the armband will follow.
 
 ## 17. Threading, which will catch you
 
@@ -356,7 +356,7 @@ For the WebSocket itself, `NativeWebSocket` is the usual choice and works on Que
 The laptop owns segment, timing and authority. You display what you are told.
 
 Specifically:
-- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, and baseline can run 12 seconds over, so a local clock will be wrong
+- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, and baseline can run 12 seconds over, so a local clock will be wrong. Idle has no length and sends a nominal of 0; reset lasts 20 seconds after a full session and 3 seconds after a stop
 - If the connection drops, **freeze on the last known state** and show a visible marker. Do not improvise, do not carry on, do not guess
 
 ## 19. Structure the code so the field is portable

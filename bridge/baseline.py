@@ -24,12 +24,14 @@ intervals the scheduler accepted, not the stricter HRV-clean set: a single artef
 about 12 intervals, and that must not send a well-seated armband back.
 
     baseline = BaselineCapture(start_ms=t_engine_at_baseline_start)
-    baseline.add(cleaner.add(result.intervals))  # the same classified stream HRV uses
+    baseline.add(cleaner.add(result.intervals), now)  # the classified stream HRV uses, and when
     if baseline.ready(now): baseline.result()
+    baseline.result(as_of_ms=t)  # from only what had been classified by t
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from statistics import median
@@ -75,14 +77,17 @@ class BaselineCapture:
         self.start_ms = start_ms
         self.end_ms = start_ms + duration_ms
         self._intervals: list[HrvInterval] = []
+        self._classified_ms: list[float] = []  # when each was classified, if the caller said
         self._classified_past_end = False
 
-    def add(self, intervals: Iterable[HrvInterval]) -> None:
+    def add(self, intervals: Iterable[HrvInterval], classified_ms: float = -math.inf) -> None:
+        """Intervals as the cleaner classifies them, and when that was (T_engine)."""
         for interval in intervals:
             if interval.t_beat > self.end_ms:
                 self._classified_past_end = True
             elif interval.t_beat > self.start_ms:
                 self._intervals.append(interval)
+                self._classified_ms.append(classified_ms)
 
     def ready(self, now_ms: float) -> bool:
         """True once every interval inside the window has been classified."""
@@ -103,13 +108,18 @@ class BaselineCapture:
         """How many differences rmssd_base would rest on, from what has been classified so far."""
         return summarise(self._intervals, self.end_ms - TAIL_MS, self.end_ms).differences
 
-    def _trusted(self) -> list[HrvInterval]:
-        return [i for i in self._intervals if i.accepted and not i.bootstrap]
+    def _trusted(self, intervals: list[HrvInterval] | None = None) -> list[HrvInterval]:
+        chosen = self._intervals if intervals is None else intervals
+        return [i for i in chosen if i.accepted and not i.bootstrap]
 
-    def result(self) -> Baseline:
+    def result(self, as_of_ms: float = math.inf) -> Baseline:
+        """The result from every interval classified by as_of_ms: all of them by default."""
         start, end = self.start_ms, self.end_ms
-        tail = summarise(self._intervals, end - TAIL_MS, end, MIN_DIFFERENCES)
-        trusted = self._trusted()
+        intervals = [
+            i for i, at in zip(self._intervals, self._classified_ms, strict=True) if at <= as_of_ms
+        ]
+        tail = summarise(intervals, end - TAIL_MS, end, MIN_DIFFERENCES)
+        trusted = self._trusted(intervals)
         accepted_ms = sum(covered_ms(i, start, end) for i in trusted)
         trusted_tail = [i for i in trusted if i.t_beat > end - TAIL_MS]
         tail_rr = sum(i.rr_ms for i in trusted_tail)
@@ -138,7 +148,7 @@ class BaselineCapture:
             passed=not problems,
             problems=tuple(problems),
             hr_sd_bpm=_robust_sd(
-                [60_000 / i.rr_ms for i in self._intervals if i.clean and i.t_beat > end - TAIL_MS]
+                [60_000 / i.rr_ms for i in intervals if i.clean and i.t_beat > end - TAIL_MS]
             ),
             rmssd_base_differences=tail.differences,
         )

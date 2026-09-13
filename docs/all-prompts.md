@@ -313,6 +313,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Session start alignment. Amend the state machine from 2.4: after the attendant presses start, baseline begins only when the engine's phase puts a pulse boundary exactly at load t=0, 56 s later, i.e. phase mod 11 s = 10 s. That is the same condition that would put one at 45 s, since 56 = 45 + 11. That is a wait of up to 11 s; show it as a countdown on the attendant control and log it. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
 >
+> `bridge/session.py` already has the hold half: with `Timings(hold_ms=11_000, hold_to_end=True)`, 56 s after baseline begins the session enters load, ready or degraded, or goes to reset if the quality gate, judged on what had been classified by then, fails. The wait before baseline begins is not built; add it to the machine, and give `Session.schedule` the aligned start.
+>
 > The air moves in the script have been re-scripted to fit the engine: air gates out before pulse, in one 1.5 s fade, and there is no air tail in resolve. Do not try to build either.
 >
 > Tests, offline through the shim with the PSV log of a fixture session: pulse is silent for the whole of baseline and opens within one block of the aligned boundary at load t=0; pulse is gone within 1.5 s of its first boundary after the regulate PSV; air never sounds while pulse is closed; a jittering input inside the hysteresis band never flips a gate; loop phase is continuous from the first block to the last, checked by cross-correlating the bed in the output against the stem file at the end of the session.
@@ -405,6 +407,8 @@ Armband on, press start, four minutes, no manual intervention. Sound changes wit
 ## 3.6 Attendant controls and crash recovery
 
 > Single-button start, stop and reset for the attendant.
+>
+> `bridge/session.py` has the hooks: `start(now)` returns why it refused (`running`, `resetting`, `no_signal`), `stop(now)` ends a run through a 3 s reset, and `schedule`, `signal_lost` and `regulate_result` are there for the console.
 >
 > Crash recovery: if any component dies, the attendant is back up in under 30 seconds. That means every process restarts clean, reconnects, and no manual steps.
 >
