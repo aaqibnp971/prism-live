@@ -15,13 +15,12 @@ whichever reaches further. Suspect means any of:
 - an interval the scheduler rejected. Artefacts come in bursts, and the false intervals that
   pass the scheduler's median test sit among ones that fail it, sometimes several beats away.
   Nothing in a false interval's value gives it away; being near a rejection does.
-- a misplaced beat: a beat detected late or early leaves a long interval and a short one that
-  sum to about two normal intervals, both inside the scheduler's band, so nothing is rejected.
-  It is caught by its shape: one interval on each side of the local median, a sum within 5 % of
-  twice the median, and a swing between the two of more than 7 quartile deviations of this
-  person's recent successive differences and more than 10 % of the median. The idea follows
-  Lipponen and Tarvainen (2019), who use 5.2; against the synthetic armband that fired in 19 % of
-  clean 90 s runs, and 7 with the floor fires in 3 %.
+- a misplaced beat: a beat detected late or early leaves a long interval and a short one, both
+  inside the scheduler's band, so nothing is rejected. It is caught by its shape, with the
+  ectopic rule of Lipponen and Tarvainen (2019): a successive difference larger than a threshold
+  set by this person's recent differences, flanked by differences of the opposite sign that are
+  large enough relative to it. The threshold is 7 quartile deviations where they use 5.2; the
+  reason and the measurements are in docs/known-limits.md.
 - a lost or late packet. The packet that went missing may have held a burst's rejections, and
   nothing on either side can prove it did not, so a gap is guarded on both sides.
 
@@ -48,7 +47,7 @@ import math
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
-from statistics import median, quantiles
+from statistics import quantiles
 
 from bridge.beat_scheduler import Interval
 
@@ -57,13 +56,12 @@ MAX_DIFF_FRACTION = 0.2  # a successive difference beyond this share of the earl
 MIN_DIFFERENCES = 10  # fewer than this and RMSSD is too noisy to report
 GUARD_MS = 3_000  # nothing suspect this close to a clean interval, before or after,
 GUARD_BEATS = 6  # nor this many intervals from it, whichever reaches further
-# The misplaced-beat test.
-REFERENCE_BEATS = 8  # the local median is taken over this many recent accepted intervals
-SPREAD_DIFFS = 32  # this person's recent successive differences, for the swing threshold
+# The misplaced-beat test: the ectopic rule of Lipponen and Tarvainen (2019).
+SPREAD_DIFFS = 32  # this person's recent successive differences set the threshold
 MIN_SPREAD_DIFFS = 8  # the test waits until it has this many
-SWING_QUARTILE_DEVIATIONS = 7.0
-MIN_SWING_FRACTION = 0.10  # of the local median, however steady the run has been
-PAIR_SUM_FRACTION = 0.05  # the pair sums to twice the median within this share of it
+ECTOPIC_QUARTILE_DEVIATIONS = 7.0  # they use 5.2; docs/known-limits.md says why this differs
+ECTOPIC_C1 = 0.13  # their decision boundary, unchanged
+ECTOPIC_C2 = 0.17
 
 
 @dataclass(frozen=True)
@@ -135,12 +133,12 @@ class IntervalCleaner:
     def _start_run(self) -> None:
         self._last_suspect = -math.inf  # t_beat of the latest suspect in this run
         self._beats_since_suspect = math.inf  # intervals reported since then
-        self._last_reported: Interval | None = None
-        self._accepted_rr: deque[float] = deque(maxlen=REFERENCE_BEATS)
+        self._reported: deque[Interval] = deque(maxlen=3)  # the latest in this run, oldest first
         self._diffs: deque[float] = deque(maxlen=SPREAD_DIFFS)
+        self._newest_diff_kept = False  # whether _diffs ends with the latest interval's difference
 
     def _gap(self, interval: Interval, classified: list[HrvInterval]) -> None:
-        had_run = self._last_reported is not None
+        had_run = bool(self._reported)
         if had_run and self._pending:
             self._mark_before(self._pending[-1][0].t_beat)
         while self._pending:
@@ -163,32 +161,43 @@ class IntervalCleaner:
                 entry[1] = True
 
     def _misplaced(self, interval: Interval) -> bool:
-        """The second interval of a long-short or short-long pair from one misplaced beat."""
-        before = self._last_reported
-        if (
-            not interval.accepted
-            or not interval.contiguous
-            or before is None
-            or not before.accepted
-            or len(self._diffs) < MIN_SPREAD_DIFFS
-        ):
+        """Whether the interval reported just before this one came from a misplaced beat.
+
+        Lipponen and Tarvainen's ectopic rule, on successive differences normalised by the
+        threshold: the middle one beyond 1, and its neighbours of the opposite sign by at least
+        C1 times it plus C2. A late beat reads long then short: +, then a large -, then +.
+        """
+        run = self._reported
+        if len(run) < 2 or not _chained(run[-2], run[-1]) or not _chained(run[-1], interval):
             return False
-        centre = median(self._accepted_rr)
-        q1, _, q3 = quantiles(self._diffs, n=4)
-        threshold = max(SWING_QUARTILE_DEVIATIONS * (q3 - q1) / 2, MIN_SWING_FRACTION * centre)
-        return (
-            abs(interval.rr_ms - before.rr_ms) > threshold
-            and (before.rr_ms - centre) * (interval.rr_ms - centre) < 0
-            and abs(before.rr_ms + interval.rr_ms - 2 * centre) <= PAIR_SUM_FRACTION * centre
-        )
+        spread = list(self._diffs)
+        if self._newest_diff_kept:
+            spread.pop()  # the difference under test does not set its own threshold
+        if len(spread) < MIN_SPREAD_DIFFS:
+            return False
+        q1, _, q3 = quantiles(spread, n=4)
+        threshold = ECTOPIC_QUARTILE_DEVIATIONS * (q3 - q1) / 2
+        if threshold <= 0:
+            return False
+        middle = (run[-1].rr_ms - run[-2].rr_ms) / threshold
+        neighbours = [(interval.rr_ms - run[-1].rr_ms) / threshold]
+        if len(run) == 3 and _chained(run[-3], run[-2]):
+            neighbours.append((run[-2].rr_ms - run[-3].rr_ms) / threshold)
+        if middle > 1:
+            return max(neighbours) < -ECTOPIC_C1 * middle - ECTOPIC_C2
+        if middle < -1:
+            return min(neighbours) > -ECTOPIC_C1 * middle + ECTOPIC_C2
+        return False
 
     def _remember(self, interval: Interval, misplaced: bool) -> None:
-        before = self._last_reported
-        if interval.accepted:
-            if before is not None and before.accepted and not misplaced:
-                self._diffs.append(interval.rr_ms - before.rr_ms)
-            self._accepted_rr.append(interval.rr_ms)
-        self._last_reported = interval
+        before = self._reported[-1] if self._reported else None
+        if misplaced and self._newest_diff_kept:
+            self._diffs.pop()  # the misplaced interval's own difference
+        self._newest_diff_kept = False
+        if interval.accepted and before is not None and before.accepted and not misplaced:
+            self._diffs.append(interval.rr_ms - before.rr_ms)
+            self._newest_diff_kept = True
+        self._reported.append(interval)
 
     def _seen_past_guard(self) -> bool:
         # Strict on time and inclusive on beats, so nothing still ahead could mark the oldest.
@@ -210,6 +219,11 @@ class IntervalCleaner:
         return HrvInterval(
             interval.t_beat, interval.rr_ms, interval.accepted, interval.bootstrap, clean, diff
         )
+
+
+def _chained(before: Interval, interval: Interval) -> bool:
+    """Two accepted intervals with no lost packet between them."""
+    return before.accepted and interval.accepted and interval.contiguous
 
 
 class RollingHrv:

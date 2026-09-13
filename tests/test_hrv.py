@@ -78,6 +78,9 @@ def test_the_window_rolls(pipeline):
         ("55:80", ("artefact_burst@40", "dropped_packet@41.5"), 202),
         ("68:90", ("artefact_burst@40", "disconnect@42:3"), 1),
         ("50:80", ("artefact_burst@40:1",), 1),
+        # One beat detected late and no rejection anywhere: rmssd_base read 62 % high with the
+        # earlier pair test, which wanted the pair to sum to twice the local median.
+        ("60:60", ("artefact_burst@35:0.5",), 4),
     ],
 )
 def test_no_false_data_reaches_hrv(spec, faults, seed):
@@ -238,6 +241,15 @@ def test_a_misplaced_beat_is_suspect_without_any_rejection():
     late = [interval(1180, 20_000), interval(820, 20_820)]  # one beat detected 180 ms late
     more = [interval(1000, 20_820 + 1000 * k) for k in range(1, 12)]
     got = classify_all(IntervalCleaner(), steady + late + more)
-    suspect = [i for i in got if not i.clean]
-    assert suspect and all(abs(i.t_beat - 20_400) <= 7_000 for i in suspect)
+    suspect = [i.t_beat for i in got if not i.clean]
+    assert {20_000, 20_820} <= set(suspect)  # both halves of the pair
+    assert min(suspect) >= 20_000 - 6 * 1000 and max(suspect) <= 20_820 + 7 * 1000
     assert all(i.accepted for i in got)
+
+
+def test_the_ectopic_rule_leaves_a_large_but_ordinary_swing_alone():
+    """A big step that does not come back is a change of rate, not a misplaced beat."""
+    steady = [interval(1000 + (7 if k % 2 else -7), 1000 * k) for k in range(1, 20)]
+    step = [interval(1150 + (7 if k % 2 else -7), 19_000 + 1150 * k) for k in range(1, 14)]
+    got = classify_all(IntervalCleaner(), steady + step)
+    assert all(i.clean for i in got)

@@ -61,6 +61,14 @@ def test_an_artefact_burst_does_not_move_the_baseline(pipeline):
     assert burst.accepted_ms < clean.accepted_ms
 
 
+def test_one_misplaced_beat_in_the_tail_does_not_inflate_rmssd_base(pipeline):
+    """No rejection anywhere. The earlier pair test let this through at 57.9 ms, 62 % high."""
+    clean = capture(pipeline("60:60", seed=4))
+    late = capture(pipeline("60:60", "artefact_burst@35:0.5", seed=4))
+    assert late.passed and late.rmssd_base_ms is not None
+    assert late.rmssd_base_ms < 1.1 * clean.rmssd_base_ms
+
+
 @pytest.mark.parametrize(
     ("spec", "faults", "problem"),
     [
