@@ -29,13 +29,13 @@ that happens to land inside that band is accepted.
   At 55 bpm its last false interval can land more than 3 s after its last rejection.
 - A single beat detected late leaves a long interval and a short one, both inside the band, with no
   rejection anywhere. In one run (`60:60`, `artefact_burst@35:0.5`, seed 4) that put rmssd_base at
-  **57.9 ms against a true 35.6 ms, 62 % high**, and the quality gate passed.
+  **57.9 ms against a true 35.6 ms, 62.5 % high**, and the quality gate passed.
 
 **Handled:** nothing suspect may lie within 3 s or 6 beats of a clean interval, either side,
 whichever reaches further. Suspect is a rejected interval, or a misplaced beat found by the ectopic
 rule of Lipponen and Tarvainen (2019), described under "Deviation from the published method" below.
 A guard of 3 s alone let false intervals through at slow rates, and 4 beats let some through. The
-62 % run above now gives 29.3 ms: nothing false gets through, and the guard's data loss leaves it
+run above now gives 29.3 ms: nothing false gets through, and the guard's data loss leaves it
 noisy rather than inflated.
 
 ### 2. Accepted intervals are not always adjacent
@@ -79,11 +79,11 @@ Held-out sweep: 100 seeds never used for tuning, 8 rates from 48 to 130 bpm, 800
 | Case | Runs with any false data in HRV | RMSSD over 60 s, error in 95 % of runs | Worst run |
 |---|---|---|---|
 | Artefact burst, 5 s | 0 | 12.7 % | 28.9 % |
-| Artefact burst with a lost packet | 0 | 12.8 % | 28.9 % |
-| Doubled beat | 0 | 10.5 % | 30.3 % |
+| Artefact burst with a lost packet | 0 | 13.2 % | 28.9 % |
+| Doubled beat | 0 | 10.5 % | 26.1 % |
 | Missed beat | 0 | 10.9 % | 27.4 % |
-| Artefact burst, 1 s | 21 (2.6 %) | 11.5 % | 45.3 % |
-| Artefact burst, 0.5 s | 55 (6.9 %) | 11.9 % | 28.7 % |
+| Artefact burst, 1 s | 22 (2.8 %) | 11.5 % | 45.3 % |
+| Artefact burst, 0.5 s | 58 (7.3 %) | 11.9 % | 28.7 % |
 | No fault | 0 | 1.6 % | 11.9 % |
 
 Error is against the true RMSSD of the same 60 s. With no leak, most of it is the cost of losing data:
@@ -95,10 +95,9 @@ The leaks are false intervals that no rule on intervals can tell from real ones:
 - **a burst the scheduler accepts whole**, with no rejection to key the guard on. Examples found
   were at 48 and 52 bpm, where the ±20 % band is widest in milliseconds;
 - **a misplaced beat too small for the ectopic rule**, whose differences stay under the threshold
-  set by the person's own recent differences. The ones inspected at 50 bpm were misplaced by 50 to
-  100 ms.
+  set by the person's own recent differences.
 
-The ectopic rule fired on clean runs in 3 of 800, each costing about 13 intervals. All of this is
+The ectopic rule fired on clean runs in 6 of 800, each costing about 13 intervals. All of this is
 measured on the synthetic armband; see the next section for why that matters.
 
 ### Deviation from the published method: the ectopic threshold
@@ -108,53 +107,70 @@ the published method, and what is still needed before it can be relied on.
 
 **What the method says.** Lipponen and Tarvainen (2019), *A robust algorithm for heart rate
 variability time series artefact correction using novel beat classification*, J Med Eng Technol
-43(3):173-181. Successive RR differences are divided by a threshold of **5.2 quartile deviations**,
-QD = (Q3 − Q1) / 2, taken over 91 beats around the beat. A beat is ectopic when its normalised
-difference is beyond ±1 and its neighbouring differences, of the opposite sign, cross a boundary
-set by c1 = 0.13 and c2 = 0.17. These constants were checked against NeuroKit2's implementation of
-the method (`signal_fixpeaks`), not against the paper's text.
+43(3):173-181. Successive RR differences (dRR) are divided by a threshold of **5.2 quartile
+deviations of their sizes**: QD = (Q3 − Q1) / 2 of |dRR|, taken over 91 beats around the beat. A
+beat is ectopic when its normalised difference is beyond ±1 and its neighbouring differences, of
+the opposite sign, cross a boundary set by c1 = 0.13 and c2 = 0.17. These details were checked
+against NeuroKit2's implementation of the method (`signal_fixpeaks`, whose threshold takes the
+quartiles of `np.abs(drrs)`), not against the paper's text.
 
-**What prism-live does.** The ectopic rule, with c1 and c2 unchanged, and four differences:
+**What prism-live does.** The ectopic rule on the same |dRR| scale, with c1 and c2 unchanged, and
+four differences:
 
-1. The threshold is **7 quartile deviations**, not 5.2.
-2. The quartiles come from the person's last 32 successive differences before the beat, not 91
-   around it. The cleaner cannot wait 45 beats.
+1. The threshold is **12 quartile deviations**, not 5.2.
+2. The quartiles come from the sizes of the person's last 32 successive differences before the
+   beat, not 91 around it. The cleaner cannot wait 45 beats.
 3. The rest of their classifier is not used. It finds long, short, missed and extra beats against a
    median-filtered series. The scheduler's 20 % median filter rejects most of those first, and the
    guard keeps the data around a rejection out. How many it misses is not measured.
 4. Nothing is corrected or interpolated. A flagged beat is treated as a rejection, and its guard
    removes the data around it.
 
-**Why 7.** A false detection on clean data is not neutral. It removes about 13 real intervals.
+**Why 12.** A false detection on clean data is not neutral. It removes about 13 real intervals.
 Because the rule picks out the largest swings, what it removes are real large differences, so RMSSD
 reads low. On the synthetic armband, 90 s runs:
 
 | Seeds | Threshold | Clean runs where it fired | Clean RMSSD, reading ÷ true, 5th percentile | 0.5 s bursts leaking | 1 s bursts leaking |
 |---|---|---|---|---|---|
-| Tuning, 300 runs | 5.2 | 40 (13 %) | 0.900 | 21 | 4 |
-| Tuning, 300 runs | 7 | 14 (4.7 %) | 0.983 | 24 | 4 |
-| Held out, 800 runs | 5.2 | 139 (17 %) | 0.929 | 47 | 18 |
-| Held out, 800 runs | 7 | 3 (0.4 %) | 0.990 | 55 | 21 |
+| Tuning, 300 runs | 5.2 | 256 (85 %) | 0.766 | 8 | 1 |
+| Tuning, 300 runs | 12 | 5 (1.7 %) | 0.990 | 26 | 5 |
+| Held out, 800 runs | 5.2 | 680 (85 %) | 0.752 | 23 | 12 |
+| Held out, 800 runs | 12 | 6 (0.8 %) | 0.990 | 58 | 22 |
 
-At 5.2, one clean run in six loses data to a false detection, and 1 run in 20 reads RMSSD 7 % low or
-worse. At 7, clean RMSSD reads no more than 1 % low in 95 % of runs. The cost is a few more short bursts
-getting through: 55 against 47 of 800 for half-second bursts, 21 against 18 for 1 s bursts.
+At 5.2, five clean runs in six lose data to a false detection, and 1 run in 20 reads RMSSD a quarter
+low or worse: it would make most people look less variable than they are. At 12, clean RMSSD reads
+no more than 1 % low in 95 % of runs. The cost is more short bursts getting through: 58 against 23 of
+800 for half-second bursts, 22 against 12 for 1 s bursts.
 
-**History: 19 % against 3 %.** The first misplaced-beat test, committed in prompt 2.1, made the same
-choice for a simpler pair rule. It flagged a long and a short interval that straddled the local
-median and summed to twice it within 5 %. On the tuning seeds it fired in **19 % of clean runs at
-5.2 (56 of 300) and 3 % at 7** with a 10 % floor on the swing (9 of 300). It missed the 62 % run in
-limit 1. The true intervals around that beat were 3 % slower than the local median, so the pair
-failed the sum test. On 13 September it was replaced by the published rule, which catches that run
-at either threshold, and 7 was measured again for the new rule, in the table above.
+12 was chosen on the tuning seeds alone, as the lowest multiplier at which clean-run firing reached
+its floor: 10 fired in 14 of 300 runs, 11 in 7, and 12, 13 and 14 in 5. The held-out rows were run
+afterwards.
+
+**History.** This is the third version, all on 13 September.
+
+- The first misplaced-beat test, committed in prompt 2.1, used a simpler pair rule: a long and a
+  short interval straddling the local median and summing to twice it, to within 5 % of the median,
+  with a swing threshold on signed differences. On the tuning seeds it fired in **19 % of clean runs
+  at 5.2 quartile deviations (56 of 300, with a 5 % floor on the swing) and 3 % at 7 (9 of 300, with
+  a 10 % floor)**. At the same 10 % floor, 5.2 fired in 8 % (24 of 300). It missed the run in limit
+  1: that pair summed to 63.5 ms over twice the median, 6.4 % of the median, against a tolerance of
+  5 %.
+- The second replaced it with the published ectopic rule at 7, but took the quartiles of signed
+  differences, which are about 1.7 times those of their sizes. 7 there was about 12 on the
+  published scale, and the "5.2" measured with it was not the published 5.2. It also used 31
+  differences where it meant 32: two held-out bursts leaked only because of that, and one other
+  leaks only with 32.
+- This version takes the quartiles of |dRR| from 32 differences, as described above. The run in
+  limit 1 gives 29.3 ms, and nothing false gets through.
 
 **What synthetic data cannot show.** The synthetic armband's variability is independent from beat to
-beat, so large alternating differences are more common than in real sinus rhythm. In a real heart,
-breathing moves successive intervals smoothly. That makes false detections at 5.2 more likely here
-than on the recordings 5.2 was chosen from. **Check 7 against real data before relying on it**:
-first the recorded real session in `tools/fixtures/` once it exists, and ideally an annotated public
-dataset with real ectopic beats. At both thresholds, check the firing rate on clean stretches and
-the detection of beats known to be misplaced.
+beat, so large alternating differences are far more common than in real sinus rhythm. In a real
+heart, breathing moves successive intervals smoothly. That is very likely why the published 5.2,
+chosen on real recordings, fires on most synthetic runs. **Check 12 against real data before
+relying on it**: first the recorded real session in `tools/fixtures/` once it exists, and ideally an
+annotated public dataset with real ectopic beats. At 5.2 and at 12, check the firing rate on clean
+stretches and the detection of beats known to be misplaced. On real data 12 may prove too
+permissive, and something nearer 5.2 right.
 
 ### What the baseline takes from where
 
@@ -174,19 +190,20 @@ Three consequences of the section above.
 
 Classifying an interval needs a guard's length of what follows it: 3 s or 6 beats, whichever is
 longer. That is 3 s at fast rates and 7.5 s at 48 bpm, plus the armband's reporting delay of up to
-1.2 s. `RollingHrv.reading(now, cleaner.horizon_ms)` ends its 60 s window where classification has
-reached, and reports how far that is behind now as `lag_ms`.
+1.2 s. A lost packet is the exception: when the gap shows, everything still pending is classified
+at once. `RollingHrv.reading(now, cleaner.horizon_ms)` ends its 60 s window where classification
+has reached, and reports how far that is behind now as `lag_ms`.
 
 Heart rate alone does not have to wait. Whether the scheduler accepted an interval, and whether it
 was bootstrap, is known the moment the interval arrives.
 
-### 2. The baseline result arrives 3.4 to 10.2 s after the baseline window ends
+### 2. The baseline result arrives 2.0 to 10.6 s after the baseline window ends
 
 `BaselineCapture.ready()` is true once the first interval past the end of the 45 s has been
-classified. At 45 s there is no `hr_base`.
+classified. That interval cannot exist at 45 s, so neither can `hr_base`.
 
-Held-out sweep, 5,600 runs across every fault case: 3.4 to 10.2 s after the window ended, median
-6.1 s. On clean runs it depends on the rate:
+With no packet lost around the end of the window: held-out sweep, 5,600 runs across every fault
+case, 3.4 to 10.2 s after the window ended, median 6.1 s. On clean runs it depends on the rate:
 
 | Heart rate | Fastest | Median | Slowest |
 |---|---|---|---|
@@ -195,8 +212,12 @@ Held-out sweep, 5,600 runs across every fault case: 3.4 to 10.2 s after the wind
 | 95 bpm | 4.0 s | 4.7 s | 5.5 s |
 | 130 bpm | 3.5 s | 4.3 s | 5.0 s |
 
+A packet lost in the first 2 s after the window changes both ends. Over 2,000 runs (8 rates, 50
+seeds, a dropped packet at 45.0 to 47.0 s), the result came 2.0 to 10.6 s after the window, and in
+609 runs sooner than 3.4 s.
+
 Prompt 2.4 holds baseline until `hr_base` is available, for at most 12 s, then enters load, marking
-the baseline degraded if it never came.
+the baseline degraded if it never came. Every measured wait fits inside the 12 s.
 
 `hr_base`, the slope and the quality gate all use accepted, non-bootstrap intervals, which need no
 classification. Only `rmssd_base` does. `BaselineCapture` waits for all of it together. Splitting
@@ -212,11 +233,11 @@ this many of 800 runs:
 
 | Fault at 30 s | Runs with rmssd_base None |
 |---|---|
-| Missed beat | 83 |
-| Artefact burst, 2 s | 70 |
-| Artefact burst, 1 s | 44 |
-| Artefact burst, 0.5 s | 39 |
-| Doubled beat | 4 |
+| Missed beat | 85 |
+| Artefact burst, 2 s | 74 |
+| Artefact burst, 1 s | 46 |
+| Artefact burst, 0.5 s | 41 |
+| Doubled beat | 8 |
 | None | 0 |
 
 **When it is there, a 30 s rmssd_base can still be far off,** mostly because the guard leaves few
@@ -225,14 +246,15 @@ burst at 20 s, pooled:
 
 | Clean differences behind it | Runs | More than 20 % high | More than 20 % low |
 |---|---|---|---|
-| 10 to 14 | 924 | 9.7 % | 17.1 % |
-| 15 to 19 | 1,017 | 5.6 % | 8.0 % |
-| 20 to 24 | 442 | 4.8 % | 4.1 % |
-| 25 to 29 | 570 | 2.8 % | 2.3 % |
-| 30 to 39 | 1,074 | 0.7 % | 1.8 % |
-| 40 or more | 1,223 | 0.2 % | 0.4 % |
+| 10 to 14 | 909 | 9.9 % | 16.9 % |
+| 15 to 19 | 1,008 | 5.7 % | 7.8 % |
+| 20 to 24 | 445 | 4.5 % | 4.0 % |
+| 25 to 29 | 572 | 3.5 % | 2.6 % |
+| 30 to 39 | 1,076 | 0.9 % | 1.8 % |
+| 40 or more | 1,225 | 0.2 % | 0.4 % |
 
 This matters wherever `rmssd_base` is compared against, above all load's secondary criterion, RMSSD
 at or below 0.80 × baseline. A baseline 20 % high makes a person look activated when they were not.
 Prompt 2.4 treats `rmssd_base` as optional and skips an RMSSD criterion that has too few differences
 behind it.
+

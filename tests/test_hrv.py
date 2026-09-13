@@ -1,12 +1,15 @@
 """bridge/hrv.py: which intervals are clean, and what RMSSD and heart rate come out of them."""
 
 import math
+import random
+import statistics
 
 import pytest
 from conftest import false_data, run_pipeline, true_hr, true_rmssd
 
+from bridge import hrv as hrv_rules
 from bridge.beat_scheduler import Interval
-from bridge.hrv import IntervalCleaner, RollingHrv
+from bridge.hrv import ECTOPIC_QUARTILE_DEVIATIONS, SPREAD_DIFFS, IntervalCleaner, RollingHrv
 
 FAULTS = (
     "dropped_packet@30",
@@ -78,9 +81,11 @@ def test_the_window_rolls(pipeline):
         ("55:80", ("artefact_burst@40", "dropped_packet@41.5"), 202),
         ("68:90", ("artefact_burst@40", "disconnect@42:3"), 1),
         ("50:80", ("artefact_burst@40:1",), 1),
-        # One beat detected late and no rejection anywhere: rmssd_base read 62 % high with the
+        # One beat detected late and no rejection anywhere: rmssd_base read 62.5 % high with the
         # earlier pair test, which wanted the pair to sum to twice the local median.
         ("60:60", ("artefact_burst@35:0.5",), 4),
+        # This leaked when the threshold came from 31 differences instead of 32.
+        ("55:90", ("artefact_burst@40:0.5",), 492),
     ],
 )
 def test_no_false_data_reaches_hrv(spec, faults, seed):
@@ -236,20 +241,77 @@ def test_a_gap_is_guarded_on_both_sides():
     assert [round(i.t_beat / 1000) for i in got if i.clean] == [1, 2, 3, 4, 5, 6, *range(37, 42)]
 
 
-def test_a_misplaced_beat_is_suspect_without_any_rejection():
-    steady = [interval(1000 + (7 if k % 2 else -7), 1000 * k) for k in range(1, 20)]
-    late = [interval(1180, 20_000), interval(820, 20_820)]  # one beat detected 180 ms late
-    more = [interval(1000, 20_820 + 1000 * k) for k in range(1, 12)]
-    got = classify_all(IntervalCleaner(), steady + late + more)
+def steady_run(count, rr=1000.0, seed=3, start_ms=0.0):
+    """count beats around rr, with the few ms of random variation a resting heart has."""
+    rng = random.Random(seed)
+    beats, t = [], start_ms
+    for _ in range(count):
+        size = rr + rng.gauss(0.0, 10.0)
+        t += size
+        beats.append(interval(size, t))
+    return beats
+
+
+def then(run, *sizes):
+    """run continued by intervals of the given sizes."""
+    out = list(run)
+    for size in sizes:
+        out.append(interval(size, out[-1].t_beat + size))
+    return out
+
+
+def threshold_of(run):
+    sizes = [abs(b.rr_ms - a.rr_ms) for a, b in zip(run, run[1:], strict=False)][-SPREAD_DIFFS:]
+    q1, _, q3 = statistics.quantiles(sizes, n=4)
+    return ECTOPIC_QUARTILE_DEVIATIONS * (q3 - q1) / 2
+
+
+@pytest.mark.parametrize("pair", [(1180, 820), (820, 1180)], ids=["late beat", "early beat"])
+def test_a_misplaced_beat_is_suspect_without_any_rejection(pair):
+    run = then(steady_run(20), *pair, *[1000] * 11)
+    first, second = run[20], run[21]
+    got = classify_all(IntervalCleaner(), run)
     suspect = [i.t_beat for i in got if not i.clean]
-    assert {20_000, 20_820} <= set(suspect)  # both halves of the pair
-    assert min(suspect) >= 20_000 - 6 * 1000 and max(suspect) <= 20_820 + 7 * 1000
+    assert {first.t_beat, second.t_beat} <= set(suspect)  # both halves of the pair
+    assert min(suspect) >= first.t_beat - 6_200 and max(suspect) <= second.t_beat + 7_200
     assert all(i.accepted for i in got)
+
+
+def test_the_neighbours_must_swing_back_far_enough(monkeypatch):
+    """Their decision boundary, c1 and c2, decides a drop of 1.5 thresholds flanked by
+    differences of the other sign of only 0.2 thresholds: not a misplaced beat."""
+    steady = steady_run(24)
+    level, step = steady[-1].rr_ms, threshold_of(steady)
+    run = then(steady, level + 0.2 * step, level - 1.3 * step, *[level - 1.1 * step] * 12)
+    assert all(i.clean for i in classify_all(IntervalCleaner(), run))
+    monkeypatch.setattr(hrv_rules, "ECTOPIC_C1", 0.0)
+    monkeypatch.setattr(hrv_rules, "ECTOPIC_C2", 0.0)
+    assert not all(i.clean for i in classify_all(IntervalCleaner(), run))
 
 
 def test_the_ectopic_rule_leaves_a_large_but_ordinary_swing_alone():
     """A big step that does not come back is a change of rate, not a misplaced beat."""
-    steady = [interval(1000 + (7 if k % 2 else -7), 1000 * k) for k in range(1, 20)]
-    step = [interval(1150 + (7 if k % 2 else -7), 19_000 + 1150 * k) for k in range(1, 14)]
-    got = classify_all(IntervalCleaner(), steady + step)
+    steady = steady_run(20)
+    got = classify_all(IntervalCleaner(), then(steady, *[1150] * 13))
     assert all(i.clean for i in got)
+
+
+def test_the_threshold_comes_from_exactly_the_last_32_differences():
+    """Built so that the 32 differences before the middle one give a threshold above it, and the
+    newest 31 alone give one below it. The oldest difference, 1 ms, is the one that decides."""
+    rng = random.Random(1)
+    sizes = [1.0] + [rng.uniform(5, 40) for _ in range(30)] + [300.0]
+    q1, _, q3 = statistics.quantiles(sizes, n=4)
+    from_32 = ECTOPIC_QUARTILE_DEVIATIONS * (q3 - q1) / 2
+    q1, _, q3 = statistics.quantiles(sizes[1:], n=4)
+    from_31 = ECTOPIC_QUARTILE_DEVIATIONS * (q3 - q1) / 2
+    middle = (from_31 + from_32) / 2
+    assert from_31 < middle < from_32
+    level, sign, steps = 1000.0, 1, []
+    for size in sizes[:-1]:
+        level += sign * size
+        sign = -sign
+        steps.append(level)
+    steps += [level + 300.0, level + 300.0 - middle, level + 600.0 - middle]
+    run = then([interval(1000.0, 1000.0)], *steps)
+    assert all(i.clean for i in classify_all(IntervalCleaner(), run))

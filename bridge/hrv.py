@@ -18,9 +18,9 @@ whichever reaches further. Suspect means any of:
 - a misplaced beat: a beat detected late or early leaves a long interval and a short one, both
   inside the scheduler's band, so nothing is rejected. It is caught by its shape, with the
   ectopic rule of Lipponen and Tarvainen (2019): a successive difference larger than a threshold
-  set by this person's recent differences, flanked by differences of the opposite sign that are
-  large enough relative to it. The threshold is 7 quartile deviations where they use 5.2; the
-  reason and the measurements are in docs/known-limits.md.
+  set by the sizes of this person's last 32 differences, flanked by differences of the opposite
+  sign that are large enough relative to it. The threshold is 12 quartile deviations where they
+  use 5.2; the reason and the measurements are in docs/known-limits.md.
 - a lost or late packet. The packet that went missing may have held a burst's rejections, and
   nothing on either side can prove it did not, so a gap is guarded on both sides.
 
@@ -29,11 +29,12 @@ both clean, and only when it is within 20 % of the earlier interval, the usual a
 criterion. Those intervals still count for heart rate; only the difference is left out.
 
 What still gets through: a burst the scheduler accepts whole, with no rejection, or a misplaced
-beat whose swing sits inside the person's normal variability. Nothing in the intervals can tell
-those from real beats. docs/known-limits.md has the measured rates.
+beat whose differences stay under the ectopic threshold. Nothing in the intervals tells those from
+real beats. docs/known-limits.md has the measured rates.
 
 Looking a guard's length ahead means each interval is classified 3 to 7.5 s late at seated
-heart rates, plus the armband's own reporting delay. ``horizon_ms`` says how far
+heart rates, plus the armband's own reporting delay. A lost packet is the exception: everything
+still pending is classified the moment the gap shows. ``horizon_ms`` says how far
 classification has reached; readings end there, not at now.
 
     cleaner, hrv = IntervalCleaner(), RollingHrv()
@@ -57,9 +58,9 @@ MIN_DIFFERENCES = 10  # fewer than this and RMSSD is too noisy to report
 GUARD_MS = 3_000  # nothing suspect this close to a clean interval, before or after,
 GUARD_BEATS = 6  # nor this many intervals from it, whichever reaches further
 # The misplaced-beat test: the ectopic rule of Lipponen and Tarvainen (2019).
-SPREAD_DIFFS = 32  # this person's recent successive differences set the threshold
+SPREAD_DIFFS = 32  # the sizes of this person's latest successive differences set the threshold
 MIN_SPREAD_DIFFS = 8  # the test waits until it has this many
-ECTOPIC_QUARTILE_DEVIATIONS = 7.0  # they use 5.2; docs/known-limits.md says why this differs
+ECTOPIC_QUARTILE_DEVIATIONS = 12.0  # they use 5.2, on the same |dRR| scale: docs/known-limits.md
 ECTOPIC_C1 = 0.13  # their decision boundary, unchanged
 ECTOPIC_C2 = 0.17
 
@@ -134,7 +135,8 @@ class IntervalCleaner:
         self._last_suspect = -math.inf  # t_beat of the latest suspect in this run
         self._beats_since_suspect = math.inf  # intervals reported since then
         self._reported: deque[Interval] = deque(maxlen=3)  # the latest in this run, oldest first
-        self._diffs: deque[float] = deque(maxlen=SPREAD_DIFFS)
+        # One more than the spread, so the difference under test can be left out of it.
+        self._diffs: deque[float] = deque(maxlen=SPREAD_DIFFS + 1)
         self._newest_diff_kept = False  # whether _diffs ends with the latest interval's difference
 
     def _gap(self, interval: Interval, classified: list[HrvInterval]) -> None:
@@ -173,6 +175,7 @@ class IntervalCleaner:
         spread = list(self._diffs)
         if self._newest_diff_kept:
             spread.pop()  # the difference under test does not set its own threshold
+        spread = [abs(d) for d in spread[-SPREAD_DIFFS:]]  # sizes, as the published method has it
         if len(spread) < MIN_SPREAD_DIFFS:
             return False
         q1, _, q3 = quantiles(spread, n=4)
