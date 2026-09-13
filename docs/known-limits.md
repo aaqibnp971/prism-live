@@ -102,6 +102,13 @@ measured on the synthetic armband; see the next section for why that matters.
 
 ### Deviation from the published method: the ectopic threshold
 
+> **12 is provisional, and so is every number in this document measured with it, until it has
+> been retuned on a real recorded session.** It was tuned against the synthetic armband, whose variability is random from beat to
+> beat. Real heart rate variability is correlated with breathing, so successive intervals change
+> smoothly and large alternating differences are rare. That same difference very likely explains
+> why the published 5.2, chosen on real recordings, fired on 680 of 800 clean synthetic runs. The
+> retune is on the armband-day list, docs/all-prompts.md prompt 1.0.
+
 For validation, which Nawfil owns. This is the justification for the one constant that departs from
 the published method, and what is still needed before it can be relied on.
 
@@ -256,8 +263,8 @@ burst at 20 s, pooled:
 
 This matters wherever `rmssd_base` is compared against, above all load's secondary criterion, RMSSD
 at or below 0.80 × baseline. A baseline 20 % high makes a person look activated when they were not.
-Prompt 2.4 treats `rmssd_base` as optional and skips an RMSSD criterion that has too few differences
-behind it.
+Prompt 2.4 treats `rmssd_base` as optional, and skips an RMSSD criterion when either of its 30 s
+windows has fewer than 20 clean differences.
 
 ---
 
@@ -275,18 +282,33 @@ the VR handoff. `bridge/psv.py` was built and tuned on the synthetic armband onl
 - **The person's own heart rate spread stays under its 4 bpm floor on settled synthetic
   baselines.** They spread about 1 to 3 bpm, so the personal part of the arousal unit is exercised
   only by tests that inject a spread. Baselines falling steeply spread wider, but score quality 0.
-- **Mean confidence cannot reach 1.** Valence is 0 and cognitive_load is 0 without task events, so
-  the mean of the four is at most 0.295 in baseline (`MEAN_CONFIDENCE_MAX_IN_BASELINE`) and 0.4 over
-  a session. docs/vr-handoff.md maps mean confidence from 0 to 1 onto fog, light and horizon in
-  baseline, which would move the world less than a third of its range. Remap to 0.295, or decide
-  otherwise, before building that mapping.
+- **The baseline world is driven by three confidences, rescaled.** Valence confidence is 0.0 by
+  design, so a mean over all four could never pass 0.75, and reached only 0.295 in a baseline. The
+  driver is now the mean of arousal, cognitive_load and readiness, divided by 0.393
+  (`BASELINE_CONFIDENCE_MAX`): arousal reaches 1, cognitive_load has no task events in baseline, and
+  readiness has no recovery part yet, so the three reach at most 0.393. Measured on 400 settled
+  synthetic baselines at 8 rates: at 45 s the median is 0.393 and 95 % reach at least 0.340. Slow
+  heart rates fall short: at 48 bpm the median is 0.368, 0.94 of the visual travel. The climb is
+  slow for the first 20 s and fastest from 25 to 40 s (the table after this list). A 5 s artefact
+  burst 30 s into the baseline leaves a median of 0.227 at 45 s, and a baseline still settling
+  gently 0.304. How long the armband was on beforehand makes no difference. If readiness or its
+  confidence split changes in Week B, so does 0.393.
 - **A baseline taken while heart rate is still falling steeply gives no confidence once its result
   is in, for the rest of the session.** At quality 0, everything measured against it is untrusted,
   so nothing the body does acts on the engine for that visitor. During the capture the bars still
-  climb to about 0.38 and fall back as the slope shows. Honest, and possibly common off a loud floor.
-- **A degraded baseline sends `hr_base` null for the rest of the session.** The contract says null
-  only until baseline has ended. It needs a clarification, with the contract's owner, before prompt
-  2.4 is built.
+  climb to about 0.38 and fall back as the slope shows. This is left to the booth, not the code
+  (docs/project-plan.md §8): the baseline starts 70 s after the greet and ends 115 s after it. A
+  baseline still falling steeply after 115 s of settling is an honest low-confidence reading of that
+  person, not an artefact.
+- **A degraded baseline sends `hr_base` null for the rest of the session**, with
+  `signal.baseline_quality` 0.0. Contract v1.3 records this.
 - **The contact bit is unverified.** Whether the Verity Sense reports contact at all, and whether it
   keeps sending RR intervals without it, are open. A sensor that does not report contact is read as
   in contact.
+
+The baseline confidence curve, the median of the 400 settled synthetic baselines:
+
+| Baseline t | 0 s | 10 s | 20 s | 25 s | 30 s | 35 s | 40 s | 45 s |
+|---|---|---|---|---|---|---|---|---|
+| Mean of the three confidences | 0.000 | 0.030 | 0.100 | 0.137 | 0.219 | 0.298 | 0.374 | 0.393 |
+| Baseline confidence, after ÷ 0.393 | 0.00 | 0.08 | 0.25 | 0.35 | 0.56 | 0.76 | 0.95 | 1.00 |

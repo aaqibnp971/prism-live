@@ -5,7 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-It follows contract v1.2.
+It follows contract v1.3.
 """
 
 from __future__ import annotations
@@ -161,7 +161,8 @@ def _state(msg: dict, _direction: str) -> None:
                     f"state: authority.{dim} {authority[dim]} is over the resolve taper "
                     f"{bound:.3f} at {msg['segment_elapsed_ms']} ms"
                 )
-    # hr_bpm is null before the first accepted interval, hr_base until baseline ends (§2, v1.1).
+    # hr_bpm is null before the first accepted interval, hr_base until baseline ends (§2, v1.1)
+    # and for the rest of a degraded session (§2, v1.3).
     _positive(msg, "hr_bpm", nullable=True)
     _positive(msg, "hr_base", nullable=True)
     signal = msg["signal"]

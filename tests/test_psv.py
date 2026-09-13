@@ -576,13 +576,17 @@ def test_the_person_s_own_spread_sets_the_heart_rate_unit_inside_its_bounds():
         assert dict(model.estimate(262_000).components)["hr_unit_bpm"] == unit
 
 
-def test_mean_confidence_reaches_its_published_ceiling_by_the_end_of_a_clean_baseline():
-    run = run_session("68:120")
-    reached = max(
-        (e.confidence.arousal + e.confidence.cognitive_load + e.confidence.readiness) / 4
-        for e in run.series(20, 70)
-    )
-    assert reached == pytest.approx(psv.MEAN_CONFIDENCE_MAX_IN_BASELINE, abs=0.01)
+def test_baseline_confidence_reaches_its_published_ceiling_by_the_end_of_the_45_s():
+    """docs/vr-handoff.md divides the mean of these three by 0.393 to drive the baseline world."""
+    assert round(psv.BASELINE_CONFIDENCE_MAX, 3) == 0.393
+    run = run_session("68:180", baseline_at_s=70)
+    reached = [
+        (e.confidence.arousal + e.confidence.cognitive_load + e.confidence.readiness) / 3
+        for e in run.series(70, 115)
+    ]
+    assert reached[0] == 0.0
+    assert reached[-1] == pytest.approx(psv.BASELINE_CONFIDENCE_MAX, abs=0.01)
+    assert max(reached) <= psv.BASELINE_CONFIDENCE_MAX + 1e-9
 
 
 def test_an_interval_placed_after_its_packet_arrived_is_ignored():

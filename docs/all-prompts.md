@@ -102,6 +102,11 @@ Put the armband on properly, sit still, and run it.
 
 **If the RR-present flag is not set, stop and tell me immediately.** The HRV plan is wrong, and so is the synthetic generator's fixture, because prompt 1.1 builds it with that bit set. Everything after 1.1 would be developed against a device that does not behave that way. This answers CLAUDE.md open question 5.
 
+**The rest of armband day.** Once 1.0 has answered, and before anything depends on constants tuned on the synthetic armband:
+
+1. **Record a real seated session.** About five minutes with the armband on the upper arm: settling, a task that raises heart rate, and recovery. Save every raw notification with its arrival time, not only the contract messages, so the scheduler, the HRV cleaner and the PSV can be re-run on it. It becomes the real fixture in `tools/fixtures/`. The same run answers the contact questions in CLAUDE.md open question 5.
+2. **Retune the ectopic threshold on it.** `ECTOPIC_QUARTILE_DEVIATIONS` in `bridge/hrv.py` is 12, tuned on synthetic variability that is random from beat to beat, where real variability follows the breath (docs/known-limits.md). Check the firing rate on clean stretches of the recording, and the detection of misplaced beats, at 5.2 and at 12. A clean recording has no known misplaced beats, so for detection inject some into it, or use an annotated public dataset with real ectopic beats. Set the threshold from those, then re-measure everything measured with 12: the leak and threshold tables in docs/known-limits.md, the rmssd_base error table behind the 20-difference rule, and the baseline confidence curve in docs/vr-handoff.md §9. Until then, treat 12 and every number measured with it as provisional.
+
 ## 1.1 Python scaffold and synthetic heart rate
 
 > Set up the Python side of this repo: a `bridge/` package with pyproject, ruff, and pytest.
@@ -229,7 +234,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > **End of baseline: wait for hr_base.** The baseline capture closes at 45 s, but its result arrives 3.4 to 10.2 s later, because every interval is classified 3 to 7.5 s late (docs/known-limits.md). A packet lost just after the window moves that to between 2.0 and 10.6 s. At the end of the 45 s, hold the session in baseline until `hr_base` is available, for at most 12 s, then enter load. If it is still not available at 12 s, enter load anyway and mark the baseline degraded: `signal.baseline_quality` goes out as 0.0, `hr_base` stays null, and the session log records why. The contract is frozen, so degraded is carried by those two values, not by a new field.
 >
-> **Before building this, the contract needs a clarification** (hard rule 6), agreed with its owner: it says `hr_base` is null only until baseline has ended, and a degraded session keeps it null to the end. No field changes.
+> Contract v1.3 records both consequences: a degraded session keeps `hr_base` null to the end, and baseline can run up to 12 s past its nominal 45 s.
 >
 > - CLAUDE.md and docs/experience-script.md §2 say so: the capture stays 45 s, and the segment runs 45 to 57 s.
 > - `bridge/psv.py` owns the capture: `PsvModel.start_baseline(t)` when baseline begins, `PsvModel.baseline` for the result, `PsvModel.mark_baseline_degraded()` at 12 s.
@@ -239,10 +244,10 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > **rmssd_base is optional everywhere downstream.** It can be None while the quality gate passes, after a few artefacts in the last 30 s of baseline. Nothing may assume it exists. Load's secondary criterion (RMSSD over its final 30 s at or below 0.80 × baseline) and regulate's recorded RMSSD return are skipped and logged as unavailable when it is None; the heart rate criteria decide alone.
 >
-> Assumed here, not yet decided:
+> Decided 13 September:
 >
-> - With a degraded baseline there is no HR_base, so neither load's activation nor regulate's success threshold can be computed. Regulate then runs its nominal 75 s with no extension, because the extension only waits for a threshold that cannot be judged, and the log records why.
-> - An RMSSD criterion is also skipped when either of its 30 s windows has fewer than 20 clean differences. Below that, a 30 s RMSSD is more than 20 % off in about one run in five (docs/known-limits.md), enough to call a person activated when they were not.
+> - With a degraded baseline there is no HR_base, so neither load's activation nor regulate's success threshold can be computed. Regulate then runs a plain 75 s with no extension, because the extension only waits for a threshold that cannot be judged, and the log records why.
+> - An RMSSD criterion needs at least 20 clean differences in each of its 30 s windows, and is skipped otherwise. Below that, a 30 s RMSSD is more than 20 % off in about one run in five (docs/known-limits.md), enough to call a person activated when they were not.
 
 ## 2.5 Engine wrapper, the audio shim, and the PSV feed
 

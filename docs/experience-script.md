@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.1**
+# **Prism Live: Experience Script v1.2**
 
 &nbsp;
 
@@ -120,7 +120,7 @@ Timings inside a segment are written as offsets from that segment's own start (t
 | Success threshold | Not a success gate. **Quality gate:** ≥ 35 of 45 s of clean beat data, and ≥ 30 accepted RR intervals, or the attendant re-seats the armband and restarts. |
 | **Audio** | **Material:** two stems only — bed (sustained pad, D minor, root D3 \= 146.8 Hz, 19 s loop) and sub (drone, D2 \= 73.4 Hz, high-passed 62 Hz, 17 s loop). pulse, lead, air closed. No rhythmic content, no melodic foreground, no transients above the heartbeat. **Driven by:** nothing from the PSV — authority is 0\. The only movement in 45 s is the person's own pulse. Master LP cutoff fixed at **1,400 Hz**. **Dynamic range:** −22 → −17 LUFS short-term. |
 | Per-beat layer | **Active.** This is where they first hear themselves. **Amplitude:** −18 → −13 dBFS peak, ramped up across the first 12 s so the first beat is not a surprise. **Frequency band:** 44 Hz fundamental, energy confined 36–62 Hz, roll-off 24 dB/oct above 120 Hz. Envelope 8 ms attack, decay min(220 ms, 0.55 × current RR interval) so beats never overlap. |
-| **Visual base frame** | Baseline base. **Driven axes:** mean\_confidence (0.0 → 1.0, across all four dimensions) → **fog density 0.38 → 0.26**, **light intensity 0.45 → 0.62**, **horizon position 0.44 → 0.50**. The world resolves as the system learns them — the in-headset counterpart of the confidence bars climbing on the spectator screen. Hue fixed **208°**, saturation fixed **0.12**, field motion rate fixed **0.008**. heartbeat → **pulse amplitude 0.06 → 0.10**. |
+| **Visual base frame** | Baseline base. **Driven axes:** baseline\_confidence (0.0 → 1.0) → **fog density 0.38 → 0.26**, **light intensity 0.45 → 0.62**, **horizon position 0.44 → 0.50**. baseline\_confidence is the mean confidence of arousal, cognitive\_load and readiness, divided by **0.393** and capped at 1.0. Valence is left out because its confidence is 0.0 by design, so a mean over four could never pass 0.75. 0.393 is the most the three reach during baseline, and a settled person usually reaches it by t=45 s; at slow heart rates, around 48 bpm, it tops out near 0.94 of the travel. The climb is slow for the first 20 s and fastest from 25 to 40 s: about 0.25 at t=20 s, 0.56 at 30 s, 0.95 at 40 s (docs/vr-handoff.md §9 has the full curve). The world resolves as the system learns them — the in-headset counterpart of the confidence bars climbing on the spectator screen. Hue fixed **208°**, saturation fixed **0.12**, field motion rate fixed **0.008**. heartbeat → **pulse amplitude 0.06 → 0.10**. |
 | Person does | Sits, looks around. Nothing asked of them. |
 | **Person is told** | *(attendant, before the headset goes on)* — **"Sit however you're comfortable. For the first minute you don't have to do anything at all. Just look around. It's learning what your normal looks like, so normal is exactly what we want."** *(No in-headset text.)* |
 | Spectator foreground | Confidence bars climbing from zero as the baseline fills. |
@@ -144,7 +144,7 @@ The narrative job of this segment is that the crowd watches confidence build in 
 | Timeout branch | N/A — fixed duration |
 | **Authority ceilings** | arousal **0.20** · valence 0.0 · cognitive\_load **0.20** · readiness 0.0. Present but not yet working. *These two partially oppose each other by design — rising arousal opens density, rising load recedes it. That is correct: the engine is barely acting, the task is doing the work.* |
 | Regulation target | None. This segment raises, it does not regulate. |
-| **Success threshold** | HR\_base \= mean HR over the final 30 s of BASELINE. HR\_load \= mean HR over the final 30 s of LOAD. **Activated when HR\_load ≥ HR\_base \+ 6 bpm.** Secondary, either alone also counts: **RMSSD over the final 30 s ≤ 0.80 × baseline RMSSD.** Recorded per run; drives the Week 5 tuning in plan task 5.3. |
+| **Success threshold** | HR\_base \= mean HR over the final 30 s of BASELINE. HR\_load \= mean HR over the final 30 s of LOAD. **Activated when HR\_load ≥ HR\_base \+ 6 bpm.** Secondary, either alone also counts: **RMSSD over the final 30 s ≤ 0.80 × baseline RMSSD.** It counts only when both 30 s windows hold at least 20 clean successive differences; fewer, and a 30 s RMSSD is too often more than 20 % off. Recorded per run; drives the Week 5 tuning in plan task 5.3. |
 | **Audio** | **Material:** bed and sub carry over unchanged (same key, same loops — the world does not change, the person does). pulse opens at t=0 (non-melodic, 11 s loop, 96 BPM implied, no downbeat). air opens at t≈25 s as arousal rises. **lead stays closed for the whole segment** — no melodic foreground competes with a visual task (PGAE §5 focus protection). **Driven by:** arousal\_effective × 0.20 → master LP cutoff **1,400 → 3,600 Hz**, pulse gain **−24 → −16 dBFS**. cognitive\_load\_effective × 0.20 → air gain **−26 → −30 dBFS**, transient density down. **Dynamic range:** −17 → −12 LUFS short-term. |
 | Per-beat layer | **Active, and this is where they hear it speed up.** **Amplitude:** −13 → −9 dBFS peak, scaled by instantaneous HR: −13 dBFS at HR\_base, −9 dBFS at HR\_base \+ 15 bpm, clamped. **Frequency band:** unchanged — 44 Hz fundamental, 36–62 Hz. Decay still min(220 ms, 0.55 × RR), which shortens on its own as they speed up. |
 | **Visual base frame** | Load base. **Driven axes:** arousal\_effective × 0.20 → **hue 214° → 202°**, **saturation 0.16 → 0.30**, **light intensity 0.70 → 1.05**. cognitive\_load\_effective × 0.20 → **fog density 0.20 → 0.30**, **field motion rate 0.010 → 0.004** (the field *slows* as load rises — less to fight). Horizon fixed **0.50**. heartbeat → **pulse amplitude 0.10 → 0.16**. |
@@ -167,7 +167,7 @@ The narrative job of this segment is that the crowd watches confidence build in 
 | Duration | 75 s, adaptive |
 | Entry | Load complete |
 | Exit | Success threshold met, or duration elapsed |
-| Adaptive extension | Up to **\+30 s** if the threshold has not been met. Hard cap, protects booth throughput. |
+| Adaptive extension | Up to **\+30 s** if the threshold has not been met. Hard cap, protects booth throughput. With no HR\_base, after a degraded baseline, there is no threshold to wait for, and regulate runs a plain 75 s. |
 | Timeout branch | Proceed to resolve anyway. The trace reports honestly. **Close B is used.** |
 | Authority ceilings | arousal 1.0 · valence 1.0 · cognitive\_load 1.0 · readiness 1.0. Confidence is the only limiter. |
 | **Regulation target** | **Primary: arousal, direction DOWN, target value 0.32.** **Secondary: cognitive\_load, direction DOWN, target value 0.28.** Held: readiness target 0.62 (up, but confidence will be moderate so it acts weakly, which is honest). valence target 0.50 — no authority, it will not move, and that is the point. |
@@ -350,6 +350,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | :---- | :---- | :---- |
 | 1.0 | 7 Sep 2026 | Initial fill of the v1 template. §6 added: engine bindings and the six gaps between this script and the engine on main. |
 | 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. §2 carries a note that the audio arc is unvalidated against the engine mapping and that regulate currently inverts. |
+| 1.2 | 13 Sep 2026 | §2 BASELINE: the visual driver is the mean confidence of the three dimensions a pulse can inform, rescaled so the range a settled baseline actually reaches maps to the full visual travel, and a note on the end-of-baseline hold for HR\_base. §2 LOAD: the RMSSD criterion needs at least 20 clean differences in each 30 s window. §2 REGULATE: no extension without HR\_base. |
 
 &nbsp;
 

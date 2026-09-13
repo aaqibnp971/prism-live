@@ -127,13 +127,11 @@ RECOVERY_PER_GAP = 2.0  # ramp back over twice the gap
 CONTACT_FALL_MS = 2_000
 CONFIDENCE_DECIMALS = 3  # rounded down, so an authority rounded later never exceeds it
 
-# The most mean confidence across the four dimensions can reach while cognitive_load has no task
-# input: over a whole session, and in baseline, where readiness has no recovery part yet. The
-# baseline figure is the one for mapping mean confidence onto the world (docs/vr-handoff.md).
-MEAN_CONFIDENCE_MAX_WITHOUT_TASK = (1.0 + VALENCE_CONFIDENCE + 0.0 + READINESS_CAP) / 4
-MEAN_CONFIDENCE_MAX_IN_BASELINE = (
-    1.0 + VALENCE_CONFIDENCE + 0.0 + READINESS_CAP * (1.0 - READINESS_RECOVERY_SHARE)
-) / 4
+# The most the mean confidence of arousal, cognitive_load and readiness reaches in baseline:
+# arousal can reach 1, cognitive_load has no task events yet, and readiness has no recovery part
+# yet. Valence is left out, its confidence being 0.0 by design. A settled baseline usually reaches
+# this by its 45 s; docs/vr-handoff.md divides by it to drive the baseline world.
+BASELINE_CONFIDENCE_MAX = (1.0 + 0.0 + READINESS_CAP * (1.0 - READINESS_RECOVERY_SHARE)) / 3
 
 
 class BaselinePhase(Enum):

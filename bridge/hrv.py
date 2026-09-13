@@ -60,7 +60,9 @@ GUARD_BEATS = 6  # nor this many intervals from it, whichever reaches further
 # The misplaced-beat test: the ectopic rule of Lipponen and Tarvainen (2019).
 SPREAD_DIFFS = 32  # the sizes of this person's latest successive differences set the threshold
 MIN_SPREAD_DIFFS = 8  # the test waits until it has this many
-ECTOPIC_QUARTILE_DEVIATIONS = 12.0  # they use 5.2, on the same |dRR| scale: docs/known-limits.md
+# They use 5.2, on the same |dRR| scale. Provisional: tuned on synthetic variability only, and to
+# be retuned on a real recorded session before anything depends on it (docs/known-limits.md).
+ECTOPIC_QUARTILE_DEVIATIONS = 12.0
 ECTOPIC_C1 = 0.13  # their decision boundary, unchanged
 ECTOPIC_C2 = 0.17
 

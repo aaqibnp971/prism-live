@@ -1,6 +1,6 @@
-# Prism Live: Message Contract v1.2
+# Prism Live: Message Contract v1.3
 
-**Status:** FROZEN as of 10 September 2026. v1.1 and v1.2 (13 September 2026) turn seven gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
+**Status:** FROZEN as of 10 September 2026. v1.1 to v1.3 (13 September 2026) turn nine gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -103,12 +103,12 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | `seq` | Increments per `state`, per session. `state` has its own counter, separate from `beat`'s |
 | `t_session` | Milliseconds since the attendant pressed start. `null` when `segment` is `idle` |
 | `segment` | `idle`, `baseline`, `load`, `regulate`, `resolve`, `reset` |
-| `segment_elapsed_ms` / `segment_nominal_ms` | **Clients must draw progress from these, never from a local clock.** Regulate is adaptive and can run 30 s over |
+| `segment_elapsed_ms` / `segment_nominal_ms` | **Clients must draw progress from these, never from a local clock.** Regulate is adaptive and can run 30 s over. Baseline can run up to 12 s over while the laptop waits for `hr_base`, so `segment_elapsed_ms` can exceed `segment_nominal_ms` in baseline too |
 | `psv` | Four values, 0.0 to 1.0 |
 | `confidence` | 0.0 to 1.0 per dimension. `valence` is always exactly `0.0` (Script §6.4) |
 | `authority` | `min(confidence, segment_ceiling)`. Computed once on the laptop so audio and visuals can never disagree |
 | `hr_bpm` | Current heart rate. `null` before the first accepted interval |
-| `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended |
+| `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended. **A degraded session keeps it `null` to the end:** when the baseline result does not come within 12 s of the baseline window closing, load starts without it, and every later `state` in that session sends `hr_base` `null` and `signal.baseline_quality` 0.0 |
 | `signal` | Feeds the honesty display. `contact` comes from the armband's own sensor-contact bit |
 
 **Segment ceilings**, applied laptop-side before sending:
@@ -221,3 +221,4 @@ Record one good JSONL session in Week A and use it as the fake sender's input fo
 | 1.0 | 10 Sep 2026 | Frozen. State cadence 30 s to 2 s. Beat scheduling via `t_play`. Added `task_event`, `hello`, `clock`. Transport fixed to WebSocket. Authority moved laptop-side. |
 | 1.1 | 13 Sep 2026 | Five gaps made explicit, all as already implemented in `bridge/contract.py` and `bridge/clock_sync.py`. No field added or removed; `v` stays `1`. §1: no integer past 2^53 − 1; laptop timestamps are whole ms, client times may be fractional. §2 `state`: `hr_bpm` and `hr_base` may be `null`, and when. §2 ceilings: `idle` and `reset` are 0. §2 `clock`: the median rtt covers every observed rtt, and twice the median is never under 4 ms. |
 | 1.2 | 13 Sep 2026 | Two more gaps made explicit, both as already implemented. No field added or removed; `v` stays `1`. §2 `beat` and `state`: each message type keeps its own `seq` counter per session; a gap is a missing number within one type in one session, and a new session is not a gap. §2 `clock`: an offset estimate belongs to one connection and is rebuilt on every reconnect, because `T_engine` restarts with the laptop's process. |
+| 1.3 | 13 Sep 2026 | Two consequences of the end-of-baseline hold made explicit. No field added or removed; `v` stays `1`. §2 `state`: baseline, like regulate, can run past its nominal duration, by up to 12 s. A degraded session, whose baseline result did not come within 12 s, sends `hr_base` `null` and `signal.baseline_quality` 0.0 for the rest of the session. |

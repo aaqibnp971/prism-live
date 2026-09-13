@@ -166,10 +166,23 @@ Everything you draw is controlled by exactly seven values. You will be given ten
 
 `arousal`, `cognitive_load` and `confidence` arrive in the `state` message. `heartbeat` comes from `beat` messages.
 
-**Baseline** (45 s)
-- mean confidence across all four dimensions, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
+**Baseline** (45 s, and up to 12 s more while the laptop waits for a heart rate figure)
+- **baseline confidence**, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
+- compute it from each `state` message as `min(1.0, (confidence.arousal + confidence.cognitive_load + confidence.readiness) / 3 / 0.393)`
+- leave valence out: its confidence is always exactly 0.0, so a mean over all four could never get past 0.75
+- 0.393 is the most those three reach during baseline. A settled person usually reaches it by the end of the 45 seconds; at slow heart rates, around 48 bpm, it tops out near 0.94
+- it does not rise evenly: see the curve below
 - Fixed: hue 208°, saturation 0.12, field motion 0.008
 - heartbeat → pulse amplitude 0.06 → 0.10
+
+Draw the baseline frames against this curve, the median of 400 synthetic baselines at 8 heart rates:
+
+| Baseline t | 0 s | 10 s | 20 s | 25 s | 30 s | 35 s | 40 s | 45 s |
+|---|---|---|---|---|---|---|---|---|
+| Mean of the three confidences | 0.000 | 0.030 | 0.100 | 0.137 | 0.219 | 0.298 | 0.374 | 0.393 |
+| Baseline confidence, after ÷ 0.393 | 0.00 | 0.08 | 0.25 | 0.35 | 0.56 | 0.76 | 0.95 | 1.00 |
+
+A 5 s artefact burst 30 s into the baseline leaves it around 0.58 at 45 s, and a person still settling gently around 0.77. Both are real readings, not faults. Baseline always runs a few seconds past 45 s, by up to 12 s, while the laptop waits for a heart rate figure. The value usually stays where it is then, rises after an artefact, and can dip slightly for someone still settling, so keep driving the field from it until load begins. The recorded fixture's confidences are stand-ins (§16) and will not show this curve until it is re-recorded after prompt 2.4.
 
 The world **resolves as the system learns them**. That is the idea: it starts vague and becomes clear as confidence builds.
 
@@ -343,7 +356,7 @@ For the WebSocket itself, `NativeWebSocket` is the usual choice and works on Que
 The laptop owns segment, timing and authority. You display what you are told.
 
 Specifically:
-- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, so a local clock will be wrong
+- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, and baseline can run 12 seconds over, so a local clock will be wrong
 - If the connection drops, **freeze on the last known state** and show a visible marker. Do not improvise, do not carry on, do not guess
 
 ## 19. Structure the code so the field is portable

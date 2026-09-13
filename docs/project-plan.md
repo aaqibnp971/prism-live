@@ -1,6 +1,6 @@
-# **Prism Live: Project Plan v1.1**
+# **Prism Live: Project Plan v1.2**
 
-**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 11 September 2026
+**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 13 September 2026
 
 ---
 
@@ -109,12 +109,14 @@ Only about 50 people wear the headset in a day. Several hundred walk past the sc
 
 **Per-person cycle: about 7 minutes.**
 
-1. Greet, 20-second pitch  
-2. Armband on upper arm, 20 seconds  
+1. Greet, exclusion questions and consent line, then armband on upper arm, 20 seconds. The armband goes on before the pitch.  
+2. 20-second pitch, with the armband already reading  
 3. Headphones, then headset, 30 seconds  
 4. Four-minute run  
 5. 20 seconds of trace on screen, they photograph it  
 6. 45-second close, card with QR
+
+**Settling, and why the armband goes on before the pitch.** People arrive off a loud floor with their heart rate still falling. A baseline measured while it is still falling steeply gives the system nothing to trust for the rest of that person's run. The baseline starts 70 seconds after the greet and ends 115 seconds after it, inside the same 7-minute cycle. Fitting the armband before the pitch does not change those times. It means the armband is reading for about 50 seconds before the baseline instead of 30, so a poor fit can show up before the headset goes on.
 
 ## **9\. Open items**
 
@@ -316,5 +318,6 @@ Transparent overdraw is the number one Quest performance killer, so heavy partic
 
 * v1, 2 September 2026, initial plan
 * v1.1, 11 September 2026: §4 and §6 replace eye control with reticle control, since the Quest 3S has no eye tracking. §7 adds the change log budget items, committed total \~1,738 to \~2,698 AED. §10 renames the gaze task to the reticle task. §11 and §13 are marked superseded by the message contract and the solo build plan.
+* v1.2, 13 September 2026: §8 fits the armband before the pitch, right after the exclusion questions and the consent line, and states the settling time before and through the baseline.
 
 &nbsp;
