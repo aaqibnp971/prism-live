@@ -143,9 +143,9 @@ Closed:
 2. Does `prism_crossfade_scene` **preserve loop playback phase** for a stem identical across two manifests? **No.** The incoming scene always starts at sample 0. Decision: one scene, no crossfades.
 3. **How long does `prism_crossfade_scene` block?** **Moot.** It is never called. `prism_load_scene` blocks once per handle at startup; prompt 2.7 measures that.
 4. Can the host **inject a per-beat audio event into the engine's output**? **No.** The heartbeat layer is mixed in prism-live's own callback, one device (hard rule 8).
+7. **Where the `acbfd50` engine library gets built.** **Closed 14 Sep 2026.** It is built from upstream `acbfd50` and committed at `vendor/lib/libprism_core.dll`, with the recipe, toolchain, flags and SHA-256 in `vendor/lib/README.md`. The build is reproducible. The engine source clone at `vendor/prism-core/` is gitignored.
 
 Still open. Do not guess at these. Flag them.
 
 5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration? Needs the armband, prompt 1.0. The same run answers two more: does it report **sensor contact** at all, and does it keep sending RR intervals while contact reads false? `bridge/psv.py` reads a sensor that reports no contact as in contact, and keeps intervals sent without contact out of heart rate and HRV.
 6. **Body-derived or designed-pose PSV?** Under body-derived values the script's regulate comes out inverted (`docs/engine-findings.md`). Decided by listening in Week B, prompt 2.5.
-7. **Where the `acbfd50` engine library gets built.** No tags exist. The only library on this machine is older and will not do.

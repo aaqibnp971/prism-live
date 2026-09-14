@@ -251,7 +251,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 
 ## 2.5 Engine wrapper, the audio shim, and the PSV feed
 
-**Needs a library built from prism-core `acbfd50`.** Where it gets built is still undecided (CLAUDE.md open question 7). The DLL already on this machine is older and will not do.
+**Needs a library built from prism-core `acbfd50`.** It is committed at `vendor/lib/libprism_core.dll`, with the recipe in `vendor/lib/README.md` (CLAUDE.md open question 7, closed 14 September). The older DLL in `D:\ANP\prism-core` will not do.
 
 > Read docs/engine-findings.md first, all of it. The engine has no master gain, no way to inject audio, and its only PSV input is `prism_set_mood_override`. prism-live owns the audio device (CLAUDE.md hard rule 8). Two pieces.
 >

@@ -60,6 +60,12 @@ dmypy.json
 # Notebooks
 .ipynb_checkpoints/
 
+# --- Engine source --------------------------------------------------------
+# A fresh clone of upstream prism-core at acbfd50, built into a library here.
+# The engine is consumed through its C ABI and never committed into this repo
+# (CLAUDE.md hard rule 1).
+vendor/prism-core/
+
 # --- Logs and session captures --------------------------------------------
 # The host writes per-session logs here. Never committed.
 logs/

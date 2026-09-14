@@ -17,7 +17,7 @@
 Two consequences:
 
 - **No tags exist on either remote**, so "pinned to a tag" (CLAUDE.md hard rule 1) is not possible yet. Pin to commit `acbfd50`, or ask the engine owner to tag it.
-- **The DLL on this machine can't be used for the demo.** A library has to be built from `acbfd50`. The `D:\ANP\prism-core` clone has never been fetched.
+- **The DLL on this machine can't be used for the demo.** A library has to be built from `acbfd50`. The `D:\ANP\prism-core` clone has never been fetched. *Done 14 September: `vendor/lib/libprism_core.dll`, recipe in `vendor/lib/README.md`.*
 
 ---
 
@@ -238,4 +238,4 @@ CLAUDE.md was corrected on 11 September. The experience script and sound brief r
 3. **Body-derived versus designed-pose PSV is deferred to Week B**, to be decided by listening, not on paper. Prompt 2.5 makes the source switchable at runtime.
 4. **prism-live owns the audio device** (CLAUDE.md hard rule 8) through a native shim: pull with `prism_render`, 62 Hz high-pass, heartbeat layer, session gain, true-peak limiter. Prompts 2.5 to 2.7 were rewritten to match.
 
-Still open: **where the `acbfd50` library gets built.** The clone this document was written from was deleted on 11 September; `D:\ANP\prism-core` has never been fetched and holds an older revision. No tags exist on either remote.
+**Closed 14 September: where the `acbfd50` library gets built.** It is built from upstream `acbfd50` and committed at `vendor/lib/libprism_core.dll`. `prism_version()` returns `"0.3.0"`. The recipe, toolchain, flags and SHA-256 are in `vendor/lib/README.md`, and the build is reproducible. It came from a fresh clone at `vendor/prism-core/`, which is gitignored; `D:\ANP\prism-core` was not touched. Still no tags exist on either remote.
