@@ -268,3 +268,27 @@ def _deliver(notes, k, scheduler, model, session, publish, clock) -> int:
     for event in result.events:
         publish(session.beat_message(event))
     return k + 1
+
+
+def c_code(text, keep_strings=False):
+    """C or C++ source with comments removed, and string and character literals emptied unless
+    keep_strings."""
+    code, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            code.append(" ")
+        elif text[i] in "\"'":
+            quote, j = text[i], i + 1
+            while j < n and text[j] != quote:
+                j += 2 if text[j] == "\\" else 1
+            code.append(text[i : j + 1] if keep_strings else quote * 2)
+            i = j + 1
+        else:
+            code.append(text[i])
+            i += 1
+    return "".join(code)

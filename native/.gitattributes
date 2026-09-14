@@ -1,0 +1,3 @@
+# The committed shim is checked against its SHA-256 (native/README.md). Never let any line-ending or
+# diff setting touch it.
+bin/*.dll binary

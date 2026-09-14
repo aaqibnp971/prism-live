@@ -258,7 +258,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > **`native/`, the audio shim.** A small C++ shared library with its own C ABI, driven from Python by ctypes. It owns the output device, and its callback is the only place `prism_render` is ever called. Per block, in this order:
 >
 > 1. `prism_render(core, buf, n)` into a preallocated mono float32 buffer. 48 kHz, no resampling anywhere.
-> 2. High-pass the engine buffer at 62 Hz, 24 dB/oct. This is the 36 to 62 Hz reservation, enforced in code rather than trusted to the stems.
+> 2. High-pass the engine buffer: a 10th-order Chebyshev type II, at least 30 dB down from 62 Hz and within 1 dB from 69.35 Hz, so the sub's D2 at 73.4 Hz stays. This is the 36 to 62 Hz reservation, enforced in code rather than trusted to the stems. (Decided 14 September. As first written, "62 Hz, 24 dB/oct" is only 3 dB down at 62 Hz and 12 dB at 44 Hz, and could never pass the band test below.)
 > 3. Apply a static engine trim (start at −6 dB, tune in Week B) and the session gain: a smoothed value the bridge sets as a target plus a ramp time. It carries the resolve ending, bed, sub and air to silence from T−22 s to T−10 s, and the 3 s fade at stop. Between visitors it is 0.
 > 4. Add the heartbeat layer (2.6). It has its own level envelope and is not under the session gain, so it holds while the engine material leaves.
 > 5. True-peak limit at −1.0 dBTP. This is the last stage. The engine's own limiter is −3 dBFS sample-peak and protects nothing the host needs.
@@ -297,6 +297,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Tests, offline through the shim with the recorded fixture: onset error against `t_play` under 1 ms once the anchor has settled; no two beats overlap; energy above 120 Hz at least 24 dB below the 44 Hz fundamental; the final 3 s fade is equal-power and ends at digital silence; the summed output never exceeds −1.0 dBTP.
 
+**What 2.5 left in place.** 2.5's ceiling test needed a heartbeat, so the shim already has the ABI (`pls_push_beat`, `pls_set_heartbeat_level`), the beat slots, and a minimal voice: a 44 Hz sine from phase 0, an 8 ms raised-cosine attack, a half-cosine decay over min(220 ms, 0.55 × RR), and a linear level ramp. A beat is placed from a T_engine anchor on the output frame and put into the chain 1,639 frames (34.1 ms, the limiter's latency) early, so it leaves the limiter at `t_play`. The device anchor is taken once, at the first callback after `pls_set_time_origin_ns`, from QueryPerformanceCounter plus one device period. Keep the ABI. Replace the internals: the anchor correction against the device's reported position, onset-error logging, the spectral shaping, and this prompt's tests. `EngineHost.stop` writes the heartbeat level too, so a per-segment level controller needs the same latch as `SessionGain` (`fade_out` and `resume`).
+
 ## 2.7 One scene, placeholder stems, and gate timing
 
 **Decided 11 September: one scene for the whole session, coprime loops kept, no crossfades.** Read docs/engine-findings.md Q2 and its mapping section first.
@@ -316,6 +318,12 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > `bridge/session.py` already has the hold: with `Timings(hold_ms=11_000, hold_to_end=True)`, the session enters load 56 s after baseline begins, ready or degraded. **A failed gate ends baseline at its arrival** (decided 14 September): a result that fails the quality gate goes to reset as soon as it comes, from 45 s on, and with no result by 56 s the gate is judged on what had been classified by then, and a failure goes to reset at 56 s. `Session.schedule` gives baseline's earliest end as 45 s and its latest as 56 s.
 >
 > The air moves in the script have been re-scripted to fit the engine: air gates out before pulse, in one 1.5 s fade, and there is no air tail in resolve. Do not try to build either.
+>
+> **What 2.5 leaves for this prompt** (`bridge/engine_feed.py`, `docs/known-limits.md`):
+>
+> - **Air can outlast pulse.** The regulate pose closes both gates in the same PSV, and each fades at its own next loop boundary. So air fades after pulse in about 85 % of sessions, which breaks "air gates out before pulse" and the test "air never sounds while pulse is closed". Send air's crossing so that it lands on a boundary before pulse's.
+> - **The gate hold ignores phase.** After a gate flips, `GateHysteresis` holds it for the stem's loop plus 1.5 s, because without phase it cannot tell when the 1.5 s ramp runs. That is stricter than needed: a reversal consumed before the boundary cancels cleanly. A gate that flips late in load holds back regulate's closing for the rest of its hold, up to 14.5 s, and pulse then misses its first boundary 2 s into regulate. With `bridge/phase.py`, hold only across the ramp.
+> - **The body source sends a neutral PSV in idle and reset**, which opens pulse between visitors. The baseline pose at reset applies to the pose source only until this prompt sends it for both.
 >
 > Tests, offline through the shim with the PSV log of a fixture session: pulse is silent for the whole of baseline and opens within one block of the aligned boundary at load t=0; pulse is gone within 1.5 s of its first boundary after the regulate PSV; air never sounds while pulse is closed; a jittering input inside the hysteresis band never flips a gate; loop phase is continuous from the first block to the last, checked by cross-correlating the bed in the output against the stem file at the end of the session.
 
@@ -350,6 +358,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > 5. **Restart.** After a crash or a restart, come up clean in idle: a new `PsvModel`, `BeatScheduler`, `SessionLog` and `Session`, and a fresh session id. `SessionLog.start_session` takes the next free id for the day, so it never reuses a file. Nothing resumes the session that was running, and a visitor who was mid-run starts again. `T_engine` restarts at 0, and clients rebuild their clock estimate on reconnect (contract §2).
 >
 > The wiring is in the `bridge/session.py` module docstring.
+>
+> **The engine side, from 2.5.** Every state message also goes to `PsvFeed.on_state` and `SessionGain.on_state` (`bridge/engine_feed.py`), from this same loop, the engine's one control thread. A local key calls `PsvFeed.set_source("body" | "pose")`. The engine opens once at startup with `EngineHost.open` and `start(gain)`, keeps rendering between visitors, and closes on shutdown with `await EngineHost.stop(gain)` and then `close`. Once a `SessionGain` exists, nothing else calls `set_session_gain`. Nothing calls any of this yet.
 >
 > Tests, against the synthetic armband through the real loop on a real clock: a whole session from start to the end of reset, every message valid and every beat at least 300 ms ahead when sent; a double press and a stop mid-run; a packet source that goes silent in baseline reaches the gate at the cap; killing the loop mid-session and starting it again comes up in idle with a new session id, and nothing from the old session is sent again.
 

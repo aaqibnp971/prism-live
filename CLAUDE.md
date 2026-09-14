@@ -23,7 +23,7 @@ It is shown at exhibitions and university stalls. It is **not a product**. No ap
 5. **No health, wellness or efficacy claims in any user-facing string.** Describe what the system does, never what it achieves.
 6. **The message contract is frozen.** See `docs/message-contract-v1.md`. A new field requires updating that document first.
 7. **Clients never decide anything.** Segment, timing and authority are host decisions. A disconnected client freezes on its last state and shows a visible marker. It does not improvise.
-8. **prism-live owns the audio device.** The engine is pulled with `prism_render` from prism-live's own audio callback, in `native/`; `prism_device_start` and `prism_device_stop` are never called. That callback high-passes the engine buffer at 62 Hz, mixes the heartbeat layer, applies the session gain, and true-peak limits to −1.0 dBTP as the last stage. The engine's own limiter is −3 dBFS sample-peak and enforces neither the ceiling nor the 36 to 62 Hz reservation.
+8. **prism-live owns the audio device.** The engine is pulled with `prism_render` from prism-live's own audio callback, in `native/`; `prism_device_start` and `prism_device_stop` are never called. That callback high-passes the engine buffer (10th-order Chebyshev II: at least 30 dB down from 62 Hz, within 1 dB from 69.35 Hz, so the sub's 73.4 Hz stays), mixes the heartbeat layer, applies the session gain, and true-peak limits to −1.0 dBTP as the last stage. The engine's own limiter is −3 dBFS sample-peak and enforces neither the ceiling nor the 36 to 62 Hz reservation.
 9. **The attendant console is a local control on the laptop, never a WebSocket client.** The contract has no start or stop message, and a network round trip must not sit between the button and a session beginning. The console arms start, counts down to the pulse-aligned moment and calls `session.start` in the bridge's own loop (prompts 2.7, 2.9, 3.6).
 
 ---
@@ -99,7 +99,11 @@ native/     C++. The audio shim: owns the device, calls prism_render,
             62 Hz high-pass, heartbeat layer, session gain, true-peak
             limiter. The only audio callback in the project. Hard rule 8.
 web/        Task screen and spectator screen. Plain HTML/JS.
+            native/bin/ holds the built shim DLL, committed.
 tools/      fake_sender, fake_receiver, synthetic RR generator.
+vendor/     lib/libprism_core.dll, the engine built from acbfd50, committed
+            (recipe in vendor/lib/README.md). prism-core/ is its source
+            clone, gitignored.
 assets/     The four audio stems.
 docs/       Contract, script, sound brief, build plan.
 unity/      Stretch goal. Does not exist until the audio half is done.

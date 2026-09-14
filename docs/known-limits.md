@@ -319,6 +319,88 @@ useful session either way, and the re-seat is the booth's quicker path. **Accept
 
 ---
 
+## The audio shim and the PSV feed (prompt 2.5)
+
+**Handled by:** `native/` (the shim, DLL committed at `native/bin/`), `bridge/engine.py`,
+`bridge/engine_feed.py`, `bridge/poses.py`. Measured 14 September, offline, against the committed
+engine and shim DLLs and a generated test scene. The real stems do not exist yet.
+
+### The output stage
+
+- **The chain is 1,639 frames (34.1 ms) late.** That is the limiter's lookahead, its guard and its
+  detector's delay. A beat enters the mix 1,639 frames early, so it still leaves at `t_play`. The
+  engine's material comes out 34 ms after its PSV, which at 2 s updates does not matter. Stop
+  waits for the fade to leave the limiter: the ramp, plus the latency, plus two blocks, with a
+  deadline 500 ms after the ramp.
+- **True peak.** The limiter aims at −1.5 dBTP so that −1.0 dBTP holds. The worst measured case
+  is +6 dBFS white noise, which comes out at −1.28 dBTP by an FFT-based reference meter: 0.27 dB of
+  margin. The four-minute render with the engine at its loudest PSV and the heartbeat at −9 dBFS
+  peaks at −3.05 dBTP, and the limiter never engages.
+- **One class of signal is not bounded:** energy at exactly fs/2 that starts or stops abruptly.
+  Its true peak grows with the meter's length. A naive 8 kHz square wave comes out at −0.67 dBTP.
+  The engine, behind its own low-pass of at most 12 kHz, cannot produce this, and neither can a
+  44 Hz heartbeat.
+- **Set the engine trim from peaks measured after the high-pass (Week B).** The high-pass's phase
+  shift around the sub re-aligns components, which raises the engine's sample peak from its own
+  −3 dBFS limit to −1.97 dBFS. At trim 0 dB and the loudest PSV, the limiter takes up to 2.4 dB
+  almost continuously, which will likely be heard. At the default trim of −6 dB it never engages.
+- **The high-pass**, the 10th-order Chebyshev II decided on 14 September:
+  - At least 30.001 dB down at and below 62 Hz.
+  - Within 1 dB from 69.35 Hz up. At 69.3 Hz it is 1.03 dB down, because order 10 cannot quite
+    reach it.
+  - The sub's 73.4 Hz is down 0.11 dB.
+  - Measured 36 to 62 Hz band attenuation: 32.9 dB on white noise, 32.4 dB on a sweep, 41.2 dB on
+    the engine at its loudest PSV.
+- **A render block with a non-finite sample** is zeroed and counted in `render_errors`, so one NaN
+  from the engine cannot turn the output to NaN for good.
+
+### The device
+
+- **The default output device, and only that one.** The stream never follows a default-device
+  change, so plug the headphones in before start. If the endpoint goes away, the stream stops by
+  itself, `frames_rendered` stops advancing, and `device_unrequested_stops` counts it. Recover with
+  stop, a new time origin and start, which opens the default device afresh and checks it for 48 kHz
+  again. The refusal of a device that is not at 48 kHz has not run: this machine's device is at
+  48 kHz. The lost-device path needs a real unplug to be checked.
+- **The heartbeat's device anchor is provisional.** It is taken once, at the first callback, from
+  QueryPerformanceCounter plus one device period. Nothing corrects it against the device's
+  reported position until prompt 2.6. The voice itself is 2.6's minimal stand-in.
+
+### The PSV feed
+
+All provisional until Week B listening.
+
+- **The gate hysteresis.** A gate opens at density ≥ threshold + 0.01 and closes at ≤ threshold −
+  0.01. Once it flips, it is held for its loop plus 1.5 s: pulse 12.5 s, air 14.5 s. It cannot see
+  the engine's phase, so it cannot tell when the 1.5 s ramp actually runs. Three consequences:
+  - The cutoff sits flat at the band's edge, then steps by about 100 to 300 Hz when the gate opens.
+    The engine's 0.6 s smoothing turns the step into a glide.
+  - A gate that flips late in load (air after 60.5 s, pulse after 62.5 s) holds back regulate's
+    closing for the rest of its hold, up to 14.5 s. An air flip at 66 s holds it to 5.5 s into
+    regulate. Pulse then misses its first boundary, 2 s into regulate.
+  - Air fades after pulse in about 85 % of sessions, against the script.
+
+  All three are prompt 2.7's to fix, with `bridge/phase.py`.
+- **The body source sends a neutral PSV in idle and reset,** which opens pulse between visitors.
+  The session gain holds it silent. The pose source sends the baseline pose instead.
+- **The baseline pose's density is 0.3374,** only 0.0026 below the pulse gate's closing edge. A
+  Week B tweak of about +0.003 arousal would put it where the hysteresis moves it without saying.
+- **In the pose source, the body moves arousal inside a segment's range** by
+  `clamp((arousal − 0.5) / 0.35, 0, 1) × arousal confidence`. The segment ceiling is not applied,
+  because the pose is the segment's design. In the synthetic fixture, regulate sits at 1,377 to
+  1,496 Hz, because the synthetic heart stays aroused. Resolve's first PSV then drops the cutoff to
+  620 Hz.
+- **The body pre-blend uses the state message's `psv`,** rounded to 3 decimals, so the engine and
+  the screen move on the same numbers.
+- **The session gain.**
+  - Idle and reset: 0 over 3 s.
+  - Baseline: fades in over 2 s. No document sets this.
+  - Resolve: the ending starts on the first state message at or after T−22 s, so up to 2 s late,
+    and the ramp is shortened so it still lands at T−10 s.
+  - During stop, `SessionGain` holds every change until `resume`.
+
+---
+
 ## The PSV, for Week B and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns
