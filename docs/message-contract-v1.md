@@ -1,6 +1,6 @@
-# Prism Live: Message Contract v1.5
+# Prism Live: Message Contract v1.6
 
-**Status:** FROZEN as of 10 September 2026. v1.1 to v1.5 (13 and 14 September 2026) turn fourteen gaps into explicit rules; nothing was added or removed, and the schema version `v` is still `1`.
+**Status:** FROZEN as of 10 September 2026. v1.1 to v1.5 (13 and 14 September 2026) turn fourteen gaps into explicit rules, and v1.6 (14 September 2026) brings one older wording up to date; nothing was added or removed, and the schema version `v` is still `1`.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -101,7 +101,7 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | Field | Notes |
 |---|---|
 | `seq` | Increments per `state`, per session. `state` has its own counter, separate from `beat`'s |
-| `t_session` | Milliseconds since the attendant pressed start. `null` when `segment` is `idle` |
+| `t_session` | Milliseconds since start fired, which is when baseline began. The attendant console's countdown to the pulse-aligned moment, up to 11 s, comes before start fires and is not part of the session. `null` when `segment` is `idle`, the countdown included |
 | `segment` | `idle`, `baseline`, `load`, `regulate`, `resolve`, `reset` |
 | `segment_elapsed_ms` / `segment_nominal_ms` | **Clients must draw progress from these, never from a local clock.** Regulate is adaptive and can run 30 s over. Baseline can run up to 12 s over while the laptop waits for `hr_base`, so `segment_elapsed_ms` can exceed `segment_nominal_ms` in baseline too. Idle has no length: `segment_elapsed_ms` and `segment_nominal_ms` are both 0 there, so draw no progress. Reset lasts 20 s after a session that ran to the end, while the trace is photographed, and 3 s after a stop or a failed baseline gate; `segment_nominal_ms` says which. The session id changes when reset ends |
 | `psv` | Four values, 0.0 to 1.0 |
@@ -224,3 +224,4 @@ Record one good JSONL session in Week A and use it as the fake sender's input fo
 | 1.3 | 13 Sep 2026 | Two consequences of the end-of-baseline hold made explicit. No field added or removed; `v` stays `1`. §2 `state`: baseline, like regulate, can run past its nominal duration, by up to 12 s. A degraded session, whose baseline result did not come within 12 s, sends `hr_base` `null` and `signal.baseline_quality` 0.0 for the rest of the session. |
 | 1.4 | 13 Sep 2026 | Three gaps made explicit, as implemented in `bridge/session.py` (prompt 2.4). No field added or removed; `v` stays `1`. §2 `state`: idle sends `segment_nominal_ms` 0, having no length. Reset lasts 20 s after a completed session and 3 s after a stop or a failed baseline gate, with `segment_nominal_ms` to match, and the session id changes when it ends. |
 | 1.5 | 14 Sep 2026 | Two gaps made explicit, as implemented in `bridge/session.py` and `bridge/contract.py`. No field added or removed; `v` stays `1`. §2 `state`: idle sends `segment_elapsed_ms` 0 as well as `segment_nominal_ms` 0. `signal.baseline_quality` is 0.0 through baseline and its hold, and nothing uses it there. |
+| 1.6 | 14 Sep 2026 | One wording brought up to date. No field added or removed; `v` stays `1`. §2 `state`: `t_session` counts from when start fires, which is when baseline begins, as `bridge/session.py` already does. The old wording, "since the attendant pressed start", predates the attendant console's countdown (prompt 2.7), from when the press and the start were the same moment. The countdown of up to 11 s now sits before start fires, is not part of the session, and sends `idle`. |

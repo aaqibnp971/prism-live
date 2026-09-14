@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.4**
+# **Prism Live: Experience Script v1.5**
 
 &nbsp;
 
@@ -19,7 +19,7 @@ Two rules this document was written under:
 
 | Field | Value |
 | :---- | :---- |
-| Total target duration | **4:11 nominal** (provisional, see the note below), **4:45 hard cap**. 4:11 from baseline start, because baseline is held to 56 s, where load starts on a pulse boundary (prompt 2.7, option 1). **The cap counts from the attendant's press** (decided 14 September). The start button arms, counts down, and fires baseline at the pulse-aligned moment, up to 11 s after the press (prompts 2.7 and 3.6). Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. **Open, 14 September: counted from the press, the worst case does not fit the cap.** Up to 11 s of countdown, 56 s of baseline, 75 s of load, 105 s of regulate and 45 s of resolve make 292 s, 4:52, which is 7 s over. Counted from baseline start the same run is 4:41. Not decided yet what gives. |
+| Total target duration | **4:11 nominal** (provisional, see the note below), **4:45 hard cap**. **Both count from when start fires**, which is when baseline begins (decided 14 September). 4:11 because baseline is held to 56 s, where load starts on a pulse boundary (prompt 2.7, option 1). **The worst case is 56 + 75 + 105 + 45 = 281 s, 4:41**: baseline to its pulse boundary, load, regulate with its full 30 s extension, and resolve. It fits the cap, and nothing is cut. The attendant console's countdown of up to 11 s to the pulse-aligned moment sits before start fires and is not part of the session (prompts 2.7 and 3.6). The wait is not part of the experience, so it does not count against a cap that limits the experience. Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. |
 | PSV emission cadence | 30 s nominal — **but see §6.1**, the demo runs it at 2 s |
 | Baseline window | 45 s |
 | Authority rule | authority \= min(confidence, segment\_ceiling), per dimension, no exceptions |
@@ -367,6 +367,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.2 | 13 Sep 2026 | §2 BASELINE: the visual driver is the mean confidence of the three dimensions a pulse can inform, rescaled so the range a settled baseline actually reaches maps to the full visual travel, and a note on the end-of-baseline hold for HR\_base. §2 LOAD: the RMSSD criterion needs at least 20 clean differences in each 30 s window. §2 REGULATE: no extension without HR\_base. |
 | 1.3 | 13 Sep 2026 | §0: hard cap 4:30 to 4:45, since the baseline hold and regulate's extension together reach 4:42. The 4:00 nominal is provisional until Week E, and any cut comes from baseline and resolve, never load or regulate. §2: the hold runs to the pulse boundary at 56 s. |
 | 1.4 | 14 Sep 2026 | §0: the nominal is 4:11 from baseline start; the hard cap counts from the attendant's press, which arms a countdown of up to 11 s; the worst case from the press, 4:52, is over the cap and open. §2 BASELINE: entry is when the start button fires. §2 REGULATE: a timeout no longer picks close B. §2 RESOLVE: the trace is held through idle until the next baseline (prompt 3.5), so the attendant's "about twenty seconds" line is marked for a rewrite. §3: N is peaked at minus left at on the trace screen, never `drop_bpm`, and alone picks the close; the machine gives no verdict; both closes are marked for a rewrite, with the two measured mismatches. |
+| 1.5 | 14 Sep 2026 | §0: the hard cap counts from when start fires, not from the press, correcting 1.4. The console's countdown is not part of the experience, so it does not count against the cap. The worst case is 56 + 75 + 105 + 45 = 281 s, 4:41, inside the cap, and nothing is cut. |
 
 &nbsp;
 

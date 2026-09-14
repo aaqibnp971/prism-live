@@ -24,6 +24,7 @@ It is shown at exhibitions and university stalls. It is **not a product**. No ap
 6. **The message contract is frozen.** See `docs/message-contract-v1.md`. A new field requires updating that document first.
 7. **Clients never decide anything.** Segment, timing and authority are host decisions. A disconnected client freezes on its last state and shows a visible marker. It does not improvise.
 8. **prism-live owns the audio device.** The engine is pulled with `prism_render` from prism-live's own audio callback, in `native/`; `prism_device_start` and `prism_device_stop` are never called. That callback high-passes the engine buffer at 62 Hz, mixes the heartbeat layer, applies the session gain, and true-peak limits to −1.0 dBTP as the last stage. The engine's own limiter is −3 dBFS sample-peak and enforces neither the ceiling nor the 36 to 62 Hz reservation.
+9. **The attendant console is a local control on the laptop, never a WebSocket client.** The contract has no start or stop message, and a network round trip must not sit between the button and a session beginning. The console arms start, counts down to the pulse-aligned moment and calls `session.start` in the bridge's own loop (prompts 2.7, 2.9, 3.6).
 
 ---
 

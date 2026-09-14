@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import json
-from datetime import date
 
 import pytest
 
@@ -11,9 +10,8 @@ from bridge.clock_sync import ClockSync
 from bridge.contract import MIN_LEAD_MS, SEGMENTS, STATE_INTERVAL_MS, validate
 from bridge.logging import SessionLog
 from bridge.server import LiveServer
-from tools import fake_receiver, fake_sender
+from tools import fake_receiver, fake_sender, record_fixture
 from tools.fake_sender import DEFAULT_FIXTURE, load_outbound, rebase
-from tools.record_fixture import record
 
 
 def fixture_records():
@@ -59,8 +57,10 @@ def test_the_fixture_walks_every_segment_and_overruns_regulate():
 
 
 def test_the_fixture_is_what_the_recorder_makes_today(tmp_path):
-    made = record(tmp_path / "fixture.jsonl", today=date(2026, 9, 13))
-    assert made["path"].read_bytes() == DEFAULT_FIXTURE.read_bytes(), (
+    # Through the command the message below gives, on whatever day this runs.
+    made = tmp_path / "fixture.jsonl"
+    assert record_fixture.main(["--out", str(made)]) == 0
+    assert made.read_bytes() == DEFAULT_FIXTURE.read_bytes(), (
         "tools/fixtures/synthetic-clean.jsonl no longer matches what the bridge makes of the "
         "synthetic armband. If that change was deliberate, re-record: "
         "python -m tools.record_fixture"

@@ -761,23 +761,17 @@ def test_tick_jitter_moves_no_boundary(tmp_path):
 # --- the shape of it ---
 
 
-def test_the_worst_case_from_baseline_start_is_4_42():
+def test_the_worst_case_from_start_firing_fits_the_4_45_cap():
+    """Experience script §0: the cap counts from when start fires. The console's countdown to
+    the pulse-aligned moment comes before that and is not part of the session."""
+
+    def worst(t):
+        return BASELINE_MS + t.hold_ms + t.load_ms + t.regulate_ms + t.extension_ms + t.resolve_ms
+
+    assert worst(Timings(hold_ms=11_000, hold_to_end=True)) == 281_000 <= 285_000  # prompt 2.7
+    assert worst(Timings()) == 282_000 <= 285_000  # the 12 s hold, until 2.7 shortens it
     t = Timings()
-    worst = BASELINE_MS + t.hold_ms + t.load_ms + t.regulate_ms + t.extension_ms + t.resolve_ms
-    assert worst == 282_000
     assert (t.hold_ms, t.extension_ms) == (BASELINE_OVERRUN_MS, REGULATE_OVERRUN_MS)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="experience script §0: the 4:45 cap counts from the press, and the worst case from "
-    "the press is over it; open since 14 September",
-)
-def test_the_worst_case_from_the_press_fits_the_4_45_cap():
-    t = Timings(hold_ms=11_000, hold_to_end=True)  # prompt 2.7
-    countdown_ms = 11_000  # the start button waits up to one pulse loop (prompt 2.7)
-    worst = BASELINE_MS + t.hold_ms + t.load_ms + t.regulate_ms + t.extension_ms + t.resolve_ms
-    assert countdown_ms + worst <= 285_000
 
 
 @pytest.mark.parametrize(

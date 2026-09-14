@@ -34,6 +34,9 @@ from bridge.session import Session
 from tools.synthetic_rr import Profile, generate
 
 FIXTURE = Path(__file__).parent / "fixtures" / "synthetic-clean.jsonl"
+# The fixture's session id carries this date whatever day it is recorded, so re-recording an
+# unchanged bridge gives the same bytes.
+FIXTURE_DATE = date(2026, 9, 13)
 TICK_MS = 20
 LATENCY_MS = 40
 SEED = 1
@@ -44,7 +47,7 @@ PROFILE = "68:61,68-100:75,100-72:115,72:150"
 LIMIT_MS = 400_000
 
 
-def record(path: Path = FIXTURE, today: date | None = None) -> dict:
+def record(path: Path = FIXTURE, today: date = FIXTURE_DATE) -> dict:
     notes = list(generate(Profile.from_spec(PROFILE), (), SEED))
     now = 0
     counts = {"beat": 0, "state": 0}
