@@ -144,6 +144,8 @@ def test_t_session_is_null_exactly_when_idle():
         STATE,
         segment="idle",
         t_session=None,
+        segment_elapsed_ms=0,
+        segment_nominal_ms=0,
         authority={"arousal": 0, "valence": 0, "cognitive_load": 0, "readiness": 0},
     )
     validate(idle, "out")
@@ -151,6 +153,20 @@ def test_t_session_is_null_exactly_when_idle():
         validate(with_(idle, t_session=5), "out")
     with pytest.raises(ContractError, match="t_session"):
         validate(with_(STATE, t_session=None), "out")
+
+
+@pytest.mark.parametrize("progress", [{"segment_elapsed_ms": 1400}, {"segment_nominal_ms": 75000}])
+def test_idle_sends_no_progress(progress):
+    idle = with_(
+        STATE,
+        segment="idle",
+        t_session=None,
+        segment_elapsed_ms=0,
+        segment_nominal_ms=0,
+        authority={"arousal": 0, "valence": 0, "cognitive_load": 0, "readiness": 0},
+    )
+    with pytest.raises(ContractError, match="are 0 in idle"):
+        validate(with_(idle, **progress), "out")
 
 
 def test_heart_rates_may_be_unknown():

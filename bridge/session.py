@@ -103,7 +103,8 @@ RUNNING = ("baseline", "load", "regulate", "resolve")
 @dataclass(frozen=True)
 class Timings:
     """Segment lengths, ms. Prompt 2.7 shortens the hold to the pulse boundary and sets
-    hold_to_end, so load starts on that boundary even when hr_base came sooner."""
+    hold_to_end, so load starts on that boundary even when hr_base came sooner. A result that
+    fails the quality gate still ends baseline when it arrives."""
 
     hold_ms: float = BASELINE_OVERRUN_MS
     hold_to_end: bool = False
@@ -147,7 +148,8 @@ class Schedule:
 
 @dataclass(frozen=True)
 class RegulateResult:
-    """What regulate found, for the log and the attendant's close. Times are into regulate."""
+    """What regulate found, for the log. Never the attendant's close, which follows the visible
+    fall on the trace screen (experience script §3). Times are into regulate."""
 
     outcome: str  # regulated, timeout, unjudged, or no_threshold
     ran_ms: float
@@ -284,8 +286,10 @@ class Session:
         if seg == "idle":
             return Schedule(seg, start, None, None)
         if seg == "baseline":
+            # A failed gate ends it at the result's arrival, from the close on, even under
+            # hold_to_end; only load waits for the end of the hold.
             end = start + BASELINE_MS
-            return Schedule(seg, start, end + t.hold_ms if t.hold_to_end else end, end + t.hold_ms)
+            return Schedule(seg, start, end, end + t.hold_ms)
         if seg == "regulate":
             return Schedule(seg, start, start + t.regulate_ms, self._regulate.cap())
         end = start + self._length()
@@ -304,7 +308,8 @@ class Session:
     # --- the attendant ---
 
     def start(self, now_ms: float) -> str | None:
-        """Begin the baseline now. Returns None, or why not: running, resetting, no_signal."""
+        """Begin the baseline now. Returns None, or why not: running, resetting, no_signal, or
+        bad_time for a time the link cannot carry, the only refusal not logged."""
         now = self._clock(now_ms)
         if now is None:
             return "bad_time"
@@ -652,12 +657,13 @@ class Session:
     def _send(self, now: float, elapsed: float) -> None:
         estimate = self._model.estimate(now)
         baseline = self._baseline
+        idle = self._segment == "idle"
         self._publish(
             self._stream.message(
                 t_engine_ms=now,
                 t_session_ms=None if self._started is None else now - self._started,
                 segment=self._segment,
-                segment_elapsed_ms=max(0.0, elapsed),
+                segment_elapsed_ms=0.0 if idle else max(0.0, elapsed),  # idle has no length
                 segment_nominal_ms=self._length(),
                 estimate=estimate,
                 hr_base_bpm=baseline.hr_base_bpm if baseline else None,

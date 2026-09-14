@@ -5,7 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-It follows contract v1.4.
+It follows contract v1.5.
 """
 
 from __future__ import annotations
@@ -141,6 +141,9 @@ def _state(msg: dict, _direction: str) -> None:
         _count(msg, "t_session")
     _count(msg, "segment_elapsed_ms")
     _count(msg, "segment_nominal_ms")
+    # Idle has no length, so no progress to draw (§2, v1.5).
+    if segment == "idle" and (msg["segment_elapsed_ms"] != 0 or msg["segment_nominal_ms"] != 0):
+        raise ContractError("state: segment_elapsed_ms and segment_nominal_ms are 0 in idle")
     for key in ("psv", "confidence", "authority"):
         _dimensions(msg, key)
     confidence, authority = msg["confidence"], msg["authority"]

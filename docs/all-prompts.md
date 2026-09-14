@@ -291,7 +291,7 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > - The shim converts `t_play` (T_engine, monotonic milliseconds) to a sample index in its own stream. Anchor the stream's first frame to T_engine at start, then correct the anchor against the device's reported position by slewing at no more than 1 ms per second of stream time, never in a step. Log the measured error between scheduled and actual onset.
 > - A beat whose `t_play` has already passed when the callback sees it is dropped and counted, never played late.
 > - Voice: 44 Hz fundamental, energy confined to 36 to 62 Hz, roll-off 24 dB/oct above 120 Hz. 8 ms attack. Decay min(220 ms, 0.55 × the beat's RR), so beats never overlap. Preallocated; nothing is allocated per beat.
-> - Level: a target in dBFS peak plus a ramp, set by the bridge per segment from docs/experience-script.md §2: −18 → −13 across the first 12 s of baseline; −13 at HR_base rising to −9 at HR_base + 15 bpm in load, clamped; −9 → −11 in regulate; −11 held in resolve, then an equal-power fade to silence over the final 3 s. The bridge sets targets, the shim smooths.
+> - Level: a target in dBFS peak plus a ramp, set by the bridge per segment from docs/experience-script.md §2: −18 → −13 across the first 12 s of baseline; −13 at HR_base rising to −9 at HR_base + 15 bpm in load, clamped, or −13 held through load when the baseline was degraded and there is no HR_base (decided 14 September); −9 → −11 in regulate; −11 held in resolve, then an equal-power fade to silence over the final 3 s. The bridge sets targets, the shim smooths.
 >
 > This is called `heartbeat_layer` everywhere in code. Never call it "pulse"; the `pulse` stem is a different thing.
 >
@@ -311,9 +311,11 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Why not let pulse open at its next boundary after load t=0, as air does: that would cost up to 11 s of a 75 s load segment with no pulse pressure, different for every visitor, and load is the segment the whole demo depends on.
 >
-> Session start alignment. Amend the state machine from 2.4: after the attendant presses start, baseline begins only when the engine's phase puts a pulse boundary exactly at load t=0, 56 s later, i.e. phase mod 11 s = 10 s. That is the same condition that would put one at 45 s, since 56 = 45 + 11. That is a wait of up to 11 s; show it as a countdown on the attendant control and log it. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
+> Session start alignment, **decided 14 September: the wait lives in the attendant console, not in the session.** Baseline must begin when the engine's phase puts a pulse boundary exactly at load t=0, 56 s later, i.e. phase mod 11 s = 10 s. That is the same condition that would put one at 45 s, since 56 = 45 + 11. `bridge/phase.py` gives that moment. The start button arms on the press, shows a countdown to it, and fires `session.start(now)` at it, a wait of up to 11 s; log the press, the wait and the firing. The session never waits: it stays in idle through the countdown, and baseline begins when start fires. The 4:45 hard cap counts from the press (docs/experience-script.md §0, where the worst case is still open). 3.6 builds the button. Air's 13 s boundaries cannot be aligned at the same time as pulse's; its open in load and its close in regulate land on the nearest boundary, up to 6.5 s from the scripted moment, and that is accepted. At reset, send the baseline pose so both gates are closed before the next person sits down.
 >
-> `bridge/session.py` already has the hold half: with `Timings(hold_ms=11_000, hold_to_end=True)`, 56 s after baseline begins the session enters load, ready or degraded, or goes to reset if the quality gate, judged on what had been classified by then, fails. The wait before baseline begins is not built; add it to the machine, and give `Session.schedule` the aligned start.
+> **Open, 14 September: where `t_session` counts from.** The contract says since the attendant pressed start. `Session` counts it from `session.start(now)`, which is now the firing, up to 11 s after the press. Either the console passes the press time to `Session`, or the contract is changed to count from the firing, which needs sign-off. Not decided.
+>
+> `bridge/session.py` already has the hold: with `Timings(hold_ms=11_000, hold_to_end=True)`, the session enters load 56 s after baseline begins, ready or degraded. **A failed gate ends baseline at its arrival** (decided 14 September): a result that fails the quality gate goes to reset as soon as it comes, from 45 s on, and with no result by 56 s the gate is judged on what had been classified by then, and a failure goes to reset at 56 s. `Session.schedule` gives baseline's earliest end as 45 s and its latest as 56 s.
 >
 > The air moves in the script have been re-scripted to fit the engine: air gates out before pulse, in one 1.5 s fade, and there is no air tail in resolve. Do not try to build either.
 >
@@ -336,6 +338,22 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > Output must be drop-in compatible with tools/synthetic_rr.py so the rest of the pipeline is unchanged.
 >
 > First run: print raw packets and confirm the RR-present flag is set. Tell me if it is not.
+
+## 2.9 The live bridge loop
+
+**Nothing drives `bridge/session.py` outside tests yet.** Only the tests (`tests/conftest.py` `run_live` and `tests/test_session.py`) and the fixture recorder `tools/record_fixture.py` construct a `Session`, all on a simulated clock, and `bridge/server.py` `main()` publishes nothing. The Week B gate and 3.6 both need this loop.
+
+> Build the live loop in the bridge: one asyncio loop on `T_engine`, the one thread `Session` is used from. It owns five things.
+>
+> 1. **Packets.** Every Heart Rate Measurement packet, from `bridge/ble.py` (2.8) or from `tools/synthetic_rr.py` through the same interface, goes to the beat scheduler first and then to the model: `result = scheduler.on_packet(now, payload)`, then `model.on_packet(now, result)`. Never the other way round, and never a packet fed twice: a doubled packet changes the baseline without a trace.
+> 2. **Ticks.** Every 20 to 100 ms: `scheduler.tick(now)`, then `session.tick(now)`. Tick whether or not packets are arriving; a dead armband must still reach its boundaries.
+> 3. **Beats.** Every beat event, from a packet or from a tick, is published as `session.beat_message(event)`, never as the scheduler's own message, so `seq` restarts at 1 in every session (contract §2). State messages leave through the `publish` callback given to `Session`; the loop passes the server's publish.
+> 4. **Attendant start and stop.** Route them to `session.start(now)` and `session.stop(now)`, and treat anything `start` returns other than None as a refusal to show the attendant: `running`, `resetting`, `no_signal`, or `bad_time`, which means the loop passed a time the link cannot carry and is a loop fault. The session logs every refusal but `bad_time`. They come from a local control on the laptop, never from a message on the WebSocket link, which is frozen and carries none. Until 3.6 builds the console, a key in the bridge console is fine, and it arms and fires start the same way 2.7 describes.
+> 5. **Restart.** After a crash or a restart, come up clean in idle: a new `PsvModel`, `BeatScheduler`, `SessionLog` and `Session`, and a fresh session id. `SessionLog.start_session` takes the next free id for the day, so it never reuses a file. Nothing resumes the session that was running, and a visitor who was mid-run starts again. `T_engine` restarts at 0, and clients rebuild their clock estimate on reconnect (contract §2).
+>
+> The wiring is in the `bridge/session.py` module docstring.
+>
+> Tests, against the synthetic armband through the real loop on a real clock: a whole session from start to the end of reset, every message valid and every beat at least 300 ms ahead when sent; a double press and a stop mid-run; a packet source that goes silent in baseline reaches the gate at the cap; killing the loop mid-session and starting it again comes up in idle with a new session id, and nothing from the old session is sent again.
 
 ## GATE, end of Week B
 
@@ -371,7 +389,7 @@ Armband on, press start, four minutes, no manual intervention. Sound changes wit
 
 > The spectator screen design exists but is a mock with hardcoded data. Rebuild it in `web/spectator/` reading the live WebSocket feed.
 >
-> Replace the synthetic heart rate curve and the hardcoded PSV arrays with the real feed. Take segment boundaries and progress from segment, segment_elapsed_ms and segment_nominal_ms, never from a local clock, because regulate is adaptive and can run 30 s over.
+> Replace the synthetic heart rate curve and the hardcoded PSV arrays with the real feed. Take segment boundaries and progress from segment, segment_elapsed_ms and segment_nominal_ms, never from a local clock, because regulate is adaptive and can run 30 s over. Idle sends 0 for both, so draw no progress there (contract v1.5).
 >
 > Corrections from the design review:
 > - valence confidence and authority render as exactly 0.00 and a zero-width bar, labelled so it reads as deliberate
@@ -402,13 +420,27 @@ Armband on, press start, four minutes, no manual intervention. Sound changes wit
 >
 > Their heart rate curve for the whole session, sat down at / peaked at / left at as three large numbers, and which dimensions held authority.
 >
-> Held for 20 seconds after the session ends so they can photograph it. Large type, readable from several metres.
+> Held through the 20 s reset after the session ends so they can photograph it, and then through idle (below). Large type, readable from several metres.
+>
+> **Hold the last trace through idle** (decided 14 September). When reset ends, the session id changes and `segment` goes to `idle`, before the attendant has spoken the close. Keep the last session's trace and its three numbers on screen through idle, and clear them only when the next session's baseline begins. Holding what was last shown is not a decision; the screen still takes segment and timing from the `state` message.
+>
+> The attendant's close reads its N off this screen: peaked at minus left at (docs/experience-script.md §3). Make that difference easy to read at a glance, from the same three numbers. Never show the session's `drop_bpm` as N.
 
 ## 3.6 Attendant controls and crash recovery
 
 > Single-button start, stop and reset for the attendant.
 >
-> `bridge/session.py` has the hooks: `start(now)` returns why it refused (`running`, `resetting`, `no_signal`), `stop(now)` ends a run through a 3 s reset, and `schedule`, `signal_lost` and `regulate_result` are there for the console.
+> The console is a local control on the laptop, driven through the live loop (2.9), never a client on the WebSocket link: the frozen contract carries no start or stop, and timing is a laptop decision.
+>
+> `bridge/session.py` has the hooks: `start(now)` returns why it refused (`running`, `resetting`, `no_signal`, or `bad_time` when the loop passes a time the link cannot carry), `stop(now)` ends a run through a 3 s reset, and `schedule`, `signal_lost` and `regulate_result` are there for the console.
+>
+> **`regulate_result` is never the close.** The console must not show its `outcome` or `drop_bpm` as a verdict or as N, nor use either to pick a close. The machine produces no verdict. The attendant reads N, peaked at minus left at, off the trace screen (3.5, docs/experience-script.md §3).
+>
+> **Start arms, counts down, then fires** (decided 14 September, prompt 2.7). The press arms the button and shows a countdown to the pulse-aligned moment from `bridge/phase.py`, up to 11 s. At that moment the console calls `session.start(now)`. If start is refused then, show why and disarm. The 4:45 hard cap counts from the press. Log the press, the wait and the firing.
+>
+> **Signal loss must be unmissable on the console.** `signal_lost` turns true 6.2 s after the last accepted beat. Show it so an attendant looking elsewhere still sees it: large, coloured, and on the whole console, not a small icon. **There is no auto-stop** (decided 14 September). An armband lost for good during the capture fails the quality gate at the end of the hold, and the session goes to reset on its own (docs/known-limits.md has the exact edge). Lost later, the session runs on without a heartbeat. Load and resolve keep their lengths. Regulate takes no extension it cannot judge: a plain 75 s when HR_load is too thin, or "unjudged" 6.2 s after the last accepted beat, never before 75 s. Stopping it is the attendant's call.
+>
+> **Flag: `baseline_end` logs a slope-based `baseline_quality` on a failed gate.** A result that was ready but failed the gate can log `baseline_quality` 1.0 next to `outcome` "failed" (a contact loss 5 to 30 s into the capture does). Anything on the console that reads the log must go by `outcome` and `problems`, never show that value as a good baseline.
 >
 > Crash recovery: if any component dies, the attendant is back up in under 30 seconds. That means every process restarts clean, reconnects, and no manual steps.
 >

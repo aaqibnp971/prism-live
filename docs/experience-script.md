@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.3**
+# **Prism Live: Experience Script v1.4**
 
 &nbsp;
 
@@ -19,7 +19,7 @@ Two rules this document was written under:
 
 | Field | Value |
 | :---- | :---- |
-| Total target duration | **4:11 nominal** (provisional, see the note below), **4:45 hard cap**. 4:11 because baseline is held to 56 s, where load starts on a pulse boundary (prompt 2.7, option 1). The worst case is a 12 s baseline hold plus regulate's 30 s extension, 4:42. Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. |
+| Total target duration | **4:11 nominal** (provisional, see the note below), **4:45 hard cap**. 4:11 from baseline start, because baseline is held to 56 s, where load starts on a pulse boundary (prompt 2.7, option 1). **The cap counts from the attendant's press** (decided 14 September). The start button arms, counts down, and fires baseline at the pulse-aligned moment, up to 11 s after the press (prompts 2.7 and 3.6). Throughput is protected by the cap existing at all; cutting regulate's extension to fit a lower one would attack the primary success measure. **Open, 14 September: counted from the press, the worst case does not fit the cap.** Up to 11 s of countdown, 56 s of baseline, 75 s of load, 105 s of regulate and 45 s of resolve make 292 s, 4:52, which is 7 s over. Counted from baseline start the same run is 4:41. Not decided yet what gives. |
 | PSV emission cadence | 30 s nominal — **but see §6.1**, the demo runs it at 2 s |
 | Baseline window | 45 s |
 | Authority rule | authority \= min(confidence, segment\_ceiling), per dimension, no exceptions |
@@ -118,7 +118,7 @@ Timings inside a segment are written as offsets from that segment's own start (t
 | Field | Value |
 | :---- | :---- |
 | Duration | 45 s, fixed |
-| Entry | Attendant presses start |
+| Entry | Attendant presses start. The button arms and fires at the pulse-aligned moment, up to 11 s later (prompt 2.7); baseline begins then |
 | Exit | 45 s elapsed |
 | Adaptive extension | None |
 | Timeout branch | N/A |
@@ -175,7 +175,7 @@ The narrative job of this segment is that the crowd watches confidence build in 
 | Entry | Load complete |
 | Exit | Success threshold met, or duration elapsed |
 | Adaptive extension | Up to **\+30 s** if the threshold has not been met. Hard cap, protects booth throughput. With no HR\_base, after a degraded baseline, there is no threshold to wait for, and regulate runs a plain 75 s. |
-| Timeout branch | Proceed to resolve anyway. The trace reports honestly. **Close B is used.** |
+| Timeout branch | Proceed to resolve anyway. The trace reports honestly. The close follows the visible fall on the trace screen, not the timeout (§3). |
 | Authority ceilings | arousal 1.0 · valence 1.0 · cognitive\_load 1.0 · readiness 1.0. Confidence is the only limiter. |
 | **Regulation target** | **Primary: arousal, direction DOWN, target value 0.32.** **Secondary: cognitive\_load, direction DOWN, target value 0.28.** Held: readiness target 0.62 (up, but confidence will be moderate so it acts weakly, which is honest). valence target 0.50 — no authority, it will not move, and that is the point. |
 | **Success threshold** | Let rise \= HR\_load − HR\_base (from §2 LOAD). **Regulated when any 20 s rolling window has mean HR ≤ HR\_load − max(5 bpm, 0.5 × rise).** Floor of 5 bpm so a person who barely activated still has a reachable bar. Secondary, recorded not gating: RMSSD returns to ≥ 0.95 × baseline. |
@@ -212,6 +212,8 @@ The narrative job of this segment is that the crowd watches confidence build in 
 
 Then 20 seconds of trace held on the screen while they photograph it, before the close.
 
+**The attendant's "twenty seconds" line needs a rewrite. Not rewritten yet (14 September).** "It'll be up for about twenty seconds" is no longer true: the spectator screen holds the trace through the close and through idle, until the next session's baseline begins (prompt 3.5), because the close reads N off it (§3).
+
 &nbsp;
 
 ---
@@ -229,7 +231,12 @@ Four variants, one spine. Only Beat 1 changes.
 
 &nbsp;
 
-**\[N\]** is read live off the trace screen. If the drop is under 3 bpm, use the did-not-move close regardless of what the threshold logic decided.
+**\[N\]** is the visible fall on the trace screen: **peaked at minus left at** (prompt 3.5), read live. It is never the session's `drop_bpm`, which is HR\_load minus the lowest 20 s window, a different number. **The close follows N alone.** 3 bpm or more takes the "It moved" close (close A). Under 3 bpm takes the "It did not move" close (close B), whatever the threshold logic decided and whether regulate timed out. The state machine produces no verdict; the attendant reads N off the screen.
+
+**Both closes need a rewrite. Not rewritten yet (14 September).** Measured on synthetic sessions in the design critique of 13 September, against the closes as they were chosen until 14 September, by the threshold logic with close B on a timeout:
+
+- **Close A's first clause asserts a rise that 13 % of regulated runs never had.** "It went up when the task got hard" (student), and "from where the task put it" (investor), are said to people who never met the load activation test: 107 of 818 regulated sessions, with simulated load rises of 0 to 20 bpm.
+- **Close B tells 95 % of timeouts that their trace is flat, when it fell a median 5.9 bpm.** "Your trace is close to flat" and "Your line's pretty flat" are said over a visible fall of 3 bpm or more: 94 of 99 timeouts with a simulated load rise of 10 to 20 bpm. Counting the rise-6 sessions of the same sweep, it is 181 of 249 (73 %), median 4.3 bpm.
 
 ### Beat 2 — name what the system did. 20 s, one version, same for everyone.
 
@@ -359,6 +366,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.1 | 11 Sep 2026 | §2 LOAD: eye control replaced by reticle control, since the Quest 3S has no eye tracking. The person selects by holding the reticle on the moving half, driven by head pose in VR or by pointer on the task screen, and the attendant line now matches. Added a note that the ramp values are provisional until Week E. The in-headset line is unchanged. §2 carries a note that the audio arc is unvalidated against the engine mapping and that regulate currently inverts. |
 | 1.2 | 13 Sep 2026 | §2 BASELINE: the visual driver is the mean confidence of the three dimensions a pulse can inform, rescaled so the range a settled baseline actually reaches maps to the full visual travel, and a note on the end-of-baseline hold for HR\_base. §2 LOAD: the RMSSD criterion needs at least 20 clean differences in each 30 s window. §2 REGULATE: no extension without HR\_base. |
 | 1.3 | 13 Sep 2026 | §0: hard cap 4:30 to 4:45, since the baseline hold and regulate's extension together reach 4:42. The 4:00 nominal is provisional until Week E, and any cut comes from baseline and resolve, never load or regulate. §2: the hold runs to the pulse boundary at 56 s. |
+| 1.4 | 14 Sep 2026 | §0: the nominal is 4:11 from baseline start; the hard cap counts from the attendant's press, which arms a countdown of up to 11 s; the worst case from the press, 4:52, is over the cap and open. §2 BASELINE: entry is when the start button fires. §2 REGULATE: a timeout no longer picks close B. §2 RESOLVE: the trace is held through idle until the next baseline (prompt 3.5), so the attendant's "about twenty seconds" line is marked for a rewrite. §3: N is peaked at minus left at on the trace screen, never `drop_bpm`, and alone picks the close; the machine gives no verdict; both closes are marked for a rewrite, with the two measured mismatches. |
 
 &nbsp;
 

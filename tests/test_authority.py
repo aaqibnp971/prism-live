@@ -191,8 +191,9 @@ def test_every_granted_authority_passes_the_contract():
         confidence = {d: math.floor(rng.random() * 1000) / 1000 for d in DIMENSIONS}
         confidence["valence"] = 0.0
         entry = {d: math.floor(rng.random() * 1000) / 1000 for d in DIMENSIONS}
-        elapsed = rng.randrange(0, 60_000) if segment != "reset" else 0
+        elapsed = rng.randrange(0, 60_000) if segment not in ("idle", "reset") else 0
         nominal = 45_000 if segment in ("baseline", "resolve") else 75_000
+        nominal = 0 if segment == "idle" else nominal
         granted = grant(confidence, segment, elapsed, nominal, entry)
         validate(state(segment, confidence, granted, elapsed, nominal), "out")
 

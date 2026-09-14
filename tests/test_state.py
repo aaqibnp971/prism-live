@@ -43,7 +43,7 @@ def whole_session():
                 t_engine_ms=t_ms,
                 t_session_ms=t_ms - 20_000,
                 segment=segment,
-                segment_elapsed_ms=0 if segment == "reset" else t_ms - start * 1000,
+                segment_elapsed_ms=0 if segment in ("idle", "reset") else t_ms - start * 1000,
                 segment_nominal_ms=nominal * 1000,
                 estimate=estimate,
                 hr_base_bpm=baseline.hr_base_bpm if baseline else None,

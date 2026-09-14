@@ -84,7 +84,8 @@ def test_state_goes_out_every_2_s_and_at_every_boundary_with_the_segment_clock(t
     for msg in states:
         segment = msg["segment"]
         if segment == "idle":
-            assert msg["t_session"] is None and msg["segment_nominal_ms"] == 0
+            assert msg["t_session"] is None
+            assert msg["segment_elapsed_ms"] == 0 and msg["segment_nominal_ms"] == 0
             continue
         assert msg["t_session"] == msg["t_engine"] - 10_000
         assert abs(msg["segment_elapsed_ms"] - (msg["t_engine"] - at[segment])) <= 0.5
@@ -210,6 +211,10 @@ def test_hold_to_end_starts_load_on_the_end_of_the_hold_even_when_hr_base_came_s
     ):
         run = live(tmp_path / to, spec, fault, timings=timings, until_s=100)
         assert starts(run)[to] == 66_000
+    # A result that fails the gate ends baseline when it arrives, as without hold_to_end.
+    failed = live(tmp_path / "failed", FLAT, "contact_lost@15:25", timings=timings, until_s=100)
+    plain = live(tmp_path / "plain", FLAT, "contact_lost@15:25", until_s=100)
+    assert 55_000 < starts(failed)["reset"] == starts(plain)["reset"] < 66_000
 
 
 def test_load_starts_when_the_result_came_whatever_the_ticks(tmp_path):
@@ -674,7 +679,7 @@ def test_a_new_session_forgets_the_baseline_but_not_the_armband(tmp_path):
     assert [e["outcome"] for e in run.events("baseline_end")] == ["ready", "ready"]
     starts_of_sessions = run.events("session_start")
     assert starts_of_sessions[1]["at_ms"] == first_end
-    assert idle[0]["segment_elapsed_ms"] == round(idle[0]["t_engine"] - first_end)
+    assert all(m["segment_elapsed_ms"] == 0 and m["segment_nominal_ms"] == 0 for m in idle)
 
 
 def test_a_session_adopts_the_log_s_open_session(tmp_path):
@@ -744,7 +749,7 @@ def test_time_never_runs_backwards_or_past_what_the_link_can_carry(tmp_path):
     session.tick(12_000)
     log.close()
     assert [m["t_engine"] for m in sent] == [10_000, 12_000]
-    assert [m["segment_elapsed_ms"] for m in sent] == [10_000, 12_000]
+    assert [m["segment_elapsed_ms"] for m in sent] == [0, 0]  # idle has no length
 
 
 def test_tick_jitter_moves_no_boundary(tmp_path):
@@ -756,11 +761,23 @@ def test_tick_jitter_moves_no_boundary(tmp_path):
 # --- the shape of it ---
 
 
-def test_the_worst_case_from_start_fits_the_4_45_cap():
+def test_the_worst_case_from_baseline_start_is_4_42():
     t = Timings()
     worst = BASELINE_MS + t.hold_ms + t.load_ms + t.regulate_ms + t.extension_ms + t.resolve_ms
-    assert worst == 282_000 <= 285_000
+    assert worst == 282_000
     assert (t.hold_ms, t.extension_ms) == (BASELINE_OVERRUN_MS, REGULATE_OVERRUN_MS)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="experience script §0: the 4:45 cap counts from the press, and the worst case from "
+    "the press is over it; open since 14 September",
+)
+def test_the_worst_case_from_the_press_fits_the_4_45_cap():
+    t = Timings(hold_ms=11_000, hold_to_end=True)  # prompt 2.7
+    countdown_ms = 11_000  # the start button waits up to one pulse loop (prompt 2.7)
+    worst = BASELINE_MS + t.hold_ms + t.load_ms + t.regulate_ms + t.extension_ms + t.resolve_ms
+    assert countdown_ms + worst <= 285_000
 
 
 @pytest.mark.parametrize(
@@ -798,7 +815,8 @@ def test_the_schedule_says_when_each_segment_can_end(tmp_path):
 
     assert at(FLAT, 30)[0] == schedule("baseline", 10_000.0, 55_000.0, 67_000.0)
     held = Timings(hold_ms=11_000, hold_to_end=True)
-    assert at(FLAT, 30, timings=held)[0] == schedule("baseline", 10_000.0, 66_000.0, 66_000.0)
+    # A failed gate can end baseline from the close on, even when load waits for the hold's end.
+    assert at(FLAT, 30, timings=held)[0] == schedule("baseline", 10_000.0, 55_000.0, 66_000.0)
     now, s = at(FLAT, 100)
     assert now == schedule("load", s["load"], s["load"] + 75_000, s["load"] + 75_000)
     now, s = at(FLAT, 150, "disconnect@52:20")

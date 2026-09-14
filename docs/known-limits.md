@@ -310,7 +310,12 @@ tail classified. Synthetic armband, no faults, seeds 1 to 10, lost for good this
 | 95 bpm | 7 s or more before | 5 s or less | 6 s before: 9 of 10 fail |
 
 An armband that comes back after the hold still gets that verdict. An armband lost for good gets no
-useful session either way, and the re-seat is the booth's quicker path.
+useful session either way, and the re-seat is the booth's quicker path. **Accepted, 14 September
+2026.**
+
+**A failed gate ends baseline when the result arrives**, from 45 s on, also under 2.7's
+`hold_to_end`, where only load waits for the end of the hold (decided 14 September).
+`Session.schedule` gives baseline's earliest end as the 45 s close.
 
 ---
 

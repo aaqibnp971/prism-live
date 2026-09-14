@@ -170,6 +170,7 @@ Everything you draw is controlled by exactly seven values. You will be given ten
 - **baseline confidence**, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
 - compute it from each `state` message as `min(1.0, (confidence.arousal + confidence.cognitive_load + confidence.readiness) / 3 / 0.393)`
 - leave valence out: its confidence is always exactly 0.0, so a mean over all four could never get past 0.75
+- do not use `signal.baseline_quality` here: it is 0.0 through all of baseline and its hold, and takes the baseline result's value, if there is one, only once load begins. Nothing uses it during baseline
 - 0.393 is the most those three reach during baseline. A settled person usually reaches it by the end of the 45 seconds; at slow heart rates, around 48 bpm, it tops out near 0.94
 - it does not rise evenly: see the curve below
 - Fixed: hue 208°, saturation 0.12, field motion 0.008
@@ -356,7 +357,7 @@ For the WebSocket itself, `NativeWebSocket` is the usual choice and works on Que
 The laptop owns segment, timing and authority. You display what you are told.
 
 Specifically:
-- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, and baseline can run 12 seconds over, so a local clock will be wrong. Idle has no length and sends a nominal of 0; reset lasts 20 seconds after a full session and 3 seconds after a stop
+- Take segment and progress from `segment`, `segment_elapsed_ms` and `segment_nominal_ms` in the `state` message. **Never from a local timer.** Regulate is adaptive and can run 30 seconds over, and baseline can run 12 seconds over, so a local clock will be wrong. Idle has no length and sends 0 for both elapsed and nominal, so draw no progress there; reset lasts 20 seconds after a full session and 3 seconds after a stop or a failed baseline gate
 - If the connection drops, **freeze on the last known state** and show a visible marker. Do not improvise, do not carry on, do not guess
 
 ## 19. Structure the code so the field is portable
