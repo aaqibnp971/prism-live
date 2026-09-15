@@ -129,6 +129,18 @@ logs/       gitignored.
 - One recorded real session lives in `tools/fixtures/` and is the canonical input for tests.
 - The beat scheduler has unit tests covering: dropped packet, doubled beat, missed beat, artefact burst, and reconnect mid-session.
 
+### Review budget
+
+Adversarial review is expensive and the budget is limited. Match it to what the code protects.
+
+**Heavy review**, one round of at most three agents, for code where a wrong answer is silent and reaches a person: HRV and baseline maths, the beat scheduler, PSV and confidence, the audio path and its filters.
+
+**Light review**, self-check and tests only, for everything else: transport, state machine plumbing, tooling, web clients.
+
+**No review** for documentation, renames, or config changes.
+
+Never run a second review round on the same work without asking first. If a review is interrupted, do not restart it. Commit the work and say it is unverified.
+
 ---
 
 ## Out of scope, and it stays that way
