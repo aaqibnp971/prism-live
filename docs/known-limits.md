@@ -366,6 +366,14 @@ engine and shim DLLs and a generated test scene. The real stems do not exist yet
   QueryPerformanceCounter plus one device period. Nothing corrects it against the device's
   reported position until prompt 2.6. The voice itself is 2.6's minimal stand-in.
 
+### The armband-day list
+
+These all need hardware and cannot be verified in software:
+
+1. Confirm the fade to silence makes no audible click on real headphones, wired, across all four interruption scenarios.
+2. Pull the audio cable mid-session and confirm recovery. Also switch the default output device while running.
+3. Measure the real DAC anchor, which prompt 2.6 is designed to refine.
+
 ### The PSV feed
 
 All provisional until Week B listening.
