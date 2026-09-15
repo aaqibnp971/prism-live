@@ -48,6 +48,7 @@ from bridge.engine import (
     EngineError,
     EngineHost,
     PlsConfig,
+    PlsHeartbeatOnset,
     PlsStats,
     PrismConfig,
     PrismMoodOverride,
@@ -55,7 +56,7 @@ from bridge.engine import (
     ShimError,
     engine_library,
 )
-from bridge.engine_feed import PsvFeed, SessionGain
+from bridge.engine_feed import HeartbeatLevel, PsvFeed, SessionGain
 from bridge.engine_mapping import map_effective
 
 if sys.platform != "win32":
@@ -105,14 +106,21 @@ def test_the_engine_library_is_the_acbfd50_build():
 
 def test_the_ctypes_structs_have_the_c_layouts():
     """x64: prism_config int32, int32, int64, int64, double; prism_mood_override a pointer and five
-    doubles; pls_config four uint32 and a double; pls_stats (ABI 2) six uint64, a double and a
-    uint64."""
-    sizes = [ctypes.sizeof(t) for t in (PrismConfig, PrismMoodOverride, PlsConfig, PlsStats)]
-    assert sizes == [32, 48, 24, 64]
+    doubles; pls_config four uint32 and a double; pls_stats ABI 3's timing and loss fields."""
+    sizes = [
+        ctypes.sizeof(t)
+        for t in (PrismConfig, PrismMoodOverride, PlsConfig, PlsStats, PlsHeartbeatOnset)
+    ]
+    assert sizes == [32, 48, 24, 128, 16]
     assert (PrismConfig.cadence_ms.offset, PrismConfig.significant_delta.offset) == (8, 24)
     assert (PlsConfig.engine_trim_db.offset, PlsStats.limiter_min_gain.offset) == (16, 48)
     assert PlsStats.device_unrequested_stops.offset == 56
-    assert Shim.abi_version() == engine_module.SHIM_ABI_VERSION == 2
+    assert PlsStats.device_clock_samples.offset == 64
+    assert PlsStats.heartbeat_onset_measurements.offset == 80
+    assert PlsStats.heartbeat_onset_error_abs_max_ms.offset == 112
+    assert PlsStats.heartbeat_onset_telemetry_dropped.offset == 120
+    assert PlsHeartbeatOnset.error_ms.offset == 8
+    assert Shim.abi_version() == engine_module.SHIM_ABI_VERSION == 3
 
 
 def test_a_44_1_khz_scene_is_refused_and_the_engine_destroyed(tmp_path):
@@ -467,14 +475,20 @@ def test_start_gives_the_shim_t_engine_before_starting_the_stream(host, monkeypa
     assert calls == [("origin", clock._ORIGIN_NS), ("start",)]
 
 
-def test_start_resumes_the_session_gain_once_the_stream_has_started(host, monkeypatch):
-    """A refused start leaves the gain holding: nothing goes into a stream that is not running."""
+def test_start_resumes_both_level_controllers_once_the_stream_has_started(host, monkeypatch):
+    """A refused start leaves both holding: nothing goes into a stream that is not running."""
     calls = []
-    gain = SimpleNamespace(resume=lambda: calls.append(("resume",)))
+    gain = SimpleNamespace(resume=lambda: calls.append(("resume gain",)))
+    heartbeat = SimpleNamespace(resume=lambda: calls.append(("resume heartbeat",)))
     monkeypatch.setattr(Shim, "set_time_origin_ns", lambda self, ns: calls.append(("origin", ns)))
     monkeypatch.setattr(Shim, "start", lambda self: calls.append(("start",)))
-    host.start(gain)
-    assert calls == [("origin", clock._ORIGIN_NS), ("start",), ("resume",)]
+    host.start(gain, heartbeat)
+    assert calls == [
+        ("origin", clock._ORIGIN_NS),
+        ("start",),
+        ("resume gain",),
+        ("resume heartbeat",),
+    ]
     calls.clear()
 
     def refused(self):
@@ -482,7 +496,7 @@ def test_start_resumes_the_session_gain_once_the_stream_has_started(host, monkey
 
     monkeypatch.setattr(Shim, "start", refused)
     with pytest.raises(ShimError, match="PLS_ERROR_SAMPLE_RATE"):
-        host.start(gain)
+        host.start(gain, heartbeat)
     assert calls == [("origin", clock._ORIGIN_NS)]
 
 
@@ -521,7 +535,7 @@ def test_stop_fades_to_digital_silence_before_the_stream_stops(host, monkeypatch
     fade, not a cut. Rendered as a device would: in 10 ms callbacks, the commands taken one whole
     block after frames_rendered was read, sleeps ending up to a period and a clock tick short of
     what they asked, and nothing rendered after the stop. With a SessionGain, a state message
-    arriving during the wait sends nothing: stop's fade is the only session gain command."""
+    arriving during the wait sends nothing: stop's fades are the only two level commands."""
     shim = host.shim
     block = shim.config.max_block_frames
     host.engine.set_mood_override(*LOUDEST)
@@ -538,6 +552,7 @@ def test_stop_fades_to_digital_silence_before_the_stream_stops(host, monkeypatch
         assert would.on_state(during) is not None  # the case matters: unheld, it re-targets
         gain = SessionGain(shim, Events())
         gain.on_state(before)
+    heartbeat = HeartbeatLevel(shim, Events())
     out = np.zeros(6 * RATE, np.float32)
     done = 0
 
@@ -548,12 +563,17 @@ def test_stop_fades_to_digital_silence_before_the_stream_stops(host, monkeypatch
             done += size
 
     play(RATE)
-    commands = []
+    commands, heartbeat_commands = [], []
     set_session_gain = Shim.set_session_gain
+    set_heartbeat_level = Shim.set_heartbeat_level
 
     def recorded(self, target, ramp_ms):
         commands.append((target, ramp_ms))
         set_session_gain(self, target, ramp_ms)
+
+    def recorded_heartbeat(self, target_dbfs, ramp_ms):
+        heartbeat_commands.append((target_dbfs, ramp_ms))
+        set_heartbeat_level(self, target_dbfs, ramp_ms)
 
     frames_rendered, reads = Shim.frames_rendered, []
 
@@ -574,17 +594,19 @@ def test_stop_fades_to_digital_silence_before_the_stream_stops(host, monkeypatch
             play(frames // 2)
             if during is not None:
                 sent_during.append(gain.on_state(during))
+                assert heartbeat.on_state(during) is None
             play(frames - frames // 2)
         else:
             play(PERIOD)
 
     monkeypatch.setattr(Shim, "set_session_gain", recorded)
+    monkeypatch.setattr(Shim, "set_heartbeat_level", recorded_heartbeat)
     monkeypatch.setattr(Shim, "frames_rendered", read_mid_block)
     # Output frame f plays at f / 48 ms.
     monkeypatch.setattr(clock, "t_engine_ms", lambda: done / 48)
     monkeypatch.setattr(engine_module, "asyncio", SimpleNamespace(sleep=sleep))
     monkeypatch.setattr(Shim, "stop", lambda self: stops.append(frames_rendered(self)))
-    asyncio.run(host.stop(gain))
+    asyncio.run(host.stop(gain, heartbeat))
     assert len(stops) == 1 and frames_rendered(shim) == stops[0] == done
     played = out[: stops[0]]
     ramp = round(STOP_RAMP_MS * 48)
@@ -595,8 +617,10 @@ def test_stop_fades_to_digital_silence_before_the_stream_stops(host, monkeypatch
     halfway = out[round(2.5 * RATE) + LATENCY - RATE // 4 : round(2.5 * RATE) + LATENCY]
     assert 0.0 < np.max(np.abs(halfway)) < np.max(np.abs(out[LATENCY : RATE // 2 + LATENCY]))
     assert commands == [(0.0, STOP_RAMP_MS)], "the session gain was re-targeted during the wait"
+    assert heartbeat_commands == [(-math.inf, STOP_RAMP_MS)]
     assert sent_during == ([] if during is None else [None])
     assert gain is None or gain.holding
+    assert heartbeat.holding
     faded_out = RATE + 2 * block + ramp + LATENCY
     assert faded_out <= stops[0] < faded_out + PERIOD
     assert sleeps[0] == STOP_RAMP_MS / 1000 and set(sleeps[1:]) == {STOP_POLL_S}

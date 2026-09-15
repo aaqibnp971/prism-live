@@ -1,4 +1,4 @@
-// shim_dsp_test.cpp: the shim's signal path against what it promises (prompt 2.5). No device.
+// shim_dsp_test.cpp: the shim's signal path against what it promises (prompts 2.5-2.6). No device.
 //
 // Links the shim's objects and drives the chain through the public ABI (pls_render_offline), or a
 // piece of it directly where that is sharper:
@@ -8,10 +8,10 @@
 //   frames       frames_rendered is exact across split blocks; render errors zero the block
 //   highpass     the response at chosen frequencies, measured through the engine tap, against
 //                the generated coefficients and the decided bounds
-//   ramps        session gain ramps land on their targets exactly, on the frame they should
+//   ramps        session gain and heartbeat curves; device-anchor observations never step and
+//                their correction is bounded to 1 ms per second of stream time
 //   beats        a beat's first non-zero sample leaves on its anchored output frame; late and
-//                full beats are dropped and counted; the time origin anchors the first frame of
-//                the buffer, offline and on the device callback's path, without the latency
+//                full beats are dropped and counted; complete voices never overlap
 //   detector     the true-peak detector against a sine's exact peak, and against the reference
 //   limiter      adversarial input through the whole chain never exceeds -1.0 dBTP by the
 //                reference meter; well below the ceiling the output is the input, delayed
@@ -38,14 +38,6 @@
 
 #include <emmintrin.h>
 #include <xmmintrin.h>
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 
 #include "highpass_coefficients.h"
 #include "limiter.h"
@@ -307,24 +299,20 @@ pls_stats stats_of(pls_shim* shim) {
   return stats;
 }
 
-// time.perf_counter_ns() as CPython 3.11 computes it on Windows, as the bridge sends the origin.
-int64_t perf_counter_ns_now() {
-  LARGE_INTEGER frequency;
-  LARGE_INTEGER counter;
-  QueryPerformanceFrequency(&frequency);
-  QueryPerformanceCounter(&counter);
-  return (counter.QuadPart / frequency.QuadPart) * 1000000000LL +
-         (counter.QuadPart % frequency.QuadPart) * 1000000000LL / frequency.QuadPart;
-}
-
 // --- abi --------------------------------------------------------------------------------------
 
 void test_abi() {
   std::printf("abi\n");
-  check(pls_abi_version() == PLS_ABI_VERSION && PLS_ABI_VERSION == 2, "pls_abi_version is 2");
-  check(sizeof(pls_stats) == 64 && offsetof(pls_stats, limiter_min_gain) == 48 &&
-            offsetof(pls_stats, device_unrequested_stops) == 56,
-        "pls_stats: device_unrequested_stops appended at offset 56, 64 bytes in all");
+  check(pls_abi_version() == PLS_ABI_VERSION && PLS_ABI_VERSION == 3, "pls_abi_version is 3");
+  check(sizeof(pls_stats) == 128 && offsetof(pls_stats, limiter_min_gain) == 48 &&
+            offsetof(pls_stats, device_unrequested_stops) == 56 &&
+            offsetof(pls_stats, device_clock_samples) == 64 &&
+            offsetof(pls_stats, heartbeat_onset_measurements) == 80 &&
+            offsetof(pls_stats, heartbeat_onset_error_abs_max_ms) == 112 &&
+            offsetof(pls_stats, heartbeat_onset_telemetry_dropped) == 120,
+        "pls_stats: ABI 3 timing fields appended at offsets 64 through 120, 128 bytes in all");
+  check(sizeof(pls_heartbeat_onset) == 16 && offsetof(pls_heartbeat_onset, error_ms) == 8,
+        "pls_heartbeat_onset is two adjacent doubles");
   const std::string hash = pls_source_hash();
   const bool hex = hash.size() == 64 && std::all_of(hash.begin(), hash.end(), [](char c) {
                      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -396,6 +384,7 @@ void test_abi() {
       pls_set_clock_anchor(shim, 0, (1ull << 62) + 1) == PLS_ERROR_INVALID_ARGUMENT &&
       pls_set_session_gain(nullptr, 0.5, 0) == PLS_ERROR_INVALID_ARGUMENT &&
       pls_get_stats(shim, nullptr) == PLS_ERROR_INVALID_ARGUMENT &&
+      pls_drain_heartbeat_onsets(nullptr, nullptr, 1) == 0 &&
       pls_render_offline(shim, nullptr, nullptr, 1) == PLS_ERROR_INVALID_ARGUMENT;
   check(setters_refuse, "out-of-range, NaN and null arguments: PLS_ERROR_INVALID_ARGUMENT");
   check(pls_set_clock_anchor(shim, 0, 1ull << 62) == PLS_OK &&
@@ -629,6 +618,46 @@ void test_ramps() {
   ramp.set(0.1, 0);
   check(ramp.next() == 0.1, "LinearRamp: 0 frames steps");
 
+  pls::HeartbeatRamp heartbeat;
+  heartbeat.reset_db(-12.0);
+  heartbeat.set_db(-INFINITY, 4);
+  const double start = std::pow(10.0, -12.0 / 20.0);
+  const double h1 = heartbeat.next();
+  const double h2 = heartbeat.next();
+  const double h3 = heartbeat.next();
+  const double h4 = heartbeat.next();
+  check(std::fabs(h1 - start * std::cos(kPi / 8.0)) < 1e-15 &&
+            std::fabs(h2 - start / std::sqrt(2.0)) < 1e-15 &&
+            std::fabs(h3 - start * std::cos(3.0 * kPi / 8.0)) < 1e-15 && h4 == 0.0 &&
+            heartbeat.next() == 0.0,
+        "HeartbeatRamp: fade to silence is cosine equal-power and frame N is digital zero");
+  heartbeat.reset_db(-18.0);
+  heartbeat.set_db(-13.0, 4);
+  const double db1 = db(heartbeat.next());
+  const double db2 = db(heartbeat.next());
+  const double db3 = db(heartbeat.next());
+  const double db4 = db(heartbeat.next());
+  check(std::fabs(db1 - -16.75) < 1e-12 && std::fabs(db2 - -15.5) < 1e-12 &&
+            std::fabs(db3 - -14.25) < 1e-12 && std::fabs(db4 - -13.0) < 1e-12,
+        "HeartbeatRamp: audible targets move linearly in dB and land exactly");
+
+  pls::ClockMapper clock;
+  clock.reset(1000.0, 48000, 0);
+  const int64_t before_observation = clock.frame_for(1500.0);
+  const double observed_error = clock.observe(1005.0, 48000, 0);
+  const int64_t after_observation = clock.frame_for(1500.0);
+  clock.advance(48000);
+  const double after_one_second = clock.anchor_ms();
+  clock.advance(96000);
+  check(observed_error == 5.0 && before_observation == 72000 &&
+            after_observation == before_observation && after_one_second == 1001.0 &&
+            clock.anchor_ms() == 1002.0 && clock.total_slew_ms() == 2.0,
+        "ClockMapper: a +5 ms observation never steps, then slews exactly 1 ms per stream second");
+  (void)clock.observe(clock.time_for(96000) - 4.0, 96000, 96000);
+  clock.advance(144000);
+  check(clock.anchor_ms() == 1001.0 && clock.total_slew_ms() == 1.0,
+        "ClockMapper: negative correction is bounded to -1 ms per stream second too");
+
   // Through the chain. A sine well under the ceiling, so the limiter's gain is exactly 1 and
   // out[n + latency] must equal float(tap[n] * trim * gain[n]) bit for bit.
   constexpr double kTrimDb = -6.0;
@@ -698,18 +727,6 @@ void test_ramps() {
 
 // --- beats ------------------------------------------------------------------------------------
 
-double voice(int64_t k, int64_t decay_frames) {
-  constexpr int64_t kAttack = 384;
-  if (k < 0 || k >= kAttack + decay_frames) {
-    return 0.0;
-  }
-  const double envelope =
-      k < kAttack ? 0.5 - 0.5 * std::cos(kPi * static_cast<double>(k) / kAttack)
-                  : 0.5 + 0.5 * std::cos(kPi * static_cast<double>(k - kAttack) /
-                                         static_cast<double>(decay_frames));
-  return std::sin(2.0 * kPi * 44.0 * static_cast<double>(k) / kRate) * envelope;
-}
-
 size_t first_nonzero(const std::vector<float>& x, size_t from, size_t to) {
   for (size_t i = from; i < std::min(to, x.size()); ++i) {
     if (x[i] != 0.0f) {
@@ -738,28 +755,39 @@ void test_beats() {
 
   constexpr int64_t kA = 72000;
   constexpr int64_t kB = 96002;
+  constexpr int64_t kAttack = 384;
+  constexpr int64_t kTail = 960;
+  constexpr int64_t kALength = kAttack + 10560 + kTail;
+  constexpr int64_t kBLength = kAttack + 7920 + kTail;
   const size_t onset_a = first_nonzero(out, 0, 200000);
   check(onset_a == static_cast<size_t>(kA + 1) && out[kA] == 0.0f,
         "beat A: silent through output frame %lld, first non-zero sample at %llu (sin(0) = 0 at the "
         "onset itself)",
         static_cast<long long>(kA), static_cast<unsigned long long>(onset_a));
-  const size_t onset_b = first_nonzero(out, kA + 384 + 10560, 200000);
+  const size_t onset_b = first_nonzero(out, kA + kALength, 200000);
   check(onset_b == static_cast<size_t>(kB + 1) && out[kB] == 0.0f && out[kB - 1] == 0.0f,
         "beat B: first non-zero sample at %llu, anchored frame %lld",
         static_cast<unsigned long long>(onset_b), static_cast<long long>(kB));
-  double worst = 0.0;
-  for (int64_t i = kA - 10; i < kA + 11000; ++i) {
-    worst = std::max(worst, std::fabs(out[i] - level * voice(i - kA, 10560)));
+  double peak_a = 0.0;
+  double peak_b = 0.0;
+  for (int64_t i = kA; i < kA + kALength; ++i) {
+    peak_a = std::max(peak_a, std::fabs(static_cast<double>(out[i])));
   }
-  for (int64_t i = kB - 10; i < kB + 8400; ++i) {
-    worst = std::max(worst, std::fabs(out[i] - level * voice(i - kB, 7920)));
+  for (int64_t i = kB; i < kB + kBLength; ++i) {
+    peak_b = std::max(peak_b, std::fabs(static_cast<double>(out[i])));
   }
-  check(worst < 1e-6,
-        "both voices match 44 Hz from phase 0 x the 8 ms / min(220 ms, 0.55 rr) envelope at "
-        "-12 dBFS (max error %.2e)",
-        worst);
+  const bool gap_is_silent =
+      std::all_of(out.begin() + kA + kALength, out.begin() + kB,
+                  [](float sample) { return sample == 0.0f; });
+  check(std::fabs(db(peak_a / level)) < 0.001 && std::fabs(db(peak_b / level)) < 0.4,
+        "filtered voices honour the -12 dBFS peak target (long %+.4f dB, short %+.4f dB)",
+        db(peak_a), db(peak_b));
+  check(gap_is_silent && out[kA + kALength] == 0.0f && out[kB + kBLength] == 0.0f,
+        "complete filtered voices, including their 20 ms tails, do not overlap");
   pls_stats stats = stats_of(shim);
-  check(stats.beats_played == 2 && stats.beats_dropped_late == 0, "2 beats played, none dropped");
+  check(stats.beats_played == 2 && stats.beats_dropped_late == 0 &&
+            stats.heartbeat_onset_measurements == 0,
+        "2 beats played, none dropped, and offline rendering claims no device-onset measurement");
 
   // 120000 input frames rendered. The next block starts at input frame 120000, so a beat whose
   // input onset (output frame - latency) is 119999 is late, and one at 120000 is just in time.
@@ -779,6 +807,26 @@ void test_beats() {
         static_cast<unsigned long long>(stats.beats_played));
   pls_close(shim);
 
+  // rr_ms closes the interval before a beat; it says nothing about how soon the next event may
+  // arrive. A long-RR voice followed at the minimum legal 250 ms spacing must therefore fit too.
+  Playback boundary;
+  shim = open_shim(&boundary, 0.0, 480);
+  (void)pls_set_heartbeat_level(shim, kLevelDbfs, 0.0);
+  (void)pls_set_clock_anchor(shim, 0.0, 0);
+  (void)pls_push_beat(shim, 1000.0, 800.0, PLS_BEAT_OK);
+  (void)pls_push_beat(shim, 1250.0, 250.0, PLS_BEAT_OK);
+  out = render(shim, 80000, 480);
+  constexpr int64_t kFirst = 48000;
+  constexpr int64_t kNext = 60000;
+  constexpr int64_t kLongestSupport = 384 + 10560 + 960;  // 248 ms
+  const bool boundary_gap =
+      std::all_of(out.begin() + kFirst + kLongestSupport, out.begin() + kNext,
+                  [](float sample) { return sample == 0.0f; });
+  const size_t boundary_second = first_nonzero(out, kNext, out.size());
+  check(boundary_gap && boundary_second == static_cast<size_t>(kNext + 1),
+        "a long-RR voice ends after 248 ms before a next legal beat 250 ms later");
+  pls_close(shim);
+
   // No anchor: dropped as late. No free slot: dropped as full.
   Playback quiet;
   shim = open_shim(&quiet, 0.0, 480, 256, 2);
@@ -793,81 +841,54 @@ void test_beats() {
   (void)pls_render_offline(shim, scratch, nullptr, 16);
   check(stats_of(shim).beats_dropped_full == 1, "with 2 slots, a third future beat is dropped as full");
   pls_close(shim);
+}
 
-  // Offline time origin. The audio thread anchors output frame 4800, the first of the call that
-  // takes the command, to QueryPerformanceCounter as CPython's perf_counter_ns reads it, minus the
-  // origin. The limiter's latency is not added to the anchor: placement takes it off the onset. With
-  // the origin read here just before, a beat at t 500 ms leaves the limiter 24000 frames after
-  // frame 4800, less the few tens of microseconds between the two readings. With the latency added
-  // to the anchor as well, it would leave 1639 frames (34 ms) late, and this fails.
-  Playback origin_source;
-  shim = open_shim(&origin_source, 0.0, 480);
-  (void)pls_set_heartbeat_level(shim, kLevelDbfs, 0.0);
-  (void)render(shim, 4800, 480);
-  (void)pls_set_time_origin_ns(shim, perf_counter_ns_now());
-  (void)pls_push_beat(shim, 500.0, 800.0, PLS_BEAT_OK);
-  const std::vector<float> after_origin = render(shim, 48000, 480);
-  pls_close(shim);
-  // Output frame of the onset with no delay between the readings; its first non-zero sample is one
-  // later.
-  const size_t anchored = 4800 + 24000;
-  const size_t onset_d = first_nonzero(after_origin, 0, after_origin.size()) + 4800;
-  check(onset_d <= anchored + 1 && onset_d + 48 >= anchored + 1,
-        "time origin: a beat at 500 ms starts at output frame %llu, %lld frames before the "
-        "zero-delay frame %llu (under 1 ms)",
-        static_cast<unsigned long long>(onset_d),
-        static_cast<long long>(anchored + 1) - static_cast<long long>(onset_d),
-        static_cast<unsigned long long>(anchored + 1));
+void test_reanchor() {
+  std::printf("re-anchor\n");
+  Playback silence;
+  pls_shim* shim = open_shim(&silence, 0.0, 480);
+  (void)pls_set_heartbeat_level(shim, -12.0, 0.0);
 
-  // The device callback's path (pls::render_device, no device opened), with 1440-frame buffers
-  // split into 480-frame blocks and a 480-frame device period. The render function pushes the time
-  // origin and a beat at t 500 ms during the first block of the third buffer, so the audio thread
-  // takes them at the second block, 480 frames into that buffer. The anchor goes on the buffer's
-  // first frame, 2880, at now + 10 ms: the onset leaves the limiter on 2880 + 24000 - 480. Anchored
-  // on the block instead it would be 480 frames late; with the latency added, 1639 late.
-  struct DevicePush {
-    pls_shim* shim = nullptr;
-    uint32_t calls = 0;
-  };
-  DevicePush push;
-  shim = nullptr;
-  {
-    pls_config config = pls_config_default();
-    config.engine_trim_db = 0.0;
-    config.max_block_frames = 480;
-    (void)pls_open(&config,
-                   [](void* core, float* out, uint32_t frames) -> int32_t {
-                     auto* p = static_cast<DevicePush*>(core);
-                     for (uint32_t i = 0; i < frames; ++i) {
-                       out[i] = 0.0f;
-                     }
-                     if (p->calls++ == 6) {
-                       (void)pls_set_time_origin_ns(p->shim, perf_counter_ns_now());
-                       (void)pls_push_beat(p->shim, 500.0, 800.0, PLS_BEAT_OK);
-                     }
-                     return 0;
-                   },
-                   &push, &shim);
-  }
-  push.shim = shim;
-  (void)pls_set_heartbeat_level(shim, kLevelDbfs, 0.0);
-  pls::chain_of(shim).device_period_frames = 480;
-  constexpr uint32_t kBuffer = 1440;
-  std::vector<float> device_out(30 * kBuffer, 0.0f);
-  for (size_t b = 0; b < 30; ++b) {
-    pls::render_device(pls::chain_of(shim), &device_out[b * kBuffer], 1, kBuffer);
-  }
-  const pls_stats device_stats = stats_of(shim);
+  // Run 1: establish the device map and place one future beat in a slot.
+  (void)pls_set_time_origin_ns(shim, 0);
+  (void)pls_push_beat(shim, 2000.0, 800.0, PLS_BEAT_OK);
+  pls::DeviceClockSample first{true, true, 1, 1000000000LL, 0};
+  std::vector<float> first_block(480);
+  pls::render_device(pls::chain_of(shim), first_block.data(), 1, 480, &first);
+
+  // One more old-run beat is still in the FIFO when run 2's origin arrives. Both the occupied
+  // slot and that queued beat must be invalidated; only the beat tagged after the origin may play.
+  (void)pls_push_beat(shim, 2100.0, 800.0, PLS_BEAT_OK);
+  (void)pls_set_time_origin_ns(shim, 0);
+  (void)pls_push_beat(shim, 1600.0, 800.0, PLS_BEAT_OK);
+  pls::DeviceClockSample second{true, true, 2, 1500000000LL, 480};
+  std::vector<float> output(6000);
+  pls::render_device(pls::chain_of(shim), output.data(), 1,
+                     static_cast<uint32_t>(output.size()), &second);
+
+  const pls_stats stats = stats_of(shim);
+  const size_t onset = first_nonzero(output, 0, output.size());
+  pls_heartbeat_onset measurement{};
+  const uint32_t drained = pls_drain_heartbeat_onsets(shim, &measurement, 1);
+  check(stats.beats_dropped_late == 2 && stats.beats_played == 1 && onset == 4801,
+        "a re-anchor drops one placed and one queued old-run beat; the new-run beat plays");
+  check(stats.device_clock_samples == 2 && stats.heartbeat_onset_measurements == 1 &&
+            stats.heartbeat_onset_telemetry_dropped == 0 && drained == 1 &&
+            measurement.t_play_ms == 1600.0 && std::fabs(measurement.error_ms) < 1e-12,
+        "each measured onset retains its t_play and error for control-thread logging");
+
+  // The previous valid relationship must not be reused after the poller reports a failed read.
+  (void)pls_push_beat(shim, 1700.0, 250.0, PLS_BEAT_OK);
+  pls::DeviceClockSample failed{true, false, 3, 0, 0};
+  std::vector<float> after_failure(4000);
+  pls::render_device(pls::chain_of(shim), after_failure.data(), 1,
+                     static_cast<uint32_t>(after_failure.size()), &failed);
+  const pls_stats failed_stats = stats_of(shim);
+  check(failed_stats.beats_played == 2 && failed_stats.device_clock_failures == 1 &&
+            failed_stats.heartbeat_onset_measurements == 1 &&
+            pls_drain_heartbeat_onsets(shim, &measurement, 1) == 0,
+        "a failed current clock read suppresses onset measurement instead of reusing stale data");
   pls_close(shim);
-  const size_t device_anchored = 2880 + 24000 - 480;
-  const size_t onset_e = first_nonzero(device_out, 0, device_out.size());
-  check(push.calls == 90 && device_stats.beats_played == 1 && onset_e <= device_anchored + 1 &&
-            onset_e + 48 >= device_anchored + 1,
-        "time origin, device path, taken 480 frames into a buffer: the beat starts at output frame "
-        "%llu, %lld frames before the zero-delay frame %llu (under 1 ms)",
-        static_cast<unsigned long long>(onset_e),
-        static_cast<long long>(device_anchored + 1) - static_cast<long long>(onset_e),
-        static_cast<unsigned long long>(device_anchored + 1));
 }
 
 // --- detector ---------------------------------------------------------------------------------
@@ -1151,7 +1172,8 @@ void test_non_finite(const ReferenceMeter& meter) {
   std::fill(zeroed.begin() + 48960, zeroed.begin() + 49440, 0.0f);
 
   // A beat at t 930 ms leaves the limiter on output frame 44640. Its voice starts in the mix at
-  // input frame 44640 - latency = 43001 and, at rr 800 ms, lasts 10944 frames: through both blocks.
+  // input frame 44640 - latency = 43001 and, at rr 800 ms, lasts 11904 frames including its
+  // filter tail: through both blocks.
   constexpr size_t kBeatFrame = 44640;
   auto run = [&](const std::vector<float>& samples, pls_stats* stats) {
     Playback playback;
@@ -1217,6 +1239,7 @@ int main() {
   test_highpass();
   test_ramps();
   test_beats();
+  test_reanchor();
   const ReferenceMeter meter;
   test_detector(meter);
   test_limiter(meter);

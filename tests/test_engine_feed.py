@@ -1,12 +1,13 @@
-"""bridge/engine_feed.py: the PSV feed, its hysteresis, and the session gain (prompt 2.5).
+"""bridge/engine_feed.py: PSV, session gain, and heartbeat level (prompts 2.5-2.6).
 
-The sink is a recording fake with the two calls the feed makes. A whole session comes from
+The sink is a recording fake with the three calls the feed makes. A whole session comes from
 tools/fixtures/synthetic-clean.jsonl, every state message the bridge sent, in order.
 """
 
 import ast
 import copy
 import json
+import math
 import random
 import subprocess
 import sys
@@ -19,10 +20,21 @@ from conftest import run_live
 from bridge.engine_feed import (
     FADE_MS,
     GATED,
+    HEARTBEAT_BASELINE_END_DBFS,
+    HEARTBEAT_BASELINE_RAMP_MS,
+    HEARTBEAT_BASELINE_START_DBFS,
+    HEARTBEAT_CHAIN_LATENCY_MS,
+    HEARTBEAT_FINAL_FADE_MS,
+    HEARTBEAT_LEVEL_SMOOTH_MS,
+    HEARTBEAT_LOAD_MAX_DBFS,
+    HEARTBEAT_REGULATE_END_DBFS,
+    HEARTBEAT_RESTART_RAMP_MS,
     LOOP_MS,
     MARGIN,
+    HeartbeatLevel,
     PsvFeed,
     SessionGain,
+    heartbeat_load_level_dbfs,
     session_gain_for,
 )
 from bridge.engine_mapping import DIMENSIONS, GATE_THRESHOLDS, density, map_effective
@@ -39,12 +51,16 @@ class Recorder:
     def __init__(self):
         self.moods = []
         self.gains = []
+        self.heartbeats = []
 
     def set_mood_override(self, arousal, cognitive_load, readiness):
         self.moods.append((arousal, cognitive_load, readiness))
 
     def set_session_gain(self, target, ramp_ms):
         self.gains.append((target, ramp_ms))
+
+    def set_heartbeat_level(self, target_dbfs, ramp_ms):
+        self.heartbeats.append((target_dbfs, ramp_ms))
 
 
 def fixture_states():
@@ -63,7 +79,17 @@ def events(log, name):
     return [r for r in map(json.loads, lines) if r.get("event") == name]
 
 
-def message(t, arousal, load=0.5, readiness=0.5, segment="regulate", elapsed=0, nominal=75_000):
+def message(
+    t,
+    arousal,
+    load=0.5,
+    readiness=0.5,
+    segment="regulate",
+    elapsed=0,
+    nominal=75_000,
+    hr_bpm=None,
+    hr_base=None,
+):
     """A state message whose body source sends exactly these values: authority 1 everywhere."""
     return {
         "type": "state",
@@ -74,6 +100,8 @@ def message(t, arousal, load=0.5, readiness=0.5, segment="regulate", elapsed=0, 
         "psv": {"arousal": arousal, "valence": 0.5, "cognitive_load": load, "readiness": readiness},
         "confidence": {"arousal": 1.0, "valence": 0.0, "cognitive_load": 1.0, "readiness": 1.0},
         "authority": {"arousal": 1.0, "valence": 0.0, "cognitive_load": 1.0, "readiness": 1.0},
+        "hr_bpm": hr_bpm,
+        "hr_base": hr_base,
     }
 
 
@@ -604,3 +632,191 @@ def test_resume_resends_the_target_after_a_restart(tmp_path, segment):
         (0.0, 3_000.0),
         (0.0, 3_000.0),
     ]
+
+
+@pytest.mark.parametrize(
+    ("hr_bpm", "hr_base", "wanted"),
+    [
+        (68.0, 68.0, -13.0),
+        (75.5, 68.0, -11.0),
+        (83.0, 68.0, -9.0),
+        (90.0, 68.0, -9.0),
+        (55.0, 68.0, -13.0),
+        (75.0, None, -13.0),
+        (None, 68.0, -13.0),
+        (math.nan, 68.0, -13.0),
+    ],
+)
+def test_heartbeat_load_level_is_clamped_or_held_without_a_baseline(hr_bpm, hr_base, wanted):
+    assert heartbeat_load_level_dbfs(hr_bpm, hr_base) == wanted
+
+
+def test_heartbeat_level_follows_the_script_and_fades_at_resolve_t_minus_3(tmp_path):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+    assert heartbeat.on_state(
+        message(10_000, 0.5, segment="baseline", nominal=45_000)
+    ) == ((HEARTBEAT_BASELINE_START_DBFS, 0.0), (HEARTBEAT_BASELINE_END_DBFS, 12_000.0))
+    assert heartbeat.on_state(
+        message(61_040, 0.5, segment="load", elapsed=5, hr_bpm=75.6, hr_base=68.1)
+    ) == ((pytest.approx(-11.0), HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert heartbeat.on_state(
+        message(63_040, 0.5, segment="load", elapsed=2_005, hr_bpm=90.0, hr_base=68.1)
+    ) == ((HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert heartbeat.on_state(
+        message(136_040, 0.5, segment="regulate", elapsed=5, nominal=75_000)
+    ) == ((HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert heartbeat.tick(138_039.999) is None
+    assert heartbeat.tick(138_040) == (HEARTBEAT_REGULATE_END_DBFS, 72_995.0)
+
+    resolve = message(226_040, 0.5, segment="resolve", elapsed=5, nominal=45_000)
+    assert heartbeat.on_state(resolve) == (
+        (HEARTBEAT_REGULATE_END_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
+    )
+    resolve_end = 226_040 - 5 + 45_000
+    fade_start = resolve_end - HEARTBEAT_FINAL_FADE_MS
+    command_at = fade_start - HEARTBEAT_CHAIN_LATENCY_MS
+    assert heartbeat.tick(command_at - 0.001) is None
+    assert heartbeat.tick(command_at) == (-math.inf, HEARTBEAT_FINAL_FADE_MS)
+    assert heartbeat.tick(command_at + 1_000) is None
+    assert heartbeat.on_state(
+        message(resolve_end, 0.5, segment="reset", elapsed=0, nominal=20_000)
+    ) is None
+    assert sink.heartbeats == [
+        (HEARTBEAT_BASELINE_START_DBFS, 0.0),
+        (HEARTBEAT_BASELINE_END_DBFS, HEARTBEAT_BASELINE_RAMP_MS),
+        (pytest.approx(-11.0), HEARTBEAT_LEVEL_SMOOTH_MS),
+        (HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
+        (HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
+        (HEARTBEAT_REGULATE_END_DBFS, 72_995.0),
+        (HEARTBEAT_REGULATE_END_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
+        (-math.inf, HEARTBEAT_FINAL_FADE_MS),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("hr_bpm", "hr_base", "load_target"),
+    [(68.0, 68.0, -13.0), (75.5, 68.0, -11.0), (75.0, None, -13.0)],
+)
+def test_regulate_always_establishes_minus_9_then_recedes_to_minus_11(
+    tmp_path, hr_bpm, hr_base, load_target
+):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+    assert heartbeat.on_state(
+        message(0, 0.5, segment="load", hr_bpm=hr_bpm, hr_base=hr_base)
+    ) == ((load_target, HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert heartbeat.on_state(
+        message(75_000, 0.5, segment="regulate", elapsed=0, nominal=75_000)
+    ) == ((HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert heartbeat.tick(77_000) == (HEARTBEAT_REGULATE_END_DBFS, 73_000.0)
+
+
+def test_restart_reconstructs_mid_segment_levels_without_overwriting_staged_ramps(tmp_path):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+
+    heartbeat.resume()
+    assert heartbeat.on_state(
+        message(6_000, 0.5, segment="baseline", elapsed=6_000, nominal=56_000)
+    ) == ((-15.5, HEARTBEAT_RESTART_RAMP_MS),)
+    assert heartbeat.tick(6_100) == (HEARTBEAT_BASELINE_END_DBFS, 5_900.0)
+
+    heartbeat.fade_out(0.0)
+    heartbeat.resume()
+    expected_regulate = -9.0 - 2.0 * (30_000.0 - 2_000.0) / (75_000.0 - 2_000.0)
+    assert heartbeat.on_state(
+        message(40_000, 0.5, segment="regulate", elapsed=30_000, nominal=75_000)
+    ) == ((pytest.approx(expected_regulate), HEARTBEAT_RESTART_RAMP_MS),)
+    assert heartbeat.tick(40_100) == (HEARTBEAT_REGULATE_END_DBFS, 44_900.0)
+
+    heartbeat.fade_out(0.0)
+    heartbeat.resume()
+    resolve_end = 145_000.0
+    resume_at = 143_000.0
+    audible_due = resume_at + HEARTBEAT_RESTART_RAMP_MS + HEARTBEAT_CHAIN_LATENCY_MS
+    progress = (audible_due - (resolve_end - HEARTBEAT_FINAL_FADE_MS)) / HEARTBEAT_FINAL_FADE_MS
+    expected_resolve = -11.0 + 20.0 * math.log10(math.cos(0.5 * math.pi * progress))
+    assert heartbeat.on_state(
+        message(resume_at, 0.5, segment="resolve", elapsed=43_000, nominal=45_000)
+    ) == ((pytest.approx(expected_resolve), HEARTBEAT_RESTART_RAMP_MS),)
+    assert heartbeat.tick(resume_at + HEARTBEAT_RESTART_RAMP_MS) == (
+        -math.inf,
+        pytest.approx(resolve_end - HEARTBEAT_CHAIN_LATENCY_MS - resume_at - 100.0),
+    )
+
+
+def test_heartbeat_level_uses_the_same_stop_latch_as_session_gain(tmp_path):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+    heartbeat.on_state(
+        message(0, 0.5, segment="load", hr_bpm=80.0, hr_base=68.0)
+    )
+    heartbeat.fade_out(t_engine=1_000.0)
+    assert heartbeat.holding
+    assert heartbeat.on_state(message(2_000, 0.5, segment="baseline")) is None
+    assert heartbeat.tick(3_000.0) is None
+    heartbeat.resume()
+    assert not heartbeat.holding
+    assert heartbeat.on_state(
+        message(4_000, 0.5, segment="load", hr_bpm=80.0, hr_base=68.0)
+    ) == ((pytest.approx(-9.8), HEARTBEAT_LEVEL_SMOOTH_MS),)
+    assert sink.heartbeats == [
+        (pytest.approx(-9.8), HEARTBEAT_LEVEL_SMOOTH_MS),
+        (-math.inf, HEARTBEAT_FINAL_FADE_MS),
+        (pytest.approx(-9.8), HEARTBEAT_LEVEL_SMOOTH_MS),
+    ]
+
+
+def test_heartbeat_onset_measurements_are_logged_from_the_control_thread(tmp_path):
+    class TimedRecorder(Recorder):
+        records = [
+            {"t_play_ms": 1_500.0, "error_ms": -0.25},
+            {"t_play_ms": 2_250.0, "error_ms": 0.4},
+        ]
+        dropped = 0
+
+        def drain_heartbeat_onsets(self):
+            records, self.records = self.records, []
+            return records
+
+        def stats(self):
+            return type(
+                "Stats",
+                (),
+                {
+                    "device_anchor_error_ms": 1.5,
+                    "device_anchor_slew_ms": 0.75,
+                    "device_clock_samples": 42,
+                    "device_clock_failures": 1,
+                    "heartbeat_onset_telemetry_dropped": self.dropped,
+                },
+            )()
+
+    sink = TimedRecorder()
+    log = open_log(tmp_path)
+    heartbeat = HeartbeatLevel(sink, log)
+    heartbeat.on_state(message(2_000, 0.5, segment="idle"))
+    heartbeat.on_state(message(4_000, 0.5, segment="idle"))
+    sink.records = [{"t_play_ms": 5_500.0, "error_ms": 0.1}]
+    sink.dropped = 1
+    heartbeat.on_state(message(6_000, 0.5, segment="idle"))
+    timing = events(log, "heartbeat_onset_timing")
+    measured = [
+        (item["measurement"], item["scheduled_t_play_ms"], item["error_ms"])
+        for item in timing
+    ]
+    assert measured == [
+        (1, 1_500.0, -0.25),
+        (2, 2_250.0, 0.4),
+        (3, 5_500.0, 0.1),
+    ]
+    expected = {
+        "anchor_error_ms": 1.5,
+        "anchor_slew_ms": 0.75,
+        "device_clock_samples": 42,
+        "device_clock_failures": 1,
+    }
+    assert {key: timing[-1][key] for key in expected} == expected
+    dropped = events(log, "heartbeat_onset_telemetry_dropped")
+    assert [(item["dropped"], item["new_dropped"]) for item in dropped] == [(1, 1)]

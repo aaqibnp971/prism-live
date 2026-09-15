@@ -1,4 +1,4 @@
-"""What the engine is fed on every state message: the PSV (prompt 2.5) and the session gain.
+"""What audio is fed on state: the PSV, session gain and heartbeat level (prompts 2.5-2.6).
 
 PsvFeed. One mood override per state message, from the bridge's loop, the engine's only PSV
 writer (its inference thread is never started). State messages go out every 2 s and at every
@@ -47,8 +47,21 @@ next message sends its target whatever was sent before.
 
 Both log every update to the session log and are used from one thread, the bridge's loop.
 
-    feed, gain = PsvFeed(engine, log), SessionGain(shim, log)
-    # every state message: server.publish(msg); feed.on_state(msg); gain.on_state(msg)
+HeartbeatLevel. The heartbeat layer's only level writer. Baseline starts at -18 dBFS and reaches
+-13 over 12 s; load follows instantaneous HR from -13 at HR_base to -9 at HR_base + 15 bpm (or
+holds -13 without a baseline); regulate first reaches the script's -9 start, then recedes to -11
+over the nominal 75 s; resolve holds -11 and starts the shim's equal-power fade so its delayed
+output runs from T-3 s to T. on_state stores resolve's exact end and tick issues the command at
+T-3 s minus the limiter latency even when the 2 s state cadence misses it. It has the same
+stop/restart latch as SessionGain and reconstructs a mid-segment envelope in two rendered stages.
+On each state it drains every native onset record to the session log; the audio callback never
+logs.
+
+    feed = PsvFeed(engine, log)
+    gain, heartbeat = SessionGain(shim, log), HeartbeatLevel(shim, log)
+    # every state message: publish(msg); feed.on_state(msg); gain.on_state(msg)
+    #                      heartbeat.on_state(msg)
+    # every bridge tick: heartbeat.tick(now)
     # the console: feed.set_source("pose")
 """
 
@@ -85,6 +98,22 @@ RESOLVE_FADE_FROM_END_MS = 22_000  # T-22 s: bed, sub and air start to leave
 RESOLVE_SILENT_FROM_END_MS = 10_000  # T-10 s: the heartbeat layer alone
 SOONER_MS = 100.0  # a same-target command resent only if it ends at least this much sooner
 
+# The heartbeat level (experience script section 2).
+HEARTBEAT_BASELINE_START_DBFS = -18.0
+HEARTBEAT_BASELINE_END_DBFS = -13.0
+HEARTBEAT_BASELINE_RAMP_MS = 12 * 1000.0
+HEARTBEAT_LOAD_MAX_DBFS = -9.0
+HEARTBEAT_LOAD_RISE_BPM = 15.0
+HEARTBEAT_REGULATE_END_DBFS = -11.0
+HEARTBEAT_LEVEL_SMOOTH_MS = 2_000.0
+HEARTBEAT_FINAL_FADE_MS = 3_000.0
+# The level is multiplied before the limiter. Fixed-timeline commands are issued this much early,
+# so the audible result—not merely the mix input—lands on T_engine. Kept explicit here because
+# importing/loading a native DLL at module import would make this pure controller environment-bound.
+HEARTBEAT_CHAIN_LATENCY_FRAMES = 1_639
+HEARTBEAT_CHAIN_LATENCY_MS = HEARTBEAT_CHAIN_LATENCY_FRAMES / 48.0
+HEARTBEAT_RESTART_RAMP_MS = 100.0
+
 
 class MoodSink(Protocol):
     def set_mood_override(self, arousal: float, cognitive_load: float, readiness: float) -> Any: ...
@@ -92,6 +121,10 @@ class MoodSink(Protocol):
 
 class GainSink(Protocol):
     def set_session_gain(self, target: float, ramp_ms: float) -> Any: ...
+
+
+class HeartbeatSink(Protocol):
+    def set_heartbeat_level(self, target_dbfs: float, ramp_ms: float) -> Any: ...
 
 
 class EventLog(Protocol):
@@ -306,6 +339,347 @@ class SessionGain:
             ramp_ms=ramp_ms,
         )
         return target, ramp_ms
+
+
+class HeartbeatLevel:
+    """The heartbeat layer's scripted level and its only writer. See the module docstring."""
+
+    def __init__(self, sink: HeartbeatSink, log: EventLog) -> None:
+        self._sink = sink
+        self._log = log
+        self._holding = False
+        self._segment: str | None = None
+        self._target_dbfs: float | None = None
+        self._resolve_end_ms: float | None = None
+        self._resolve_fade_sent = False
+        self._pending: tuple[float, float, float, str] | None = None
+        self._restarting = False
+        self._onset_measurements = 0
+        self._telemetry_dropped = 0
+
+    @property
+    def holding(self) -> bool:
+        return self._holding
+
+    def fade_out(
+        self, ramp_ms: float = HEARTBEAT_FINAL_FADE_MS, *, t_engine: float | None = None
+    ) -> None:
+        """Send the equal-power silence boundary and hold all state/tick targets until resume."""
+        self._sink.set_heartbeat_level(-math.inf, ramp_ms)
+        self._holding = True
+        self._target_dbfs = -math.inf
+        self._pending = None
+        self._log.event(
+            "heartbeat_level",
+            t_engine=t_engine,
+            stop=True,
+            target_dbfs=None,
+            silence=True,
+            ramp_ms=ramp_ms,
+        )
+
+    def resume(self) -> None:
+        """Release the stop latch; the next state reconstructs the live segment envelope."""
+        self._holding = False
+        self._segment = None
+        self._target_dbfs = None
+        self._resolve_end_ms = None
+        self._resolve_fade_sent = False
+        self._pending = None
+        self._restarting = True
+
+    def on_state(self, msg: Mapping) -> tuple[tuple[float, float], ...] | None:
+        """Apply one state message. tick() handles resolve's exact T-3 s boundary."""
+        self._report_onset_timing(msg)
+        segment = msg["segment"]
+        t = float(msg["t_engine"])
+        elapsed = float(msg["segment_elapsed_ms"])
+        nominal = float(msg["segment_nominal_ms"])
+        if self._holding:
+            self._log.event(
+                "heartbeat_level_held",
+                t_engine=t,
+                segment=segment,
+                segment_elapsed_ms=elapsed,
+            )
+            return None
+
+        entered = segment != self._segment
+        if entered:
+            self._segment = segment
+            self._resolve_end_ms = None
+            self._resolve_fade_sent = False
+            self._pending = None
+
+        commands: list[tuple[float, float]] = []
+        if not entered:
+            self._send_pending_if_due(t, commands)
+        restoring = self._restarting or (entered and elapsed > SOONER_MS)
+        self._restarting = False
+        if segment in ("idle", "reset"):
+            self._send_if_changed(-math.inf, HEARTBEAT_FINAL_FADE_MS, t, segment, commands)
+        elif segment == "baseline":
+            if entered:
+                self._enter_baseline(t, elapsed, restoring, commands)
+        elif segment == "load":
+            target = heartbeat_load_level_dbfs(msg.get("hr_bpm"), msg.get("hr_base"))
+            self._send_if_changed(
+                target, HEARTBEAT_LEVEL_SMOOTH_MS, t, segment, commands, tolerance=1e-6
+            )
+        elif segment == "regulate":
+            if entered:
+                self._enter_regulate(t, elapsed, nominal, restoring, commands)
+        elif segment == "resolve":
+            self._resolve_end_ms = t - elapsed + nominal
+            if entered:
+                if restoring and t >= self._resolve_fade_trigger_ms():
+                    self._resume_resolve_fade(t, commands)
+                else:
+                    # Resolve holds -11 even if regulate ended early while its -11 target was
+                    # still in flight. Reissuing it makes the actual level settle, not just the
+                    # controller's last target value.
+                    ramp = (
+                        HEARTBEAT_RESTART_RAMP_MS if restoring else HEARTBEAT_LEVEL_SMOOTH_MS
+                    )
+                    self._send(HEARTBEAT_REGULATE_END_DBFS, ramp, t, segment, commands)
+            self._fade_if_due(t, commands)
+        else:
+            raise ValueError(f"unknown segment {segment!r}")
+        return tuple(commands) or None
+
+    def tick(self, t_engine_ms: float) -> tuple[float, float] | None:
+        """Run staged ramps and issue resolve's fade early enough to sound exactly at T-3 s."""
+        if self._holding:
+            return None
+        commands: list[tuple[float, float]] = []
+        t = float(t_engine_ms)
+        self._send_pending_if_due(t, commands)
+        self._fade_if_due(t, commands)
+        return commands[0] if commands else None
+
+    def _enter_baseline(
+        self,
+        t: float,
+        elapsed: float,
+        restoring: bool,
+        commands: list[tuple[float, float]],
+    ) -> None:
+        remaining = max(0.0, HEARTBEAT_BASELINE_RAMP_MS - elapsed)
+        if not restoring:
+            self._send(HEARTBEAT_BASELINE_START_DBFS, 0.0, t, "baseline", commands)
+            self._send(
+                HEARTBEAT_BASELINE_END_DBFS,
+                remaining if remaining > 0.0 else HEARTBEAT_LEVEL_SMOOTH_MS,
+                t,
+                "baseline",
+                commands,
+            )
+            return
+        if remaining <= HEARTBEAT_RESTART_RAMP_MS:
+            self._send(HEARTBEAT_BASELINE_END_DBFS, remaining, t, "baseline", commands)
+            return
+        fraction = min(1.0, max(0.0, elapsed / HEARTBEAT_BASELINE_RAMP_MS))
+        current = HEARTBEAT_BASELINE_START_DBFS + fraction * (
+            HEARTBEAT_BASELINE_END_DBFS - HEARTBEAT_BASELINE_START_DBFS
+        )
+        self._send(current, HEARTBEAT_RESTART_RAMP_MS, t, "baseline", commands)
+        end = t - elapsed + HEARTBEAT_BASELINE_RAMP_MS
+        self._schedule(t + HEARTBEAT_RESTART_RAMP_MS, HEARTBEAT_BASELINE_END_DBFS, end, "baseline")
+
+    def _enter_regulate(
+        self,
+        t: float,
+        elapsed: float,
+        nominal: float,
+        restoring: bool,
+        commands: list[tuple[float, float]],
+    ) -> None:
+        end = t - elapsed + nominal
+        remaining = max(0.0, end - t)
+        if remaining <= 0.0:
+            self._send(HEARTBEAT_REGULATE_END_DBFS, 0.0, t, "regulate", commands)
+            return
+        if not restoring:
+            transition = min(HEARTBEAT_LEVEL_SMOOTH_MS, remaining)
+            if transition == remaining:
+                self._send(HEARTBEAT_REGULATE_END_DBFS, remaining, t, "regulate", commands)
+                return
+            # The script says -9 -> -11, irrespective of the last load HR or degraded baseline.
+            # First reach -9 smoothly; only after samples have run through that ramp may -11 be
+            # queued, otherwise the second command would replace the first before it sounded.
+            self._send(HEARTBEAT_LOAD_MAX_DBFS, transition, t, "regulate", commands)
+            self._schedule(t + transition, HEARTBEAT_REGULATE_END_DBFS, end, "regulate")
+            return
+
+        if remaining <= HEARTBEAT_RESTART_RAMP_MS:
+            self._send(HEARTBEAT_REGULATE_END_DBFS, remaining, t, "regulate", commands)
+            return
+        transition = min(HEARTBEAT_LEVEL_SMOOTH_MS, nominal)
+        if elapsed <= transition or nominal <= transition:
+            current = HEARTBEAT_LOAD_MAX_DBFS
+        else:
+            fraction = min(1.0, (elapsed - transition) / (nominal - transition))
+            current = HEARTBEAT_LOAD_MAX_DBFS + fraction * (
+                HEARTBEAT_REGULATE_END_DBFS - HEARTBEAT_LOAD_MAX_DBFS
+            )
+        self._send(current, HEARTBEAT_RESTART_RAMP_MS, t, "regulate", commands)
+        self._schedule(t + HEARTBEAT_RESTART_RAMP_MS, HEARTBEAT_REGULATE_END_DBFS, end, "regulate")
+
+    def _schedule(self, due: float, target_dbfs: float, end: float, segment: str) -> None:
+        self._pending = (due, target_dbfs, end, segment)
+
+    def _send_pending_if_due(
+        self, t: float, commands: list[tuple[float, float]]
+    ) -> None:
+        pending = self._pending
+        if pending is None or t < pending[0]:
+            return
+        self._pending = None
+        _, target, end, segment = pending
+        self._send(target, max(0.0, end - t), t, segment, commands)
+
+    def _resolve_fade_trigger_ms(self) -> float:
+        assert self._resolve_end_ms is not None
+        return (
+            self._resolve_end_ms
+            - HEARTBEAT_FINAL_FADE_MS
+            - HEARTBEAT_CHAIN_LATENCY_MS
+        )
+
+    def _fade_if_due(self, t: float, commands: list[tuple[float, float]]) -> None:
+        end = self._resolve_end_ms
+        if end is None or self._resolve_fade_sent or t < self._resolve_fade_trigger_ms():
+            return
+        self._resolve_fade_sent = True
+        input_end = end - HEARTBEAT_CHAIN_LATENCY_MS
+        self._send(-math.inf, max(0.0, input_end - t), t, "resolve", commands)
+
+    def _resume_resolve_fade(
+        self, t: float, commands: list[tuple[float, float]]
+    ) -> None:
+        """Restore the level already due at restart, then continue to silence without overwriting
+        that restoration in the same audio block."""
+        assert self._resolve_end_ms is not None
+        input_end = self._resolve_end_ms - HEARTBEAT_CHAIN_LATENCY_MS
+        remaining = max(0.0, input_end - t)
+        self._resolve_fade_sent = True
+        if remaining <= 0.0:
+            self._send(-math.inf, 0.0, t, "resolve", commands)
+            return
+        restore = min(HEARTBEAT_RESTART_RAMP_MS, remaining / 2.0)
+        due = t + restore
+        fade_start = self._resolve_end_ms - HEARTBEAT_FINAL_FADE_MS
+        audible_due = due + HEARTBEAT_CHAIN_LATENCY_MS
+        progress = min(1.0, max(0.0, (audible_due - fade_start) / HEARTBEAT_FINAL_FADE_MS))
+        amplitude = math.cos(0.5 * math.pi * progress)
+        if amplitude <= 0.0:
+            self._send(-math.inf, 0.0, t, "resolve", commands)
+            return
+        current_dbfs = HEARTBEAT_REGULATE_END_DBFS + 20.0 * math.log10(amplitude)
+        self._send(current_dbfs, restore, t, "resolve", commands)
+        self._schedule(due, -math.inf, input_end, "resolve")
+
+    def _send_if_changed(
+        self,
+        target_dbfs: float,
+        ramp_ms: float,
+        t: float,
+        segment: str,
+        commands: list[tuple[float, float]],
+        *,
+        tolerance: float = 0.0,
+    ) -> None:
+        previous = self._target_dbfs
+        same = (
+            previous is not None
+            and (
+                (math.isinf(previous) and math.isinf(target_dbfs))
+                or abs(previous - target_dbfs) <= tolerance
+            )
+        )
+        if not same:
+            self._send(target_dbfs, ramp_ms, t, segment, commands)
+
+    def _send(
+        self,
+        target_dbfs: float,
+        ramp_ms: float,
+        t: float,
+        segment: str,
+        commands: list[tuple[float, float]],
+    ) -> None:
+        self._sink.set_heartbeat_level(target_dbfs, ramp_ms)
+        self._target_dbfs = target_dbfs
+        command = (target_dbfs, ramp_ms)
+        commands.append(command)
+        self._log.event(
+            "heartbeat_level",
+            t_engine=t,
+            segment=segment,
+            target_dbfs=None if math.isinf(target_dbfs) else target_dbfs,
+            silence=math.isinf(target_dbfs),
+            ramp_ms=ramp_ms,
+        )
+
+    def _report_onset_timing(self, msg: Mapping) -> None:
+        drain_fn = getattr(self._sink, "drain_heartbeat_onsets", None)
+        stats_fn = getattr(self._sink, "stats", None)
+        if not callable(drain_fn):
+            return
+        records = tuple(drain_fn())
+        stats = stats_fn() if callable(stats_fn) else None
+        for record in records:
+            self._onset_measurements += 1
+            if isinstance(record, Mapping):
+                t_play_ms, error_ms = record["t_play_ms"], record["error_ms"]
+            else:
+                t_play_ms, error_ms = record.t_play_ms, record.error_ms
+            fields = {
+                "measurement": self._onset_measurements,
+                "scheduled_t_play_ms": t_play_ms,
+                "error_ms": error_ms,
+            }
+            if stats is not None:
+                fields.update(
+                    anchor_error_ms=stats.device_anchor_error_ms,
+                    anchor_slew_ms=stats.device_anchor_slew_ms,
+                    device_clock_samples=stats.device_clock_samples,
+                    device_clock_failures=stats.device_clock_failures,
+                )
+            self._log.event(
+                "heartbeat_onset_timing",
+                t_engine=msg["t_engine"],
+                segment=msg["segment"],
+                **fields,
+            )
+        if stats is not None:
+            dropped = int(stats.heartbeat_onset_telemetry_dropped)
+            if dropped > self._telemetry_dropped:
+                self._log.event(
+                    "heartbeat_onset_telemetry_dropped",
+                    t_engine=msg["t_engine"],
+                    segment=msg["segment"],
+                    dropped=dropped,
+                    new_dropped=dropped - self._telemetry_dropped,
+                )
+                self._telemetry_dropped = dropped
+
+
+def heartbeat_load_level_dbfs(hr_bpm: object, hr_base: object) -> float:
+    """Load's -13 to -9 dBFS mapping, held at -13 when either heart-rate value is absent."""
+    if (
+        isinstance(hr_bpm, bool)
+        or isinstance(hr_base, bool)
+        or not isinstance(hr_bpm, int | float)
+        or not isinstance(hr_base, int | float)
+    ):
+        return HEARTBEAT_BASELINE_END_DBFS
+    if not math.isfinite(hr_bpm) or not math.isfinite(hr_base):
+        return HEARTBEAT_BASELINE_END_DBFS
+    fraction = min(1.0, max(0.0, (float(hr_bpm) - float(hr_base)) / HEARTBEAT_LOAD_RISE_BPM))
+    return HEARTBEAT_BASELINE_END_DBFS + fraction * (
+        HEARTBEAT_LOAD_MAX_DBFS - HEARTBEAT_BASELINE_END_DBFS
+    )
 
 
 def session_gain_for(msg: Mapping) -> tuple[float, float]:

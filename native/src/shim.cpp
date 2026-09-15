@@ -3,13 +3,16 @@
 // Everything the audio thread will touch is allocated in pls_open and freed in pls_close. The
 // control calls validate on the calling thread and hand the audio thread a POD command through the
 // lock-free queue; they never block and never touch the audio thread's state directly. The device
-// callback only forwards to pls::render_device (process.cpp), and the notification callback only
-// counts a stop pls_stop did not ask for, in atomics.
+// callback only reads a lock-free timing mailbox and forwards to pls::render_device (process.cpp).
+// A non-audio timing thread makes the IAudioClock calls. The notification callback only counts a
+// stop pls_stop did not ask for, in atomics.
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <new>
+#include <thread>
 
 #include "miniaudio.h"
 #include "prism_live_shim.h"
@@ -23,6 +26,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <audioclient.h>
+#include <objbase.h>
 #endif
 
 #ifndef PLS_SOURCE_HASH
@@ -33,10 +38,12 @@ struct pls_shim {
   pls::Chain chain;
   pls::Command* command_storage = nullptr;
   pls::BeatSlot* beat_storage = nullptr;
+  pls::HeartbeatOnset* onset_storage = nullptr;
   ma_device device;
   // Control thread only.
   bool device_initialized = false;
   uint64_t runs = 0;
+  uint64_t control_generation = 0;
   std::atomic<bool> started{false};
   // The number of the stream the shim expects to be playing: set once ma_device_start has
   // succeeded, 0 from the moment pls_stop begins. Read on miniaudio's thread and in pls_get_stats.
@@ -44,6 +51,20 @@ struct pls_shim {
   // The last run whose unrequested stop was counted, so a stop seen twice is counted once.
   mutable std::atomic<uint64_t> lost_run{0};
   mutable std::atomic<uint64_t> device_unrequested_stops{0};
+#ifdef _WIN32
+  uint64_t stream_start_frame = 0;
+  std::thread clock_thread;
+  std::atomic<bool> clock_thread_stop{true};
+  std::atomic<bool> clock_thread_ready{false};
+  std::atomic<bool> clock_thread_failed{false};
+  // A sequence lock made only from always-lock-free atomics. Odd means the timing thread is
+  // publishing. Even/2 is the attempt number. The callback makes at most three read attempts.
+  std::atomic<uint64_t> clock_mailbox_sequence{0};
+  std::atomic<bool> clock_mailbox_valid{false};
+  std::atomic<int64_t> clock_mailbox_qpc_ns{0};
+  std::atomic<int64_t> clock_mailbox_output_frame{0};
+  std::atomic<int64_t> clock_mailbox_polled_ns{0};
+#endif
 };
 
 namespace {
@@ -55,6 +76,156 @@ constexpr uint32_t kMaxBeatCapacity = 1u << 16;
 // thread's frame arithmetic can never overflow int64.
 constexpr uint64_t kMaxAnchorFrame = 1ull << 62;
 
+#ifdef _WIN32
+// CD63314F-3FBA-4A1B-812C-EF96358728E7, __uuidof(IAudioClock), kept local so the DLL does not
+// import a GUID symbol from another library.
+constexpr IID kIidAudioClock = {0xcd63314f,
+                                0x3fba,
+                                0x4a1b,
+                                {0x81, 0x2c, 0xef, 0x96, 0x35, 0x87, 0x28, 0xe7}};
+constexpr int64_t kClockPollMs = 5;
+constexpr int64_t kClockSampleMaxAgeNs = 100000000;  // 100 ms: ten nominal device periods
+
+static_assert(std::atomic<int64_t>::is_always_lock_free,
+              "clock mailbox int64 atomics must be lock-free");
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "clock mailbox bool atomics must be lock-free");
+
+int64_t qpc_ns(int64_t frequency) {
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return (now.QuadPart / frequency) * 1000000000LL +
+         (now.QuadPart % frequency) * 1000000000LL / frequency;
+}
+
+void publish_clock_attempt(pls_shim* shim, bool valid, int64_t correlated_qpc_ns,
+                           int64_t output_frame) {
+  // Sequentially consistent operations make this a conventional sequence lock even though each
+  // payload word is a separate atomic: a reader cannot accept a mixture across the odd version.
+  shim->clock_mailbox_sequence.fetch_add(1u);  // odd
+  shim->clock_mailbox_valid.store(valid);
+  shim->clock_mailbox_qpc_ns.store(correlated_qpc_ns);
+  shim->clock_mailbox_output_frame.store(output_frame);
+  shim->clock_mailbox_polled_ns.store(qpc_ns(shim->chain.qpc_frequency));
+  shim->clock_mailbox_sequence.fetch_add(1u);  // even
+}
+
+void poll_clock_once(pls_shim* shim, IAudioClock* audio_clock, UINT64 audio_clock_frequency) {
+  UINT64 position = 0;
+  UINT64 qpc_100ns = 0;
+  bool valid = audio_clock->GetPosition(&position, &qpc_100ns) == S_OK && qpc_100ns != 0 &&
+               qpc_100ns <= static_cast<UINT64>(INT64_MAX / 100);
+  int64_t output_frame = 0;
+  if (valid) {
+    // miniaudio resets IAudioClient after every clean stop; a newly opened client also starts at
+    // zero. Position is therefore this run's progress in the units returned by GetFrequency.
+    const long double device_frames =
+        static_cast<long double>(position) * PLS_SAMPLE_RATE /
+        static_cast<long double>(audio_clock_frequency);
+    valid = device_frames <= static_cast<long double>(INT64_MAX - shim->stream_start_frame);
+    if (valid) {
+      output_frame = static_cast<int64_t>(shim->stream_start_frame) +
+                     static_cast<int64_t>(std::llround(device_frames));
+    }
+  }
+  publish_clock_attempt(shim, valid, valid ? static_cast<int64_t>(qpc_100ns * 100u) : 0,
+                        output_frame);
+}
+
+void clock_thread_main(pls_shim* shim) {
+  const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  if (FAILED(apartment)) {
+    shim->clock_thread_failed.store(true, std::memory_order_release);
+    shim->clock_thread_ready.store(true, std::memory_order_release);
+    return;
+  }
+  auto* audio_client = reinterpret_cast<IAudioClient*>(shim->device.wasapi.pAudioClientPlayback);
+  IAudioClock* audio_clock = nullptr;
+  UINT64 audio_clock_frequency = 0;
+  const bool acquired =
+      audio_client != nullptr &&
+      SUCCEEDED(audio_client->GetService(kIidAudioClock,
+                                         reinterpret_cast<void**>(&audio_clock))) &&
+      audio_clock != nullptr && SUCCEEDED(audio_clock->GetFrequency(&audio_clock_frequency)) &&
+      audio_clock_frequency != 0;
+  if (!acquired) {
+    if (audio_clock != nullptr) {
+      audio_clock->Release();
+    }
+    shim->clock_thread_failed.store(true, std::memory_order_release);
+    shim->clock_thread_ready.store(true, std::memory_order_release);
+    CoUninitialize();
+    return;
+  }
+  // GetService, every position read and Release stay on this non-audio COM thread. Microsoft
+  // specifically requires an IAudioClock to be released on the thread that obtained it.
+  poll_clock_once(shim, audio_clock, audio_clock_frequency);
+  shim->clock_thread_ready.store(true, std::memory_order_release);
+  while (!shim->clock_thread_stop.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(kClockPollMs));
+    if (!shim->clock_thread_stop.load(std::memory_order_acquire)) {
+      poll_clock_once(shim, audio_clock, audio_clock_frequency);
+    }
+  }
+  audio_clock->Release();
+  CoUninitialize();
+}
+
+bool start_clock_thread(pls_shim* shim) {
+  shim->clock_thread_stop.store(false, std::memory_order_release);
+  shim->clock_thread_ready.store(false, std::memory_order_relaxed);
+  shim->clock_thread_failed.store(false, std::memory_order_relaxed);
+  try {
+    shim->clock_thread = std::thread(clock_thread_main, shim);
+  } catch (...) {
+    shim->clock_thread_stop.store(true, std::memory_order_release);
+    return false;
+  }
+  while (!shim->clock_thread_ready.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  if (shim->clock_thread_failed.load(std::memory_order_acquire)) {
+    shim->clock_thread.join();
+    shim->clock_thread_stop.store(true, std::memory_order_release);
+    return false;
+  }
+  return true;
+}
+
+void stop_clock_thread(pls_shim* shim) {
+  shim->clock_thread_stop.store(true, std::memory_order_release);
+  if (shim->clock_thread.joinable()) {
+    shim->clock_thread.join();
+  }
+}
+
+pls::DeviceClockSample read_clock_mailbox(pls_shim* shim) {
+  pls::DeviceClockSample sample;
+  for (int tries = 0; tries < 3; ++tries) {
+    const uint64_t before = shim->clock_mailbox_sequence.load();
+    if (before == 0 || (before & 1u) != 0) {
+      continue;
+    }
+    const bool valid = shim->clock_mailbox_valid.load();
+    const int64_t correlated_qpc_ns = shim->clock_mailbox_qpc_ns.load();
+    const int64_t output_frame = shim->clock_mailbox_output_frame.load();
+    const int64_t polled_ns = shim->clock_mailbox_polled_ns.load();
+    const uint64_t after = shim->clock_mailbox_sequence.load();
+    if (before != after || (after & 1u) != 0) {
+      continue;
+    }
+    const int64_t age_ns = qpc_ns(shim->chain.qpc_frequency) - polled_ns;
+    sample.present = true;
+    sample.valid = valid && age_ns >= 0 && age_ns <= kClockSampleMaxAgeNs;
+    sample.attempt = after / 2u;
+    sample.qpc_ns = correlated_qpc_ns;
+    sample.output_frame = output_frame;
+    return sample;
+  }
+  return sample;
+}
+#endif
+
 void free_shim(pls_shim* shim) {
   if (shim == nullptr) {
     return;
@@ -65,6 +236,7 @@ void free_shim(pls_shim* shim) {
   delete[] shim->chain.device_buffer;
   delete[] shim->command_storage;
   delete[] shim->beat_storage;
+  delete[] shim->onset_storage;
   delete shim;
 }
 
@@ -75,7 +247,12 @@ int32_t push(pls_shim* shim, const pls::Command& command) {
 void on_device_data(ma_device* device, void* output, const void* input, ma_uint32 frames) {
   (void)input;
   auto* shim = static_cast<pls_shim*>(device->pUserData);
-  pls::render_device(shim->chain, static_cast<float*>(output), device->playback.channels, frames);
+  pls::DeviceClockSample sample;
+#ifdef _WIN32
+  sample = read_clock_mailbox(shim);
+#endif
+  pls::render_device(shim->chain, static_cast<float*>(output), device->playback.channels, frames,
+                     &sample);
 }
 
 // Any thread. Counts the unrequested stop of stream `run` once, however often it is seen.
@@ -151,6 +328,11 @@ int32_t open_device(pls_shim* shim) {
 // Control thread, with the stream stopped.
 void close_device(pls_shim* shim) {
   if (shim->device_initialized) {
+#ifdef _WIN32
+    stop_clock_thread(shim);
+#endif
+    // The timing thread has released its IAudioClock. uninit now quiesces/joins the callback and
+    // releases miniaudio's audio client, including on failed-stop and unexpected-state paths.
     ma_device_uninit(&shim->device);
     shim->device_initialized = false;
   }
@@ -208,9 +390,11 @@ int32_t pls_open(const pls_config* config, pls_render_fn render, void* core,
   chain.device_buffer = new (std::nothrow) float[block]();
   shim->command_storage = new (std::nothrow) pls::Command[capacity]();
   shim->beat_storage = new (std::nothrow) pls::BeatSlot[config->beat_capacity]();
+  shim->onset_storage = new (std::nothrow) pls::HeartbeatOnset[capacity]();
   if (chain.engine_buffer == nullptr || chain.mix_buffer == nullptr ||
       chain.voice_buffer == nullptr || chain.device_buffer == nullptr ||
-      shim->command_storage == nullptr || shim->beat_storage == nullptr) {
+      shim->command_storage == nullptr || shim->beat_storage == nullptr ||
+      shim->onset_storage == nullptr) {
     free_shim(shim);
     return PLS_ERROR_OUT_OF_MEMORY;
   }
@@ -227,9 +411,10 @@ int32_t pls_open(const pls_config* config, pls_render_fn render, void* core,
   chain.qpc_frequency = 1;
 #endif
   chain.commands.attach(shim->command_storage, capacity);
+  chain.onset_telemetry.attach(shim->onset_storage, capacity);
   chain.highpass.reset();
   chain.session_gain.reset(0.0);
-  chain.heartbeat_level.reset(0.0);
+  chain.heartbeat_level.reset_db(-INFINITY);
   chain.heartbeat.attach(shim->beat_storage, config->beat_capacity, PLS_SAMPLE_RATE);
   chain.limiter.init(PLS_SAMPLE_RATE, pls::kTargetDbtp);
 
@@ -258,11 +443,25 @@ int32_t pls_start(pls_shim* shim) {
         return opened;
       }
     }
-    // Before the start: the callback can run before ma_device_start returns, and
-    // pls_render_offline must already refuse by then.
+    // The callback can run before ma_device_start returns. Invalidate the last run's mailbox and
+    // record this run's lifetime start frame first; early callbacks use the documented QPC+period
+    // fallback until the timing thread publishes its first IAudioClock reading.
+#ifdef _WIN32
+    shim->stream_start_frame = shim->chain.counters.frames_rendered.load(std::memory_order_relaxed);
+    publish_clock_attempt(shim, false, 0, 0);
+#endif
     shim->started.store(true);
     if (ma_device_start(&shim->device) == MA_SUCCESS) {
       shim->stream_run.store(++shim->runs);
+#ifdef _WIN32
+      if (!start_clock_thread(shim)) {
+        shim->stream_run.store(0);
+        (void)ma_device_stop(&shim->device);
+        shim->started.store(false);
+        close_device(shim);
+        return PLS_ERROR_DEVICE;
+      }
+#endif
       return PLS_OK;
     }
     shim->started.store(false);
@@ -292,6 +491,9 @@ int32_t pls_stop(pls_shim* shim) {
   }
   // ma_device_stop returns once the callback has finished its last run.
   const ma_result result = ma_device_stop(&shim->device);
+#ifdef _WIN32
+  stop_clock_thread(shim);
+#endif
   shim->started.store(false);
   return result == MA_SUCCESS ? PLS_OK : PLS_ERROR_DEVICE;
 }
@@ -324,7 +526,7 @@ int32_t pls_set_heartbeat_level(pls_shim* shim, double target_dbfs, double ramp_
   }
   pls::Command command{};
   command.kind = pls::CommandKind::kHeartbeatLevel;
-  command.value = std::isinf(target_dbfs) ? 0.0 : std::pow(10.0, target_dbfs / 20.0);
+  command.value = target_dbfs;
   command.ms = ramp_ms;
   return push(shim, command);
 }
@@ -339,6 +541,7 @@ int32_t pls_push_beat(pls_shim* shim, double t_play_ms, double rr_ms, int32_t qu
   command.quality = quality;
   command.value = t_play_ms;
   command.ms = rr_ms;
+  command.generation = shim->control_generation;
   return push(shim, command);
 }
 
@@ -351,7 +554,12 @@ int32_t pls_set_time_origin_ns(pls_shim* shim, int64_t perf_counter_origin_ns) {
   pls::Command command{};
   command.kind = pls::CommandKind::kTimeOrigin;
   command.origin_ns = perf_counter_origin_ns;
-  return push(shim, command);
+  command.generation = shim->control_generation + 1u;
+  const int32_t result = push(shim, command);
+  if (result == PLS_OK) {
+    shim->control_generation = command.generation;
+  }
+  return result;
 }
 
 int32_t pls_set_clock_anchor(pls_shim* shim, double t_engine_ms, uint64_t output_frame) {
@@ -387,7 +595,37 @@ int32_t pls_get_stats(const pls_shim* shim, pls_stats* out_stats) {
       counters.limiter_active_frames.load(std::memory_order_relaxed);
   out_stats->limiter_min_gain = counters.limiter_min_gain.load(std::memory_order_relaxed);
   out_stats->device_unrequested_stops = shim->device_unrequested_stops.load();
+  out_stats->device_clock_samples = counters.device_clock_samples.load(std::memory_order_acquire);
+  out_stats->device_clock_failures =
+      counters.device_clock_failures.load(std::memory_order_relaxed);
+  out_stats->heartbeat_onset_measurements =
+      counters.heartbeat_onset_measurements.load(std::memory_order_acquire);
+  out_stats->device_anchor_error_ms =
+      counters.device_anchor_error_ms.load(std::memory_order_relaxed);
+  out_stats->device_anchor_slew_ms =
+      counters.device_anchor_slew_ms.load(std::memory_order_relaxed);
+  out_stats->heartbeat_onset_error_last_ms =
+      counters.heartbeat_onset_error_last_ms.load(std::memory_order_relaxed);
+  out_stats->heartbeat_onset_error_abs_max_ms =
+      counters.heartbeat_onset_error_abs_max_ms.load(std::memory_order_relaxed);
+  out_stats->heartbeat_onset_telemetry_dropped =
+      counters.heartbeat_onset_telemetry_dropped.load(std::memory_order_relaxed);
   return PLS_OK;
+}
+
+uint32_t pls_drain_heartbeat_onsets(pls_shim* shim, pls_heartbeat_onset* out_measurements,
+                                   uint32_t capacity) {
+  if (shim == nullptr || out_measurements == nullptr || capacity == 0) {
+    return 0;
+  }
+  uint32_t count = 0;
+  pls::HeartbeatOnset measurement{};
+  while (count < capacity && shim->chain.onset_telemetry.try_pop(measurement)) {
+    out_measurements[count].t_play_ms = measurement.t_play_ms;
+    out_measurements[count].error_ms = measurement.error_ms;
+    ++count;
+  }
+  return count;
 }
 
 int32_t pls_render_offline(pls_shim* shim, float* out_frames, float* engine_tap,

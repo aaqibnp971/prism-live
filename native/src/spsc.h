@@ -1,9 +1,9 @@
-// spsc.h: the command queue between the control thread and the audio thread.
+// spsc.h: the fixed-storage queues crossing the control/audio boundary.
 //
-// Wait-free, single producer and single consumer. The control thread is the only producer (every
-// pls_set_* and pls_push_beat call), the audio thread the only consumer. The storage is handed in,
-// sized at pls_open, so pushing and popping never touch the heap. Each index is written by one
-// side only; the count is head - tail, so every one of the `capacity` slots is usable.
+// Wait-free, single producer and single consumer. Commands go control -> audio; onset telemetry
+// goes audio -> control. Storage is handed in and sized at pls_open, so pushing and popping never
+// touch the heap. Each index is written by one side only; the count is head - tail, so every one of
+// the `capacity` slots is usable.
 
 #ifndef PLS_SPSC_H
 #define PLS_SPSC_H
@@ -21,7 +21,7 @@ class SpscQueue {
   static constexpr bool kLockFree = std::atomic<uint64_t>::is_always_lock_free;
 
  public:
-  // Control thread, before the audio thread exists. capacity is a power of two.
+  // Initialising thread, before either queue endpoint runs. capacity is a power of two.
   void attach(T* storage, uint32_t capacity) {
     static_assert(kTriviallyCopyable, "queue items must be trivially copyable");
     static_assert(kLockFree, "std::atomic<uint64_t> must be lock-free");

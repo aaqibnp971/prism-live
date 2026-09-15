@@ -43,6 +43,7 @@ struct Command {
   double value;
   double ms;
   uint64_t frame;
+  uint64_t generation;
   int64_t origin_ns;
 };
 
@@ -90,6 +91,66 @@ class LinearRamp {
   int64_t position_ = 0;
 };
 
+// The heartbeat level uses dB-linear motion between audible targets and equal-power motion at
+// the silence boundary. In particular, a fade to silence is cos(pi/2 * progress), reaching exact
+// digital zero on its final frame. It is audio-thread state, set only from queued commands.
+class HeartbeatRamp {
+ public:
+  void reset_db(double db);
+  void set_db(double target_db, int64_t frames);
+  double next();
+  double value() const { return value_; }
+
+ private:
+  enum class Curve { kHold, kDb, kEqualPowerIn, kEqualPowerOut };
+
+  double value_ = 0.0;
+  double start_ = 0.0;
+  double target_ = 0.0;
+  int64_t length_ = 0;
+  int64_t position_ = 0;
+  Curve curve_ = Curve::kHold;
+};
+
+constexpr double kAnchorSlewMsPerSecond = 1.0;
+
+// The T_engine/output-frame map. A new real-device observation moves only the target; advance()
+// slews the live anchor toward it at no more than 1 ms per second of rendered stream time. The
+// initial reset is not a correction: it establishes the stream's first measured anchor.
+class ClockMapper {
+ public:
+  void reset(double t_engine_ms, int64_t output_frame, int64_t stream_frame);
+  void advance(int64_t stream_frame);
+  double observe(double measured_ms, int64_t measured_output_frame, int64_t stream_frame);
+
+  bool has_anchor() const { return has_anchor_; }
+  int64_t frame_for(double t_engine_ms) const;
+  double time_for(int64_t output_frame) const;
+  double anchor_ms() const { return anchor_ms_; }
+  double target_ms() const { return target_ms_; }
+  double total_slew_ms() const { return total_slew_ms_; }
+
+ private:
+  bool has_anchor_ = false;
+  double anchor_ms_ = 0.0;
+  double target_ms_ = 0.0;
+  double total_slew_ms_ = 0.0;
+  int64_t anchor_output_frame_ = 0;
+  int64_t last_slew_stream_frame_ = 0;
+};
+
+// One IAudioClock polling attempt, made outside the device callback and copied from a lock-free
+// mailbox before the chain runs. qpc_ns is the QPC time Windows associates with output_frame.
+// `present` is false when the bounded mailbox read collided with its writer. The offline path
+// passes no sample.
+struct DeviceClockSample {
+  bool present = false;
+  bool valid = false;
+  uint64_t attempt = 0;
+  int64_t qpc_ns = 0;
+  int64_t output_frame = 0;
+};
+
 // The counters are read from any thread without a lock; neither type may fall back to one.
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "atomic<uint64_t> must be lock-free");
 static_assert(std::atomic<double>::is_always_lock_free, "atomic<double> must be lock-free");
@@ -102,6 +163,14 @@ struct Counters {
   std::atomic<uint64_t> beats_dropped_full{0};
   std::atomic<uint64_t> limiter_active_frames{0};
   std::atomic<double> limiter_min_gain{1.0};
+  std::atomic<uint64_t> device_clock_samples{0};
+  std::atomic<uint64_t> device_clock_failures{0};
+  std::atomic<uint64_t> heartbeat_onset_measurements{0};
+  std::atomic<uint64_t> heartbeat_onset_telemetry_dropped{0};
+  std::atomic<double> device_anchor_error_ms{0.0};
+  std::atomic<double> device_anchor_slew_ms{0.0};
+  std::atomic<double> heartbeat_onset_error_last_ms{0.0};
+  std::atomic<double> heartbeat_onset_error_abs_max_ms{0.0};
 };
 
 struct Chain {
@@ -119,17 +188,24 @@ struct Chain {
   uint32_t device_period_frames = 0;
 
   SpscQueue<Command> commands;
+  // Audio thread -> control thread. Attached at open to its own command_capacity-sized storage.
+  SpscQueue<HeartbeatOnset> onset_telemetry;
   Counters counters;
 
   // Audio thread only.
   Highpass highpass;
   LinearRamp session_gain;
-  LinearRamp heartbeat_level;
+  HeartbeatRamp heartbeat_level;
   HeartbeatLayer heartbeat;
   Limiter limiter;
-  bool has_anchor = false;
-  double anchor_ms = 0.0;
-  int64_t anchor_output_frame = 0;
+  ClockMapper clock;
+  bool has_time_origin = false;
+  int64_t time_origin_ns = 0;
+  bool has_device_clock = false;
+  double device_clock_ms = 0.0;
+  int64_t device_clock_output_frame = 0;
+  uint64_t active_generation = 0;
+  uint64_t last_device_clock_attempt = 0;
 };
 
 // Round ms at 48 kHz to whole frames, saturating far beyond any real value.
@@ -139,7 +215,8 @@ int64_t ms_to_frames(double ms);
 void render_offline(Chain& chain, float* out, float* tap, uint32_t frames);
 
 // Audio thread: the device callback, `frames` interleaved frames of `channels` channels.
-void render_device(Chain& chain, float* interleaved, uint32_t channels, uint32_t frames);
+void render_device(Chain& chain, float* interleaved, uint32_t channels, uint32_t frames,
+                   const DeviceClockSample* clock_sample = nullptr);
 
 // The chain inside a shim from pls_open (shim.cpp). Not exported from the DLL: the native tests
 // link the objects and use it to drive render_device without opening a device.

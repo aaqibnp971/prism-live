@@ -1,5 +1,5 @@
 /*
- * prism_live_shim.h: the prism-live audio shim's C ABI (prompt 2.5).
+ * prism_live_shim.h: the prism-live audio shim's C ABI (prompts 2.5-2.6).
  *
  * prism-live owns the audio device (CLAUDE.md hard rule 8). This library owns the output
  * stream, and its callback is the only place prism_render is ever called. Per block, in this
@@ -20,16 +20,21 @@
  * lock-free command queue, so two control threads would corrupt it. The AUDIO thread is the
  * device callback after pls_start, or the thread calling pls_render_offline while the device
  * is stopped; never both. The render function given to pls_open is called only from the
- * audio thread. Nothing on the audio thread allocates, locks, logs or does I/O (hard rule 4).
+ * audio thread. Nothing on the audio thread allocates, locks, logs, touches a file or calls COM
+ * (hard rule 4). A non-audio timing thread polls IAudioClock and publishes fixed-size snapshots
+ * to the callback through a lock-free mailbox.
  *
  * Time. Beats are placed from t_play, milliseconds on T_engine (bridge/clock.py): Python's
  * time.perf_counter_ns() minus the bridge's origin, over 1e6. An anchor maps T_engine to an
  * output frame, the frame index as it leaves the limiter: output frame k is the k-th sample
  * written out. A beat for output frame F starts in the mix at input frame F minus
- * pls_latency_frames(). With the device running, the first callback after
- * pls_set_time_origin_ns anchors the first frame of its buffer to QueryPerformanceCounter plus
- * one device period, when the device plays it; offline, pls_set_clock_anchor sets the anchor.
- * Prompt 2.6 refines the device anchor against the device's reported position.
+ * pls_latency_frames(). With the device running, IAudioClock supplies a stream position and its
+ * correlated QueryPerformanceCounter value. The first usable polling result establishes the map;
+ * QueryPerformanceCounter plus one device period is the startup fallback. Later results move only
+ * its target, and the live anchor follows at no more than 1 ms per second of stream time. Offline,
+ * pls_set_clock_anchor sets an exact map. Per-beat timing records are drained and logged on the
+ * control thread. The real DAC relationship still needs the hardware check in
+ * docs/known-limits.md.
  *
  * Never call prism_device_start or prism_device_stop on the engine handle given here. Stop is
  * the bridge's: ramp the session gain and the heartbeat level to zero over 3 s, wait until the
@@ -56,8 +61,8 @@
 extern "C" {
 #endif
 
-/* 2: pls_stats gained device_unrequested_stops, appended. */
-#define PLS_ABI_VERSION 2
+/* 3: pls_stats gained device-clock and heartbeat-onset telemetry, appended. */
+#define PLS_ABI_VERSION 3
 #define PLS_SAMPLE_RATE 48000u
 #define PLS_CEILING_DBTP (-1.0)
 
@@ -102,7 +107,20 @@ typedef struct pls_stats {
   double limiter_min_gain;         /* lowest limiter gain since pls_open, 1.0 = never engaged */
   uint64_t device_unrequested_stops; /* streams miniaudio stopped when pls_stop did not ask: a
                                         lost endpoint. frames_rendered stops with it */
+  uint64_t device_clock_samples;   /* successful IAudioClock positions used by the anchor */
+  uint64_t device_clock_failures;  /* consumed polls where IAudioClock gave no usable position */
+  uint64_t heartbeat_onset_measurements; /* played beats compared with a device-clock position */
+  double device_anchor_error_ms;   /* latest observed error before any later slew */
+  double device_anchor_slew_ms;    /* cumulative correction applied this stream */
+  double heartbeat_onset_error_last_ms; /* estimated actual onset minus t_play, latest beat */
+  double heartbeat_onset_error_abs_max_ms; /* largest absolute measured onset error */
+  uint64_t heartbeat_onset_telemetry_dropped; /* measurements lost because their queue was full */
 } pls_stats;
+
+typedef struct pls_heartbeat_onset {
+  double t_play_ms; /* scheduled T_engine time */
+  double error_ms;  /* estimated actual device onset minus t_play */
+} pls_heartbeat_onset;
 
 /* PLS_ABI_VERSION of the loaded library. */
 PLS_API int32_t pls_abi_version(void);
@@ -149,8 +167,9 @@ PLS_API void pls_close(pls_shim* shim);
  * the engine is silent until the first command. */
 PLS_API int32_t pls_set_session_gain(pls_shim* shim, double target, double ramp_ms);
 
-/* Heartbeat layer level: the peak of a beat in dBFS, <= 0, or -INFINITY for silence. Ramped
- * linearly in amplitude over ramp_ms. Starts at silence. */
+/* Heartbeat layer level: the peak of a beat in dBFS, <= 0, or -INFINITY for silence. Audible
+ * targets move linearly in dB; a boundary to or from silence is equal-power. The final frame of a
+ * fade to silence is exactly zero. Starts at silence. */
 PLS_API int32_t pls_set_heartbeat_level(pls_shim* shim, double target_dbfs, double ramp_ms);
 
 /* A beat to sound at t_play (T_engine ms), closing an interval of rr_ms (250 to 2500).
@@ -158,10 +177,12 @@ PLS_API int32_t pls_set_heartbeat_level(pls_shim* shim, double target_dbfs, doub
  * it is dropped and counted, never played late. */
 PLS_API int32_t pls_push_beat(pls_shim* shim, double t_play_ms, double rr_ms, int32_t quality);
 
-/* T_engine's origin, as Python's time.perf_counter_ns() read it. The next device callback
- * anchors the first output frame of its buffer to T_engine: QueryPerformanceCounter less the
- * origin, plus one device period. Offline, the first frame of the pls_render_offline call, with
- * no period. */
+/* T_engine's origin, as Python's time.perf_counter_ns() read it. The next device callback anchors
+ * T_engine to the latest IAudioClock position and correlated QueryPerformanceCounter value from
+ * the non-audio poller. If that first result is unavailable, its buffer's first output frame uses
+ * QueryPerformanceCounter less the origin plus one device period until a later observation
+ * corrects it by slew. A new origin starts a stream generation: beats queued or placed for the
+ * previous run are dropped and counted instead of playing against a changed map. */
 PLS_API int32_t pls_set_time_origin_ns(pls_shim* shim, int64_t perf_counter_origin_ns);
 
 /* Output frame `output_frame` leaves the limiter at t_engine_ms. Replaces any anchor. */
@@ -170,9 +191,16 @@ PLS_API int32_t pls_set_clock_anchor(pls_shim* shim, double t_engine_ms, uint64_
 /* Frames passed to the render function since pls_open. Any thread; one atomic load. */
 PLS_API uint64_t pls_frames_rendered(const pls_shim* shim);
 
-/* Counters and limiter state. Any thread; a snapshot of atomics, not one instant. Also reads
- * the device's state, so a lost stream is counted here even when miniaudio reports nothing. */
+/* Counters, limiter state and device timing. Any thread; a snapshot of atomics, not one instant.
+ * Also reads the device's state, so a lost stream is counted here even when miniaudio reports
+ * nothing. The callback only records timing atomics; the control thread does any logging. */
 PLS_API int32_t pls_get_stats(const pls_shim* shim, pls_stats* out_stats);
+
+/* Drain at most capacity individual onset measurements in FIFO order. The control thread is the
+ * only consumer. Returns the number written; 0 for an empty queue or invalid/null arguments. No
+ * logging occurs in the native layer or on the audio thread. */
+PLS_API uint32_t pls_drain_heartbeat_onsets(pls_shim* shim, pls_heartbeat_onset* out_measurements,
+                                            uint32_t capacity);
 
 /* Run the whole chain for `frame_count` frames on the calling thread, as the device callback
  * would, writing the mono output to out_frames. engine_tap, if not NULL, receives the engine

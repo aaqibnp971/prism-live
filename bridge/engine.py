@@ -23,19 +23,20 @@ EngineHost. The lifecycle:
 
 - open(scene): engine, scene, then the shim at once, on prism_render and the handle, so
   frames_rendered counts from the load and is the engine's phase (prompt 2.7).
-- start(gain): T_engine's origin (bridge/clock.py) to the shim, which anchors beats to it on its
-  first callback, then the stream, then the SessionGain resumed so the next state message sends
-  its target again.
-- await stop(gain): session gain and heartbeat level to silence over 3 s, a wait until the end of
-  that ramp has left the limiter, then the stream. The SessionGain sends the fade and holds
-  everything else back until start resumes it. For shutting the bridge down only. Between
+- start(gain, heartbeat): T_engine's origin (bridge/clock.py) to the shim, then the stream. Its
+  non-audio device-clock poller publishes the anchor through a lock-free snapshot. Both level
+  controllers are then resumed so their next state message reconstructs its target.
+- await stop(gain, heartbeat): session gain and heartbeat level to silence over 3 s, a wait until
+  the end of that ramp has left the limiter, then the stream. Both controllers send the fade and
+  hold everything else back until start resumes them. For shutting the bridge down only. Between
   visitors the stream keeps running with the session gain at 0, so the engine's phase keeps
   advancing.
 - close(): the shim first, which stops the stream, so nothing is inside prism_render when the
   engine is destroyed (the engine header's quiescence before destroy).
 
-The session gain has one writer. Once a SessionGain exists, nothing else calls set_session_gain:
-not the bridge, not the console, not EngineHost, which goes through the SessionGain it is given.
+Each gain has one writer. Once a SessionGain or HeartbeatLevel exists, nothing else calls its shim
+setter: not the bridge, not the console, not EngineHost, which goes through the controller it is
+given.
 
 Threads. One control thread makes every call here: the bridge's loop. The shim's command queue has
 a single producer and the engine's control calls are not safe against each other. Never call
@@ -43,10 +44,11 @@ anything here from an audio callback: the override takes a lock and can allocate
 
     host = EngineHost()
     host.open(Path("assets/scenes.json"))
-    feed, gain = PsvFeed(host.engine, log), SessionGain(host.shim, log)
-    host.start(gain)
+    feed = PsvFeed(host.engine, log)
+    gain, heartbeat = SessionGain(host.shim, log), HeartbeatLevel(host.shim, log)
+    host.start(gain, heartbeat)
     ...
-    await host.stop(gain)
+    await host.stop(gain, heartbeat)
     host.close()
 """
 
@@ -66,14 +68,14 @@ from bridge import clock
 from bridge.engine_mapping import CONFIDENCE_SENT, VALENCE_SENT
 
 if TYPE_CHECKING:
-    from bridge.engine_feed import SessionGain
+    from bridge.engine_feed import HeartbeatLevel, SessionGain
 
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE_DLL = ROOT / "vendor" / "lib" / "libprism_core.dll"
 SHIM_DLL = ROOT / "native" / "bin" / "libprism_live_shim.dll"
 
 ENGINE_VERSION = "0.3.0"  # prism_version() at acbfd50
-SHIM_ABI_VERSION = 2  # PLS_ABI_VERSION
+SHIM_ABI_VERSION = 3  # PLS_ABI_VERSION
 SAMPLE_RATE = 48_000  # the project's rate; the engine takes whatever the stems are
 
 # prism_config (docs/engine-findings.md, prompt 0.4 item 4). They only steer the inference thread,
@@ -171,7 +173,19 @@ class PlsStats(ctypes.Structure):
         ("limiter_active_frames", ctypes.c_uint64),
         ("limiter_min_gain", ctypes.c_double),
         ("device_unrequested_stops", ctypes.c_uint64),  # ABI 2, appended
+        ("device_clock_samples", ctypes.c_uint64),  # ABI 3, appended from here
+        ("device_clock_failures", ctypes.c_uint64),
+        ("heartbeat_onset_measurements", ctypes.c_uint64),
+        ("device_anchor_error_ms", ctypes.c_double),
+        ("device_anchor_slew_ms", ctypes.c_double),
+        ("heartbeat_onset_error_last_ms", ctypes.c_double),
+        ("heartbeat_onset_error_abs_max_ms", ctypes.c_double),
+        ("heartbeat_onset_telemetry_dropped", ctypes.c_uint64),
     ]
+
+
+class PlsHeartbeatOnset(ctypes.Structure):
+    _fields_ = [("t_play_ms", ctypes.c_double), ("error_ms", ctypes.c_double)]
 
 
 # pls_render_fn: the shape of prism_render. For a render function written in Python (tests only:
@@ -232,6 +246,12 @@ def shim_library() -> ctypes.CDLL:
     _bind(lib, "pls_set_clock_anchor", [p, _c.c_double, _c.c_uint64], _c.c_int32)
     _bind(lib, "pls_frames_rendered", [p], _c.c_uint64)
     _bind(lib, "pls_get_stats", [p, _c.POINTER(PlsStats)], _c.c_int32)
+    _bind(
+        lib,
+        "pls_drain_heartbeat_onsets",
+        [p, _c.POINTER(PlsHeartbeatOnset), _c.c_uint32],
+        _c.c_uint32,
+    )
     _bind(lib, "pls_render_offline", [p, _FLOAT_P, _FLOAT_P, _c.c_uint32], _c.c_int32)
     abi = lib.pls_abi_version()
     if abi != SHIM_ABI_VERSION:
@@ -344,6 +364,22 @@ class ShimStats:
     # Streams stopped when pls_stop did not ask: a lost endpoint. frames_rendered stops with it;
     # recover with EngineHost.stop, then EngineHost.start.
     device_unrequested_stops: int
+    device_clock_samples: int  # successful IAudioClock positions used by the anchor
+    device_clock_failures: int
+    heartbeat_onset_measurements: int
+    device_anchor_error_ms: float  # latest observed error, before later slew
+    device_anchor_slew_ms: float  # cumulative correction applied this stream
+    heartbeat_onset_error_last_ms: float  # estimated actual onset minus t_play
+    heartbeat_onset_error_abs_max_ms: float
+    heartbeat_onset_telemetry_dropped: int
+
+
+@dataclass(frozen=True)
+class HeartbeatOnsetMeasurement:
+    """One device-clock estimate, copied out of the audio-to-control telemetry queue."""
+
+    t_play_ms: float
+    error_ms: float
 
 
 class Shim:
@@ -438,6 +474,16 @@ class Shim:
         self._check("pls_get_stats", self._lib.pls_get_stats(self.handle, ctypes.byref(stats)))
         return ShimStats(*(getattr(stats, name) for name, _ in PlsStats._fields_))
 
+    def drain_heartbeat_onsets(self) -> tuple[HeartbeatOnsetMeasurement, ...]:
+        """Drain one bounded queue snapshot. Called and logged only from the control thread."""
+        capacity = int(self.config.command_capacity)
+        records = (PlsHeartbeatOnset * capacity)()
+        count = self._lib.pls_drain_heartbeat_onsets(self.handle, records, capacity)
+        return tuple(
+            HeartbeatOnsetMeasurement(records[i].t_play_ms, records[i].error_ms)
+            for i in range(count)
+        )
+
     def render_offline(self, out: Any, tap: Any = None) -> None:
         """Run the chain for len(out) frames on this thread. `out` and `tap` are writable float32
         buffers (a numpy float32 array will do); tap, if given, gets the high-passed engine buffer.
@@ -495,20 +541,30 @@ class EngineHost:
             raise
         self.engine, self.shim = engine, shim
 
-    def start(self, gain: SessionGain | None = None) -> None:
-        """Anchor T_engine, start the stream, then resume `gain`, the bridge's SessionGain, so the
-        next state message sends its target again whatever it sent before a stop. Raises
+    def start(
+        self,
+        gain: SessionGain | None = None,
+        heartbeat: HeartbeatLevel | None = None,
+    ) -> None:
+        """Anchor T_engine, start the stream, then resume the bridge's level controllers, so the
+        next state message sends their targets again whatever they sent before a stop. Raises
         ShimError(PLS_ERROR_SAMPLE_RATE) unless the device runs at 48 kHz with no conversion, and
-        then leaves `gain` holding. Once a SessionGain exists, nothing else calls
-        set_session_gain. After a lost endpoint (ShimStats.device_unrequested_stops), stop and
-        then start again: the shim opens the device afresh."""
+        then leaves both controllers holding. After a lost endpoint
+        (ShimStats.device_unrequested_stops), stop and start again: the shim opens the device and
+        its IAudioClock afresh."""
         shim = self._open_shim()
         shim.set_time_origin_ns(clock._ORIGIN_NS)
         shim.start()
         if gain is not None:
             gain.resume()
+        if heartbeat is not None:
+            heartbeat.resume()
 
-    async def stop(self, gain: SessionGain | None = None) -> None:
+    async def stop(
+        self,
+        gain: SessionGain | None = None,
+        heartbeat: HeartbeatLevel | None = None,
+    ) -> None:
         """Fade the session gain and the heartbeat layer to silence over 3 s, wait until the end of
         that fade has left the chain, then stop the stream.
 
@@ -520,12 +576,10 @@ class EngineHost:
         advancing (never started, or its endpoint lost) is stopped anyway STOP_DEADLINE_MS after
         the ramp.
 
-        `gain` is the bridge's SessionGain. It sends the fade and holds back every state message's
-        target until start(gain) resumes it, so a reset, resolve's ending or a new session's
-        baseline cannot re-target the gain during the wait. Without one the fade goes straight to
-        the shim, which is only for when no SessionGain exists: once one does, nothing else calls
-        set_session_gain. The heartbeat level is written here directly; prompt 2.6's heartbeat
-        level controller will need the same hold."""
+        `gain` and `heartbeat` are the bridge's only writers. Each sends its fade and holds back
+        every state target until start resumes it, so a reset, resolve's ending or a new baseline
+        cannot re-target either gain during the wait. Without a controller that fade goes straight
+        to the shim, only for startup code before the controller exists."""
         shim = self._open_shim()
         began_ms = clock.t_engine_ms()
         pushed_at = shim.frames_rendered()
@@ -533,7 +587,10 @@ class EngineHost:
             shim.set_session_gain(0.0, STOP_RAMP_MS)
         else:
             gain.fade_out(STOP_RAMP_MS, t_engine=began_ms)
-        shim.set_heartbeat_level(-math.inf, STOP_RAMP_MS)
+        if heartbeat is None:
+            shim.set_heartbeat_level(-math.inf, STOP_RAMP_MS)
+        else:
+            heartbeat.fade_out(STOP_RAMP_MS, t_engine=began_ms)
         faded_out = (
             pushed_at
             + 2 * shim.config.max_block_frames

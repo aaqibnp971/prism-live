@@ -10,6 +10,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(prism_live_shim LANGUAGES C CXX)
 
+find_package(Threads REQUIRED)
+set(PLS_SYSTEM_LIBS Threads::Threads)
+if(WIN32)
+  list(APPEND PLS_SYSTEM_LIBS ole32)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -77,6 +83,7 @@ set_target_properties(pls_objects PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON)
 
 add_library(prism_live_shim SHARED $<TARGET_OBJECTS:pls_objects> $<TARGET_OBJECTS:pls_miniaudio>)
+target_link_libraries(prism_live_shim PRIVATE ${PLS_SYSTEM_LIBS})
 set_target_properties(prism_live_shim PROPERTIES LINKER_LANGUAGE CXX)
 # No MinGW runtime DLLs (-static), no symbols (-s), PE timestamp 0 so the build is reproducible.
 target_link_options(prism_live_shim PRIVATE -static -s -Wl,--no-insert-timestamp)
@@ -92,6 +99,7 @@ if(PLS_BUILD_TESTS)
     target_include_directories(${name} PRIVATE include)
     target_compile_definitions(${name} PRIVATE ${PLS_MINIAUDIO_DEFINITIONS})
     target_compile_options(${name} PRIVATE ${PLS_WARNINGS} ${PLS_QUOTE_SRC})
+    target_link_libraries(${name} PRIVATE ${PLS_SYSTEM_LIBS})
     target_link_options(${name} PRIVATE -static ${ARGN})
     add_test(NAME ${name} COMMAND ${name})
   endfunction()

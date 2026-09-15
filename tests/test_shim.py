@@ -1,4 +1,4 @@
-"""native/: the audio shim through its C ABI (prompt 2.5). Offline; no test opens a device.
+"""native/: the audio shim through its C ABI (prompts 2.5-2.6). No test opens a device.
 
 Every render runs on the test's thread through pls_render_offline, the chain the device callback
 runs. The render function here is Python, a ctypes callback over a numpy signal, so the chain's
@@ -7,10 +7,14 @@ with tests/audio_meters.py, which shares no code with the shim.
 
 What is pinned:
 
-- the committed DLL is built from the checkout (its source hash), imports nothing but KERNEL32 and
-  the Universal C Runtime, and native/README.md describes it;
+- the committed DLL is built from the checkout (its source hash), imports nothing but KERNEL32,
+  ole32 and the Universal C Runtime, and native/README.md describes it;
 - frames_rendered is exact, gain ramps land exactly, beats leave on their anchored frame, late
-  and surplus beats are dropped and counted, a full queue refuses and queues nothing;
+  and surplus beats are dropped and counted, fixture beats do not overlap, a full queue refuses
+  and queues nothing;
+- across the supported voice lengths, at least 97.8% of heartbeat energy stays in 36 to 62 Hz;
+  energy above 62 Hz and measured components at 120 Hz, 250 Hz and 1 kHz are pinned, and the final
+  three-second fade is equal-power and reaches digital silence on the output timeline;
 - the high-pass: the committed coefficients meet the design, and white noise, a 36 to 62 Hz sweep
   and tones through the chain show the 36 to 62 Hz band at least 24 dB down and 73.4 Hz and up
   within 1 dB;
@@ -23,6 +27,7 @@ What is pinned:
 
 import ctypes
 import hashlib
+import json
 import math
 import re
 import struct
@@ -36,6 +41,12 @@ import pytest
 from conftest import c_code
 
 from bridge.engine import RENDER_FN, SHIM_DLL, Shim, ShimError
+from bridge.engine_feed import (
+    HEARTBEAT_CHAIN_LATENCY_MS,
+    HEARTBEAT_FINAL_FADE_MS,
+    HEARTBEAT_RESTART_RAMP_MS,
+    HeartbeatLevel,
+)
 
 if sys.platform != "win32":
     pytest.skip("the shim is a Windows DLL", allow_module_level=True)
@@ -47,6 +58,7 @@ TRIPWIRE = NATIVE / "build" / "rt_tripwire_test.exe"
 RATE = 48_000
 LATENCY = Shim.latency_frames()
 CEILING_DBTP = -1.0
+FIXTURE = ROOT / "tools" / "fixtures" / "synthetic-clean.jsonl"
 
 
 class Signal:
@@ -149,17 +161,20 @@ def pe_imported_dlls(path):
     return names
 
 
-def test_the_committed_dll_imports_only_kernel32_and_the_universal_crt():
+def test_the_committed_dll_imports_only_windows_system_libraries():
     """No MinGW runtime (libstdc++, libgcc, libwinpthread) and nothing else to install: a booth
     laptop runs the DLL as cloned. A correct rebuild with a README to match would still pass the
-    hash tests, so the imports are read from the file. miniaudio loads ole32.dll and the audio
-    endpoints at run time, which is not an import."""
+    hash tests, so the imports are read from the file. ole32 is Windows' COM runtime, used only by
+    the non-audio IAudioClock polling thread."""
     names = pe_imported_dlls(SHIM_DLL)
     print(f"{SHIM_DLL.name} imports: {', '.join(names)}")
     assert "kernel32.dll" in (n.lower() for n in names)
     universal_crt = re.compile(r"api-ms-win-crt-[a-z0-9-]+\.dll")
     others = [
-        n for n in names if n.lower() != "kernel32.dll" and not universal_crt.fullmatch(n.lower())
+        n
+        for n in names
+        if n.lower() not in ("kernel32.dll", "ole32.dll")
+        and not universal_crt.fullmatch(n.lower())
     ]
     assert others == []
 
@@ -173,7 +188,7 @@ def test_native_readme_describes_the_committed_dll():
 
 
 def test_abi_version_and_defaults():
-    assert Shim.abi_version() == 2
+    assert Shim.abi_version() == 3
     config = Shim.config_default()
     assert (config.sample_rate, config.max_block_frames, config.command_capacity) == (
         48_000,
@@ -347,6 +362,230 @@ def test_beats_beyond_the_slots_are_dropped_and_counted():
     render(shim, 480)
     stats = shim.stats()
     assert (stats.beats_dropped_full, stats.beats_dropped_late) == (1, 0)
+
+
+def fixture_messages(message_type):
+    records = [json.loads(line) for line in FIXTURE.read_text(encoding="utf-8").splitlines()]
+    return [record for record in records if record.get("msg", {}).get("type") == message_type]
+
+
+def heartbeat_support_frames(rr_ms):
+    attack = round(8.0 * 48)
+    decay = math.floor(min(220.0, 0.55 * rr_ms) * 48.0 + 0.5)
+    filter_tail = round(20.0 * 48)
+    return attack + decay + filter_tail
+
+
+def test_recorded_fixture_beats_land_on_their_samples_and_never_overlap():
+    """Replay the fixture's actual delivery times. Every accepted beat reaches its fixed-anchor
+    sample; its envelope and filter tail end before the next one, with real digital zero between."""
+    records = fixture_messages("beat")
+    shim = open_shim(Signal())
+    shim.set_heartbeat_level(-12.0, 0.0)
+    shim.set_clock_anchor(0.0, 0)
+    end_frame = round((records[-1]["msg"]["t_play"] + 300.0) * 48)
+    out = np.zeros(end_frame, np.float32)
+    done = 0
+    for record in records:
+        arrival = round(record["t_engine"] * 48)
+        shim.render_offline(out[done:arrival])
+        done = arrival
+        beat = record["msg"]
+        shim.push_beat(beat["t_play"], beat["rr_ms"])
+    shim.render_offline(out[done:])
+
+    starts = onsets(out)
+    scheduled = [round(record["msg"]["t_play"] * 48) for record in records]
+    assert starts == [frame + 1 for frame in scheduled]
+    for record, frame, next_frame in zip(records, scheduled, scheduled[1:], strict=False):
+        end = frame + heartbeat_support_frames(record["msg"]["rr_ms"])
+        assert end < next_frame
+        assert np.all(out[end:next_frame] == 0.0)
+    stats = shim.stats()
+    assert (stats.beats_played, stats.beats_dropped_late, stats.beats_dropped_full) == (
+        len(records),
+        0,
+        0,
+    )
+    assert stats.heartbeat_onset_measurements == 0
+
+
+def test_heartbeat_voice_energy_and_measured_spectral_leakage():
+    """Measure complete shortest, intermediate and capped-decay voices—not a theoretical filter.
+    The >62 Hz bound directly protects the range handed to the music."""
+    rrs = (250.0, 300.0, 400.0)
+    expected_points = np.array(
+        [
+            [-55.19, -105.49, -149.48],
+            [-56.72, -112.54, -147.19],
+            [-59.43, -115.41, -160.05],
+        ]
+    )
+    measured_points = []
+    fractions_inside = []
+    above_62 = []
+    above_120 = []
+    for rr_ms in rrs:
+        onset = RATE
+        support = heartbeat_support_frames(rr_ms)
+        shim = open_shim(Signal())
+        shim.set_heartbeat_level(-12.0, 0.0)
+        shim.set_clock_anchor(0.0, 0)
+        shim.push_beat(1000.0, rr_ms)
+        out, _ = render(shim, 2 * RATE, 480)
+        voice = out[onset : onset + support].astype(np.float64)
+        n = np.arange(len(voice))
+
+        components = [
+            abs(np.sum(voice * np.exp(-2j * math.pi * hz * n / RATE)))
+            for hz in (44, 120, 250, 1000)
+        ]
+        fundamental = components[0]
+        measured_points.append(
+            [meters.db(component / fundamental) for component in components[1:]]
+        )
+        padded = np.pad(voice, (0, (1 << 19) - len(voice)))
+        power = np.abs(np.fft.rfft(padded)) ** 2
+        hz = np.fft.rfftfreq(len(padded), 1.0 / RATE)
+        inside = power[(hz >= 36.0) & (hz <= 62.0)].sum()
+        fractions_inside.append(inside / power.sum())
+        above_62.append(meters.power_db(power[hz > 62.0].sum() / inside))
+        above_120.append(meters.power_db(power[hz >= 120.0].sum() / inside))
+        assert shim.stats().limiter_active_frames == 0
+
+    measured_points = np.asarray(measured_points)
+    print(
+        f"heartbeat components at RR {rrs}, 120/250/1000 Hz relative to 44 Hz:\n"
+        f"{measured_points}"
+    )
+    print(
+        f"heartbeat 36-62 Hz fractions: {np.asarray(fractions_inside) * 100}; "
+        f">62 Hz: {above_62} dB; >=120 Hz: {above_120} dB"
+    )
+    np.testing.assert_allclose(measured_points, expected_points, atol=2.0, rtol=0.0)
+    assert min(fractions_inside) >= 0.978
+    assert max(above_62) <= -21.5
+    assert max(above_120) <= -55.0
+
+    check = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "design_heartbeat.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+
+def test_recorded_fixture_final_fade_is_equal_power_and_ends_at_digital_silence():
+    """Use the recorded resolve boundary and beats. Compare the shim with its level held at -11
+    dBFS: the only difference is the controller's exact three-second cosine fade."""
+    resolve = next(
+        record["msg"]
+        for record in fixture_messages("state")
+        if record["msg"]["segment"] == "resolve"
+    )
+    resolve_end = (
+        resolve["t_engine"] - resolve["segment_elapsed_ms"] + resolve["segment_nominal_ms"]
+    )
+    fade_start = resolve_end - HEARTBEAT_FINAL_FADE_MS
+    window_start = fade_start - 5_000.0
+    window_end = resolve_end + 1_000.0
+    beats = [
+        record["msg"]
+        for record in fixture_messages("beat")
+        if window_start + 500.0 <= record["msg"]["t_play"] <= window_end
+    ]
+
+    class Events:
+        def event(self, *args, **kwargs):
+            pass
+
+    actual = open_shim(Signal())
+    reference = open_shim(Signal())
+    for shim in (actual, reference):
+        shim.set_clock_anchor(window_start, 0)
+        for beat in beats:
+            shim.push_beat(beat["t_play"], beat["rr_ms"])
+    controller = HeartbeatLevel(actual, Events())
+    assert controller.on_state(resolve) == ((-11.0, 2_000.0),)
+    reference.set_heartbeat_level(-11.0, 2_000.0)
+
+    assert pytest.approx(LATENCY / 48.0) == HEARTBEAT_CHAIN_LATENCY_MS
+    command_at = fade_start - HEARTBEAT_CHAIN_LATENCY_MS
+    before = round((command_at - window_start) * 48)
+    after = round((window_end - command_at) * 48)
+    actual_before, _ = render(actual, before, 480)
+    reference_before, _ = render(reference, before, 480)
+    assert controller.tick(command_at) == (-math.inf, HEARTBEAT_FINAL_FADE_MS)
+    actual_after, _ = render(actual, after, 480)
+    reference_after, _ = render(reference, after, 480)
+    faded = np.concatenate([actual_before, actual_after])
+    held = np.concatenate([reference_before, reference_after])
+
+    effect_start = round((fade_start - window_start) * 48)
+    fade_frames = round(HEARTBEAT_FINAL_FADE_MS * 48)
+    indices = np.arange(effect_start, effect_start + fade_frames)
+    audible = np.abs(held[indices]) > 1e-7
+    progress = (np.arange(fade_frames) + 1.0) / fade_frames
+    expected = np.cos(0.5 * math.pi * progress)
+    np.testing.assert_allclose(
+        faded[indices[audible]] / held[indices[audible]],
+        expected[audible],
+        atol=2e-5,
+        rtol=2e-5,
+    )
+    assert np.array_equal(faded[:effect_start], held[:effect_start])
+    assert np.all(faded[effect_start + fade_frames - 1 :] == 0.0)
+    assert np.any(held[effect_start + fade_frames :] != 0.0)
+
+
+@pytest.mark.parametrize(
+    ("segment", "now", "elapsed", "nominal"),
+    [
+        ("baseline", 6_000.0, 6_000.0, 56_000.0),
+        ("regulate", 40_000.0, 30_000.0, 75_000.0),
+        ("resolve", 143_000.0, 43_000.0, 45_000.0),
+    ],
+)
+def test_restart_staging_reaches_the_real_shim_before_its_continuation(
+    segment, now, elapsed, nominal
+):
+    """A resumed target gets 100 ms of rendered samples before the staged continuation arrives.
+    This catches the same-callback overwrite that made a final-resolve restart stay silent."""
+
+    class Events:
+        def event(self, *args, **kwargs):
+            pass
+
+    shim = open_shim(Signal())
+    shim.set_clock_anchor(now, 0)
+    controller = HeartbeatLevel(shim, Events())
+    controller.resume()
+    command = controller.on_state(
+        {
+            "type": "state",
+            "t_engine": now,
+            "segment": segment,
+            "segment_elapsed_ms": elapsed,
+            "segment_nominal_ms": nominal,
+        }
+    )
+    assert command is not None and command[0][1] == HEARTBEAT_RESTART_RAMP_MS
+    # A voice whose output onset is latency ms from the anchor begins at mix-input frame zero.
+    beat_count = round((nominal - elapsed) / 250.0) + 1 if segment == "resolve" else 1
+    for offset in range(beat_count):
+        t_play = now + HEARTBEAT_CHAIN_LATENCY_MS + 250.0 * offset
+        if t_play <= now + nominal - elapsed:
+            shim.push_beat(t_play, 800.0 if offset == 0 else 250.0)
+    first, _ = render(shim, round(HEARTBEAT_RESTART_RAMP_MS * 48), 480)
+    continuation = controller.tick(now + HEARTBEAT_RESTART_RAMP_MS)
+    assert continuation is not None
+    remaining_ms = nominal - elapsed + 250.0 if segment == "resolve" else 500.0
+    rest, _ = render(shim, round(remaining_ms * 48), 480)
+    output = np.concatenate([first, rest])
+    assert np.any(output[LATENCY : LATENCY + round(HEARTBEAT_RESTART_RAMP_MS * 48)] != 0.0)
+    if segment == "resolve":
+        end = round((nominal - elapsed) * 48)
+        assert np.all(output[end:] == 0.0)
 
 
 def test_a_full_command_queue_refuses_and_queues_nothing():
@@ -605,6 +844,7 @@ AUDIO_THREAD_FILES = [
     "process.cpp",
     "heartbeat.h",
     "heartbeat.cpp",
+    "heartbeat_filter_coefficients.h",
     "limiter.h",
     "limiter.cpp",
     "highpass.h",
@@ -638,8 +878,15 @@ def test_the_audio_thread_sources_name_none_of_the_usual_calls_that_allocate_loc
         for name in AUDIO_THREAD_FILES
     }
     shim = c_code((NATIVE / "src" / "shim.cpp").read_text(encoding="utf-8"))
-    for function in ("on_device_data", "on_device_notification", "count_unrequested_stop"):
-        sources[f"shim.cpp: {function}"] = function_body(shim, f"void {function}(")
+    callback_functions = {
+        "on_device_data": "void on_device_data(",
+        "read_clock_mailbox": "pls::DeviceClockSample read_clock_mailbox(",
+        "qpc_ns": "int64_t qpc_ns(",
+        "on_device_notification": "void on_device_notification(",
+        "count_unrequested_stop": "void count_unrequested_stop(",
+    }
+    for name, signature in callback_functions.items():
+        sources[f"shim.cpp: {name}"] = function_body(shim, signature)
     found = {
         name: sorted({m.group(0) for m in FORBIDDEN_ON_THE_AUDIO_THREAD.finditer(code)})
         for name, code in sources.items()

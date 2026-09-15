@@ -362,9 +362,14 @@ engine and shim DLLs and a generated test scene. The real stems do not exist yet
   stop, a new time origin and start, which opens the default device afresh and checks it for 48 kHz
   again. The refusal of a device that is not at 48 kHz has not run: this machine's device is at
   48 kHz. The lost-device path needs a real unplug to be checked.
-- **The heartbeat's device anchor is provisional.** It is taken once, at the first callback, from
-  QueryPerformanceCounter plus one device period. Nothing corrects it against the device's
-  reported position until prompt 2.6. The voice itself is 2.6's minimal stand-in.
+- **The heartbeat's device-anchor correction is implemented but not hardware-verified.** The
+  non-audio timing thread polls the WASAPI stream position reported by `IAudioClock`; the callback
+  reads only a lock-free snapshot. The first usable result anchors T_engine and later observations
+  move the anchor only by a slew of at most 1 ms per second. Offline tests prove the map does not
+  step, obeys that rate, discards prior-run beats on a re-anchor, and never reports an onset from a
+  failed current clock read. They cannot prove where a real DAC presents the sample. Every
+  scheduled-versus-device estimate is retained for the control thread to log. Confirm the
+  relationship on the booth laptop before treating it as a physical-onset measurement.
 
 ### The armband-day list
 
@@ -373,6 +378,8 @@ These all need hardware and cannot be verified in software:
 1. Confirm the fade to silence makes no audible click on real headphones, wired, across all four interruption scenarios.
 2. Pull the audio cable mid-session and confirm recovery. Also switch the default output device while running.
 3. Measure the real DAC anchor, which prompt 2.6 is designed to refine.
+4. Verify prompt 2.6's anchor correction against the real device's reported position over time.
+   Its relationship to physical DAC output is unverified until this hardware check.
 
 ### The PSV feed
 
