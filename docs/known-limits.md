@@ -385,19 +385,16 @@ These all need hardware and cannot be verified in software:
 
 All provisional until Week B listening.
 
-- **The gate hysteresis.** A gate opens at density ≥ threshold + 0.01 and closes at ≤ threshold −
-  0.01. Once it flips, it is held for its loop plus 1.5 s: pulse 12.5 s, air 14.5 s. It cannot see
-  the engine's phase, so it cannot tell when the 1.5 s ramp actually runs. Three consequences:
-  - The cutoff sits flat at the band's edge, then steps by about 100 to 300 Hz when the gate opens.
-    The engine's 0.6 s smoothing turns the step into a glide.
-  - A gate that flips late in load (air after 60.5 s, pulse after 62.5 s) holds back regulate's
-    closing for the rest of its hold, up to 14.5 s. An air flip at 66 s holds it to 5.5 s into
-    regulate. Pulse then misses its first boundary, 2 s into regulate.
-  - Air fades after pulse in about 85 % of sessions, against the script.
-
-  All three are prompt 2.7's to fix, with `bridge/phase.py`.
-- **The body source sends a neutral PSV in idle and reset,** which opens pulse between visitors.
-  The session gain holds it silent. The pose source sends the baseline pose instead.
+- **The phase-aware gate plan is implemented in prompt 2.7.** A gate opens at density ≥ threshold
+  + 0.01 and closes at ≤ threshold − 0.01. `bridge/phase.py` reads the shim's rendered-frame
+  counter, gives every crossing a one-block-early send frame, and identifies the actual 1.5 s
+  ramp. Hysteresis holds only across that ramp; a reversal before its boundary cancels cleanly.
+  Air closes on the last air boundary before pulse's first regulate boundary, so air's fade ends
+  first for every relative phase. The cutoff can still sit at a hysteresis edge and then move by
+  about 100 to 300 Hz when a gate changes; the engine's 0.6 s smoothing makes that a glide.
+- **Idle and reset send the baseline pose under both PSV sources.** An authority-zero body value
+  remains neutral in the state message, but it is not sent to the engine between visitors, so it
+  cannot open pulse there. Baseline itself is held below both gates until the aligned pre-arm.
 - **The baseline pose's density is 0.3374,** only 0.0026 below the pulse gate's closing edge. A
   Week B tweak of about +0.003 arousal would put it where the hysteresis moves it without saying.
 - **In the pose source, the body moves arousal inside a segment's range** by
@@ -413,6 +410,32 @@ All provisional until Week B listening.
   - Resolve: the ending starts on the first state message at or after T−22 s, so up to 2 s late,
     and the ramp is shortened so it still lands at T−10 s.
   - During stop, `SessionGain` holds every change until `resume`.
+
+---
+
+## The live bridge loop (prompt 2.9)
+
+**Handled by:** `bridge/live.py` and `bridge/server.py`. Measured 18 September 2026 on the booth
+laptop, on the real performance clock, with the synthetic armband, the committed engine and shim,
+the placeholder scene, the real default audio device and the WebSocket server listening. The run
+went from aligned start firing through the end of reset: 271.025 s, 8,666 tick intervals and 362
+published non-rejected beats.
+
+| Measurement | Median | p95 | Worst relevant value | Requirement |
+|---|---:|---:|---:|---:|
+| Actual tick interval | **31.244 ms** | **32.139 ms** | **67.520 ms max** | 20 to 100 ms |
+| Beat lead at publish | **483.521 ms** | **497.833 ms** | **467.746 ms min** | at least 300 ms |
+
+The shortest tick interval was 20.013 ms. No beat was refused for short lead, no phase-alignment
+fault occurred, and neither planned gate crossing missed its boundary. The start fired at exactly
+the armed frame.
+
+The measurement changed the production cadence. A first complete run at a nominal 50 ms produced
+62.542 ms median, 63.989 ms p95 and one **109.814 ms maximum**, outside the target, although beat
+lead remained safe at a 425.344 ms minimum. The live loop now requests the 20 ms floor and checks
+spacing on `T_engine` itself; using asyncio's coarser Windows clock alone had also allowed one early
+15.674 ms interval. The table is the full rerun after both changes. These figures cover this laptop
+under synthetic input, not BLE contention; repeat the same one-session diagnostic after prompt 2.8.
 
 ---
 

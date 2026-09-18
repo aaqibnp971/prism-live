@@ -56,8 +56,9 @@ from bridge.engine import (
     ShimError,
     engine_library,
 )
-from bridge.engine_feed import HeartbeatLevel, PsvFeed, SessionGain
+from bridge.engine_feed import FADE_FRAMES, HeartbeatLevel, PsvFeed, SessionGain
 from bridge.engine_mapping import map_effective
+from bridge.phase import PULSE_ALIGNMENT_PHASE, PhaseTracker
 
 if sys.platform != "win32":
     pytest.skip("the engine and the shim are Windows DLLs", allow_module_level=True)
@@ -76,6 +77,11 @@ BASELINE_POSE = (0.486, 0.65, 0.5)  # 1,400 Hz, pulse and air closed (bridge/pos
 @pytest.fixture(scope="module")
 def scene(tmp_path_factory):
     return scene_fixture.make_scene(tmp_path_factory.mktemp("scene"))
+
+
+@pytest.fixture(scope="module")
+def phase_scene(tmp_path_factory):
+    return scene_fixture.make_phase_scene(tmp_path_factory.mktemp("phase-scene"))
 
 
 @pytest.fixture
@@ -102,6 +108,11 @@ def test_the_engine_library_is_the_acbfd50_build():
     assert engine_library().prism_version().decode() == "0.3.0"
     readme = (ROOT / "vendor" / "lib" / "README.md").read_text(encoding="utf-8")
     assert f"`{hashlib.sha256(ENGINE_DLL.read_bytes()).hexdigest()}`" in readme
+
+
+def test_engine_host_records_its_one_blocking_scene_load(host, scene):
+    assert host.engine.scene == scene.resolve()
+    assert host.scene_load_ms is not None and host.scene_load_ms > 0.0
 
 
 def test_the_ctypes_structs_have_the_c_layouts():
@@ -138,14 +149,14 @@ def test_a_44_1_khz_scene_is_refused_and_the_engine_destroyed(tmp_path):
 
 @pytest.mark.parametrize(
     ("manifest", "error"),
-    [(None, TypeError), ("scene-\udc80.json", UnicodeEncodeError)],
-    ids=["not a path", "unencodable"],
+    [(None, TypeError), ("missing-scene.json", FileNotFoundError)],
+    ids=["not a path", "missing"],
 )
 def test_open_destroys_the_engine_when_the_scene_raises_before_the_engine_sees_it(
     monkeypatch, manifest, error
 ):
-    """load_scene destroys the handle only when the engine refuses. A path that cannot be handed
-    to the engine at all raises before that, and open must still free the handle."""
+    """A path the scene layer cannot load raises before the engine sees it, and open still frees
+    the new handle."""
     destroyed = []
     destroy = Engine.destroy
 
@@ -417,6 +428,193 @@ class Events:
         self.events.append((name, t_engine, fields))
 
 
+def phase_state(t_engine, segment, elapsed, arousal=0.9):
+    return {
+        "type": "state",
+        "t_engine": t_engine,
+        "segment": segment,
+        "segment_elapsed_ms": elapsed,
+        "segment_nominal_ms": 45_000 if segment == "baseline" else 75_000,
+        "psv": {
+            "arousal": arousal,
+            "valence": 0.5,
+            "cognitive_load": 0.5,
+            "readiness": 0.5,
+        },
+        "confidence": {
+            "arousal": 1.0,
+            "valence": 0.0,
+            "cognitive_load": 1.0,
+            "readiness": 1.0,
+        },
+        "authority": {
+            "arousal": 1.0,
+            "valence": 0.0,
+            "cognitive_load": 1.0,
+            "readiness": 1.0,
+        },
+    }
+
+
+def tone_blocks(samples, hz, frames=2_400):
+    """Complex-demodulated amplitude in 50 ms blocks (integer cycles at 880 and 4 kHz)."""
+    count = len(samples) // frames
+    blocks = np.asarray(samples[: count * frames], np.float64).reshape(count, frames)
+    window = np.hanning(frames)
+    oscillator = window * np.exp(-2j * np.pi * hz * np.arange(frames) / RATE)
+    return np.abs(blocks @ oscillator) * (2.0 / np.sum(window))
+
+
+def windowed_tone(samples, hz):
+    window = np.hanning(len(samples))
+    oscillator = window * np.exp(-2j * np.pi * hz * np.arange(len(samples)) / RATE)
+    return float(abs(np.asarray(samples, np.float64) @ oscillator) * (2.0 / np.sum(window)))
+
+
+def circular_samples(samples, start, count):
+    indices = (start + np.arange(count)) % len(samples)
+    return samples[indices]
+
+
+def correlation_peak(stem_fft, capture, loop_frames):
+    padded = np.zeros(loop_frames, np.float64)
+    padded[: len(capture)] = np.asarray(capture, np.float64) * np.hanning(len(capture))
+    correlation = np.fft.irfft(np.conj(stem_fft) * np.fft.rfft(padded), loop_frames)
+    return int(np.argmax(np.abs(correlation)))
+
+
+def circular_distance(a, b, modulus):
+    return abs((a - b + modulus // 2) % modulus - modulus // 2)
+
+
+def test_aligned_fixture_audio_has_ordered_gates_and_continuous_bed_phase(phase_scene):
+    """Prompt 2.7 through the real engine and shim, on exact production-length test loops.
+
+    The temporary stems isolate pulse at 880 Hz and air at 4 kHz. The bed is a unique 19 s
+    texture, so its circular cross-correlation against its own file detects any phase restart.
+    """
+    host = EngineHost()
+    host.open(phase_scene)
+    shim, engine = host.shim, host.engine
+    phase, log = PhaseTracker.for_shim(shim), Events()
+    feed = PsvFeed(engine, log, "pose", phase=phase)
+    shim.set_session_gain(1.0, 0.0)
+
+    baseline_frame = PULSE_ALIGNMENT_PHASE
+    expected_plan = phase.session_gate_plan(baseline_frame)
+    audio_end = expected_plan.pulse_close.boundary_frame + FADE_FRAMES + 2 * RATE
+    position = 0
+    tap = np.zeros(audio_end, np.float32)
+
+    def render_into(target):
+        nonlocal position
+        while position < target:
+            end = min(target, position + RATE)
+            out = np.empty(end - position, np.float32)
+            shim.render_offline(out, tap[position:end] if tap is not None else None)
+            position = end
+
+    try:
+        feed.on_state(phase_state(0, "idle", 0))
+        render_into(baseline_frame)
+        feed.on_state(phase_state(0, "baseline", 0))
+        plan = feed.gate_plan
+        assert plan == expected_plan
+
+        render_into(plan.pulse_open.send_frame)
+        feed.tick((position - baseline_frame) / 48)
+        render_into(plan.load_frame)
+        feed.on_state(phase_state(56_000, "load", 0))
+        render_into(plan.air_close.send_frame)
+        feed.tick((position - baseline_frame) / 48)
+        render_into(plan.regulate_frame)
+        feed.on_state(phase_state(131_000, "regulate", 0))
+        render_into(audio_end)
+
+        pulse_hz, air_hz = (
+            scene_fixture.PHASE_TONES["pulse"],
+            scene_fixture.PHASE_TONES["air"],
+        )
+        baseline = tap[baseline_frame : plan.load_frame]
+        opened = tap[
+            plan.load_frame + FADE_FRAMES + RATE // 4 : plan.load_frame + FADE_FRAMES + RATE
+        ]
+        pulse_open = meters.tone_amplitude(opened, pulse_hz)
+        pulse_floor = float(np.max(tone_blocks(baseline, pulse_hz)))
+        before = windowed_tone(
+            tap[plan.load_frame - phase.block_frames : plan.load_frame], pulse_hz
+        )
+        first = windowed_tone(
+            tap[plan.load_frame : plan.load_frame + phase.block_frames], pulse_hz
+        )
+        after_close = tap[
+            plan.pulse_close.boundary_frame + FADE_FRAMES :
+            plan.pulse_close.boundary_frame + FADE_FRAMES + RATE
+        ]
+        assert pulse_floor < pulse_open * 1e-3
+        assert before < pulse_open * 1e-3
+        assert first > max(before * 20.0, pulse_open * 1e-4)
+        assert meters.tone_amplitude(after_close, pulse_hz) < pulse_open * 1e-3
+
+        # Across the whole measured session, audible air always has audible pulse under it.
+        measured = tap[baseline_frame:audio_end]
+        pulse_level = tone_blocks(measured, pulse_hz)
+        air_level = tone_blocks(measured, air_hz)
+        pulse_threshold = float(np.max(pulse_level)) * 0.01
+        air_threshold = float(np.max(air_level)) * 0.01
+        assert np.max(air_level) > max(float(np.max(tone_blocks(baseline, air_hz))) * 100, 1e-5)
+        assert not np.any((air_level > air_threshold) & (pulse_level <= pulse_threshold))
+        assert plan.air_close.boundary_frame + FADE_FRAMES < (
+            plan.pulse_close.boundary_frame + FADE_FRAMES
+        )
+
+        crossings = [fields for name, _, fields in log.events if name == "engine_gate_crossing"]
+        assert [event["late_frames"] for event in crossings] == [0, 0]
+        assert not any(event["missed_boundary"] for event in crossings)
+        psv_log = [fields for name, _, fields in log.events if name == "engine_psv"]
+        assert [record["reason"] for record in psv_log if record["reason"] != "state"] == [
+            "load_pulse_open",
+            "regulate_air_close",
+        ]
+        assert next(record for record in psv_log if record["segment"] == "baseline")[
+            "hysteresis"
+        ]["gates"] == {"pulse": False, "air": False}
+
+        # Render the worst-case 281 s session without retaining it. Reset uses the same baseline
+        # filter as the early capture, then both captures are correlated against the bed file.
+        early_start, capture_frames = 7 * RATE, 2 * RATE
+        early = tap[early_start : early_start + capture_frames].copy()
+        session_end = baseline_frame + 281 * RATE
+        tap = None
+        render_into(session_end)
+        feed.on_state(phase_state(281_000, "reset", 0))
+        render_into(session_end + 6 * RATE)
+        final_start = position
+        final = np.empty(capture_frames, np.float32)
+        out = np.empty(capture_frames, np.float32)
+        shim.render_offline(out, final)
+        position += capture_frames
+
+        with wave.open(str(phase_scene.parent / "bed.wav"), "rb") as wav:
+            raw = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+        raw /= 32767.0
+        stem_fft = np.fft.rfft(raw)
+        early_raw = circular_samples(raw, early_start, capture_frames)
+        final_raw = circular_samples(raw, final_start, capture_frames)
+        expected_delta = (
+            correlation_peak(stem_fft, final_raw, len(raw))
+            - correlation_peak(stem_fft, early_raw, len(raw))
+        ) % len(raw)
+        measured_delta = (
+            correlation_peak(stem_fft, final, len(raw))
+            - correlation_peak(stem_fft, early, len(raw))
+        ) % len(raw)
+        assert circular_distance(measured_delta, expected_delta, len(raw)) <= 8
+        assert shim.frames_rendered() == position
+    finally:
+        host.close()
+
+
 def test_a_fixture_session_through_the_feed_drives_the_real_engine(scene):
     """Every state message of tools/fixtures/synthetic-clean.jsonl through PsvFeed and SessionGain
     into the engine and the shim, audio rendered up to each message's t_engine, the source
@@ -428,7 +626,8 @@ def test_a_fixture_session_through_the_feed_drives_the_real_engine(scene):
     host = EngineHost()
     host.open(scene)
     log = Events()
-    feed, gain = PsvFeed(host.engine, log), SessionGain(host.shim, log)
+    feed = PsvFeed(host.engine, log, phase=PhaseTracker.for_shim(host.shim))
+    gain = SessionGain(host.shim, log)
     host.shim.set_clock_anchor(0.0, 0)
     end_ms = states[-1]["t_engine"] + 2000
     out = np.zeros(round(end_ms * 48), np.float32)

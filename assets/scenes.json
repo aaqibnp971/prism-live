@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "default_scene": "prism-live",
+  "scenes": [
+    {
+      "id": "prism-live",
+      "key": "D minor",
+      "stems": [
+        { "role": "bed", "file": "placeholders/bed.wav" },
+        { "role": "sub", "file": "placeholders/sub.wav" },
+        { "role": "pulse", "file": "placeholders/pulse.wav" },
+        { "role": "air", "file": "placeholders/air.wav" }
+      ]
+    }
+  ]
+}

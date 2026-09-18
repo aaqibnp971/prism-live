@@ -1,9 +1,10 @@
 """What audio is fed on state: the PSV, session gain and heartbeat level (prompts 2.5-2.6).
 
-PsvFeed. One mood override per state message, from the bridge's loop, the engine's only PSV
-writer (its inference thread is never started). State messages go out every 2 s and at every
-segment boundary, which is the cadence prompt 2.5 asks for, so call on_state with every one the
-session publishes. Each call sends arousal, cognitive_load and readiness through
+PsvFeed. One mood override per state message, plus the two phase-timed gate crossings planned for
+an aligned session, from the bridge's loop; it is the engine's only PSV writer (its inference
+thread is never started). State messages go out every 2 s and at every segment boundary. Call
+on_state with every one the session publishes, and tick at the send frames supplied by its gate
+plan. Each call sends arousal, cognitive_load and readiness through
 sink.set_mood_override; the sink sends valence 0.5, confidence 1.0 and mode_hint NULL with them
 (bridge/engine.py). Two sources, switched at runtime by set_source from the bridge console, taking
 effect on the next message:
@@ -24,11 +25,16 @@ scheduled parks the stem at a partial level until its next loop boundary (docs/e
 - What is sent never sits inside that band. A gate held open gets d >= T + MARGIN, held closed
   d <= T - MARGIN: arousal moves to the band's edge, and cognitive_load as well when arousal is
   pinned at 0 or 1. Readiness plays no part in density and never moves.
-- After a flip the gate holds for its stem's loop + 1.5 s (pulse 12.5 s, air 14.5 s) of the
-  messages' t_engine. The flip's ramp starts at the stem's next boundary, at most one loop away,
-  and lasts 1.5 s, so no reversal is sent before that ramp is over.
+- A flip is scheduled at the stem's next boundary. A reversal before that boundary cancels
+  cleanly, so only the actual 1.5 s ramp is held. Phase comes from the shim's rendered-frame
+  counter, never from message time.
 - Nested: air open implies pulse open. Pulse does not close under an air held open, and air does
   not open over a pulse held closed.
+
+An aligned baseline plans pulse's opening one block before the load boundary. It also plans air's
+close on the last air boundary before pulse's first regulate boundary, so their equal-length fades
+always finish in the same order. Idle and reset send the baseline pose under either source; an
+authority-zero body message would otherwise be neutral and open pulse between visitors.
 
 The gate state mirrors the engine's, so it outlives a source switch and a session (the engine
 keeps rendering between visitors), and it starts closed, as the engine's gates do.
@@ -57,7 +63,8 @@ stop/restart latch as SessionGain and reconstructs a mid-segment envelope in two
 On each state it drains every native onset record to the session log; the audio callback never
 logs.
 
-    feed = PsvFeed(engine, log)
+    phase = PhaseTracker.for_shim(shim)
+    feed = PsvFeed(engine, log, phase=phase)
     gain, heartbeat = SessionGain(shim, log), HeartbeatLevel(shim, log)
     # every state message: publish(msg); feed.on_state(msg); gain.on_state(msg)
     #                      heartbeat.on_state(msg)
@@ -82,12 +89,21 @@ from bridge.engine_mapping import (
     effective,
     map_effective,
 )
+from bridge.phase import (
+    PULSE_ALIGNMENT_PHASE,
+    SAMPLE_RATE,
+    GateTiming,
+    PhaseTracker,
+    SessionGatePlan,
+    frames_from_ms,
+)
 from bridge.poses import pose_inputs
 
 SOURCES = ("body", "pose")
 
 MARGIN = 0.01  # each side of a gate threshold
 FADE_MS = 1_500  # the engine's gate ramp, PgaeOptions::crossfade_s
+FADE_FRAMES = round(FADE_MS * SAMPLE_RATE / 1000.0)
 LOOP_MS = {"pulse": 11_000, "air": 13_000}  # the stems' loops (CLAUDE.md, "Audio facts")
 GATED = ("pulse", "air")  # outer to inner: air is only ever open inside an open pulse
 
@@ -139,10 +155,21 @@ def body_inputs(msg: Mapping) -> dict[str, float]:
 @dataclass
 class GateState:
     open: bool = False
-    held_until_ms: float | None = None  # no flip back before this t_engine
+    ramp_start_frame: int | None = None
+    ramp_end_frame: int | None = None
 
-    def held(self, t: float) -> bool:
-        return self.held_until_ms is not None and t < self.held_until_ms
+    def held(self, frame: int) -> bool:
+        """Only the audible 1.5 s ramp is protected; pending time before its boundary is not."""
+        return (
+            self.ramp_start_frame is not None
+            and self.ramp_end_frame is not None
+            and self.ramp_start_frame <= frame < self.ramp_end_frame
+        )
+
+    def ramp(self) -> tuple[int, int] | None:
+        if self.ramp_start_frame is None or self.ramp_end_frame is None:
+            return None
+        return self.ramp_start_frame, self.ramp_end_frame
 
 
 @dataclass(frozen=True)
@@ -150,6 +177,8 @@ class Update:
     """One override, as sent, and why."""
 
     t_engine: float
+    frame: int
+    reason: str
     source: str
     body: dict[str, float]  # what the body source gives for this message
     chosen: dict[str, float]  # what the active source gave, before hysteresis
@@ -158,7 +187,7 @@ class Update:
     gates: dict[str, bool]  # pulse and air after this message
     flipped: tuple[str, ...]  # gates this message flipped
     deferred: tuple[str, ...]  # gates that would have flipped, held back by nesting
-    held_until_ms: dict[str, float | None]  # per gate, no flip back before this t_engine
+    ramps: dict[str, tuple[int, int] | None]  # scheduled boundary and end, in scene frames
 
     @property
     def moved(self) -> bool:
@@ -168,19 +197,25 @@ class Update:
 class GateHysteresis:
     """The Schmitt states of pulse and air, and the inputs that respect them."""
 
-    def __init__(self) -> None:
+    def __init__(self, phase: PhaseTracker) -> None:
+        self._phase = phase
         self.gates = {stem: GateState() for stem in GATED}
 
     def decide(
-        self, values: Mapping[str, float], t: float
+        self,
+        values: Mapping[str, float],
+        frame: int,
+        forced: Mapping[str, bool] | None = None,
     ) -> tuple[dict[str, float], dict[str, bool], tuple[str, ...]]:
         """(values to send, gate states after them, deferred). Changes nothing."""
         d = density(values["arousal"], values["cognitive_load"])
         after: dict[str, bool] = {}
         for stem in GATED:
             gate, threshold = self.gates[stem], GATE_THRESHOLDS[stem]
-            if gate.held(t):
+            if gate.held(frame):
                 after[stem] = gate.open
+            elif forced is not None and stem in forced:
+                after[stem] = forced[stem]
             elif d >= threshold + MARGIN:
                 after[stem] = True
             elif d <= threshold - MARGIN:
@@ -200,26 +235,50 @@ class GateHysteresis:
         sent = {"arousal": arousal, "cognitive_load": load, "readiness": values["readiness"]}
         return sent, after, deferred
 
-    def commit(self, after: Mapping[str, bool], t: float) -> tuple[str, ...]:
-        """Take the states decide gave, starting a hold on every flip. Returns the flips."""
+    def commit(self, after: Mapping[str, bool], frame: int) -> tuple[str, ...]:
+        """Take the states from decide and record the engine's actual scheduled ramp."""
         flipped = []
         for stem in GATED:
             gate = self.gates[stem]
             if after[stem] != gate.open:
                 gate.open = after[stem]
-                gate.held_until_ms = t + LOOP_MS[stem] + FADE_MS
+                gate.ramp_start_frame = self._phase.next_boundary(stem, frame)
+                gate.ramp_end_frame = gate.ramp_start_frame + FADE_FRAMES
                 flipped.append(stem)
         return tuple(flipped)
 
 
-class PsvFeed:
-    """The engine's PSV, one override per state message. See the module docstring."""
+@dataclass(frozen=True)
+class ScheduledGate:
+    timing: GateTiming
+    open: bool
+    reason: str
 
-    def __init__(self, sink: MoodSink, log: EventLog, source: str = "body") -> None:
+
+class PsvFeed:
+    """The engine's phase-aware PSV writer. See the module docstring."""
+
+    def __init__(
+        self,
+        sink: MoodSink,
+        log: EventLog,
+        source: str = "body",
+        *,
+        phase: PhaseTracker,
+        session_gates: bool = True,
+    ) -> None:
         self._sink = sink
         self._log = log
         self._source = _check_source(source)
-        self.hysteresis = GateHysteresis()
+        self._phase = phase
+        self._session_gates = session_gates
+        self.hysteresis = GateHysteresis(phase)
+        self._segment: str | None = None
+        self._forced: dict[str, bool] = {}
+        self._pending: list[ScheduledGate] = []
+        self._plan: SessionGatePlan | None = None
+        self._last: tuple[float, int, str, dict[str, float], dict[str, float]] | None = None
+        self._armed_baseline_frame: int | None = None
 
     @property
     def source(self) -> str:
@@ -230,19 +289,165 @@ class PsvFeed:
         previous, self._source = self._source, _check_source(source)
         self._log.event("engine_psv_source", t_engine=t_engine, source=source, previous=previous)
 
+    def arm_start_frame(self, baseline_frame: int) -> None:
+        """Pin the next baseline's scene frame before Session.start does any file logging.
+
+        The attendant countdown observes this exact frame.  Its state callback can run one audio
+        block later under Windows scheduling, but the whole gate plan still belongs to the frame
+        at which start fired.
+        """
+        if self._phase.phase_frames("pulse", baseline_frame) != PULSE_ALIGNMENT_PHASE:
+            raise ValueError("the armed baseline frame is not pulse-aligned")
+        self._armed_baseline_frame = baseline_frame
+
     def on_state(self, msg: Mapping) -> Update:
         """Send the override for one state message, and log it. msg is read, never changed."""
-        t, source = msg["t_engine"], self._source
+        t, source, frame = float(msg["t_engine"]), self._source, self._phase.frame()
+        segment = msg["segment"]
+        if self._session_gates and segment != self._segment:
+            self._enter_segment(msg, frame)
+            self._segment = segment
         body = body_inputs(msg)
-        chosen = body if source == "body" else pose_inputs(msg)
+        # Between visitors both source choices send the baseline pose.  In particular, a body
+        # message with authority zero is neutral, and neutral would open pulse.
+        baseline_pose = self._session_gates and segment in ("idle", "reset")
+        chosen = pose_inputs(msg) if baseline_pose or source == "pose" else body
         chosen = {d: _unit(chosen[d]) for d in DIMENSIONS}
-        sent, after, deferred = self.hysteresis.decide(chosen, t)
+        update = self._send(
+            t,
+            frame,
+            segment,
+            body,
+            chosen,
+            reason="state",
+            baseline_pose=baseline_pose,
+        )
+        self._last = t, frame, segment, body, chosen
+        return update
+
+    def tick(self, t_engine: float | None = None) -> tuple[Update, ...]:
+        """Send any planned crossing whose one-block-early frame has arrived.
+
+        The bridge loop schedules its wake-up from ``bridge.phase`` and calls this before the
+        audio callback that begins at the returned send frame.  State messages remain on their
+        ordinary cadence; only these two session crossings need a phase-timed call.
+        """
+        frame = self._phase.frame()
+        if t_engine is None and self._last is not None:
+            last_t, last_frame, _, _, _ = self._last
+            t_engine = last_t + (frame - last_frame) * 1000.0 / SAMPLE_RATE
+        return self._send_due(frame, t_engine)
+
+    @property
+    def gate_plan(self) -> SessionGatePlan | None:
+        return self._plan
+
+    def _enter_segment(self, msg: Mapping, frame: int) -> None:
+        segment = msg["segment"]
+        if segment in ("idle", "reset"):
+            self._pending.clear()
+            self._plan = None
+            self._forced = {"pulse": False, "air": False}
+        elif segment == "baseline":
+            self._forced = {"pulse": False, "air": False}
+            baseline = self._armed_baseline_frame
+            self._armed_baseline_frame = None
+            if baseline is None:
+                baseline = frame - frames_from_ms(float(msg["segment_elapsed_ms"]))
+            try:
+                self._plan = self._phase.session_gate_plan(baseline)
+            except ValueError:
+                self._plan = None
+                self._pending.clear()
+                self._log.event(
+                    "engine_phase_misaligned",
+                    t_engine=msg["t_engine"],
+                    frame=frame,
+                    baseline_frame=baseline,
+                    pulse_phase=self._phase.phase_frames("pulse", baseline),
+                )
+            else:
+                self._pending = sorted(
+                    [
+                        ScheduledGate(self._plan.pulse_open, True, "load_pulse_open"),
+                        ScheduledGate(self._plan.air_close, False, "regulate_air_close"),
+                    ],
+                    key=lambda item: item.timing.send_frame,
+                )
+                self._log.event(
+                    "engine_gate_plan",
+                    t_engine=msg["t_engine"],
+                    baseline_frame=baseline,
+                    load_frame=self._plan.load_frame,
+                    regulate_frame=self._plan.regulate_frame,
+                    pulse_open=_timing_log(self._plan.pulse_open),
+                    air_close=_timing_log(self._plan.air_close),
+                    pulse_close=_timing_log(self._plan.pulse_close),
+                )
+        elif segment == "load":
+            self._forced["pulse"] = True
+            # Baseline kept air closed.  Load may open it naturally until its planned pre-close.
+            if not any(item.reason == "regulate_air_close" for item in self._pending):
+                self._forced["air"] = False
+            else:
+                self._forced.pop("air", None)
+        elif segment in ("regulate", "resolve"):
+            self._forced = {"pulse": False, "air": False}
+
+    def _send_due(self, frame: int, t_engine: float | None) -> tuple[Update, ...]:
+        updates = []
+        while self._pending and self._pending[0].timing.send_frame <= frame:
+            event = self._pending.pop(0)
+            self._forced[event.timing.stem] = event.open
+            update = None
+            event_t = t_engine
+            if self._last is not None:
+                last_t, last_frame, segment, body, chosen = self._last
+                t = (
+                    last_t + (frame - last_frame) * 1000.0 / SAMPLE_RATE
+                    if t_engine is None
+                    else float(t_engine)
+                )
+                event_t = t
+                update = self._send(t, frame, segment, body, chosen, reason=event.reason)
+                updates.append(update)
+            ramp = self.hysteresis.gates[event.timing.stem].ramp()
+            self._log.event(
+                "engine_gate_crossing",
+                t_engine=event_t,
+                reason=event.reason,
+                stem=event.timing.stem,
+                open=event.open,
+                frame=frame,
+                send_frame=event.timing.send_frame,
+                boundary_frame=event.timing.boundary_frame,
+                late_frames=max(0, frame - event.timing.send_frame),
+                missed_boundary=frame >= event.timing.boundary_frame,
+                scheduled_ramp=None if ramp is None else list(ramp),
+                sent=update is not None,
+            )
+        return tuple(updates)
+
+    def _send(
+        self,
+        t: float,
+        frame: int,
+        segment: str,
+        body: dict[str, float],
+        chosen: dict[str, float],
+        *,
+        reason: str,
+        baseline_pose: bool = False,
+    ) -> Update:
+        sent, after, deferred = self.hysteresis.decide(chosen, frame, self._forced)
         self._sink.set_mood_override(sent["arousal"], sent["cognitive_load"], sent["readiness"])
-        flipped = self.hysteresis.commit(after, t)
+        flipped = self.hysteresis.commit(after, frame)
         params = map_effective(sent["arousal"], sent["cognitive_load"], sent["readiness"])
         update = Update(
             t_engine=t,
-            source=source,
+            frame=frame,
+            reason=reason,
+            source=self._source,
             body=body,
             chosen=chosen,
             sent=sent,
@@ -250,13 +455,16 @@ class PsvFeed:
             gates=dict(after),
             flipped=flipped,
             deferred=deferred,
-            held_until_ms={s: g.held_until_ms for s, g in self.hysteresis.gates.items()},
+            ramps={stem: gate.ramp() for stem, gate in self.hysteresis.gates.items()},
         )
         self._log.event(
             "engine_psv",
             t_engine=t,
-            segment=msg["segment"],
-            source=source,
+            frame=frame,
+            reason=reason,
+            segment=segment,
+            source=self._source,
+            baseline_pose=baseline_pose,
             sent={
                 "arousal": sent["arousal"],
                 "valence": VALENCE_SENT,
@@ -274,7 +482,11 @@ class PsvFeed:
                 "gates": dict(after),
                 "flipped": list(flipped),
                 "deferred": list(deferred),
-                "held_until_ms": update.held_until_ms,
+                "forced": dict(self._forced),
+                "ramps": {
+                    stem: None if ramp is None else list(ramp)
+                    for stem, ramp in update.ramps.items()
+                },
             },
             mapping=params.to_log(),
         )
@@ -751,3 +963,11 @@ def _check_source(source: str) -> str:
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}, not {source!r}")
     return source
+
+
+def _timing_log(timing: GateTiming) -> dict[str, int | str]:
+    return {
+        "stem": timing.stem,
+        "send_frame": timing.send_frame,
+        "boundary_frame": timing.boundary_frame,
+    }

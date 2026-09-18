@@ -21,8 +21,8 @@ Shim. A thin wrapper. Every call that fails raises ShimError naming the pls_resu
 
 EngineHost. The lifecycle:
 
-- open(scene): engine, scene, then the shim at once, on prism_render and the handle, so
-  frames_rendered counts from the load and is the engine's phase (prompt 2.7).
+- open(scene): validate and synchronously load the one scene, measure its decode, then create the
+  shim at once on prism_render and the handle, so frames_rendered is the engine's phase (2.7).
 - start(gain, heartbeat): T_engine's origin (bridge/clock.py) to the shim, then the stream. Its
   non-audio device-clock poller publishes the anchor through a lock-free snapshot. Both level
   controllers are then resumed so their next state message reconstructs its target.
@@ -43,8 +43,9 @@ a single producer and the engine's control calls are not safe against each other
 anything here from an audio callback: the override takes a lock and can allocate.
 
     host = EngineHost()
-    host.open(Path("assets/scenes.json"))
-    feed = PsvFeed(host.engine, log)
+    host.open()
+    phase = PhaseTracker.for_shim(host.shim)
+    feed = PsvFeed(host.engine, log, phase=phase)
     gain, heartbeat = SessionGain(host.shim, log), HeartbeatLevel(host.shim, log)
     host.start(gain, heartbeat)
     ...
@@ -66,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 
 from bridge import clock
 from bridge.engine_mapping import CONFIDENCE_SENT, VALENCE_SENT
+from bridge.scene import DEFAULT_MANIFEST, load_scene
 
 if TYPE_CHECKING:
     from bridge.engine_feed import HeartbeatLevel, SessionGain
@@ -526,20 +528,21 @@ class EngineHost:
         self._config = config
         self.engine: Engine | None = None
         self.shim: Shim | None = None
+        self.scene_load_ms: float | None = None
 
-    def open(self, scene: Path | str) -> None:
+    def open(self, scene: Path | str = DEFAULT_MANIFEST) -> None:
         """Engine, scene (48 kHz or refused), then the shim right away. Whatever raises, the
         engine handle is destroyed and the host stays closed."""
         if self.engine is not None:
             raise RuntimeError("already open")
         engine = Engine()
         try:
-            engine.load_scene(scene)
+            loaded = load_scene(engine, scene)
             shim = Shim(engine.render_address, engine.handle, config=self._config)
         except BaseException:
             engine.destroy()  # idempotent: load_scene destroys it itself when the engine refuses
             raise
-        self.engine, self.shim = engine, shim
+        self.engine, self.shim, self.scene_load_ms = engine, shim, loaded.elapsed_ms
 
     def start(
         self,
@@ -611,6 +614,7 @@ class EngineHost:
         if self.engine is not None:
             self.engine.destroy()
             self.engine = None
+        self.scene_load_ms = None
 
     def _open_shim(self) -> Shim:
         if self.shim is None:

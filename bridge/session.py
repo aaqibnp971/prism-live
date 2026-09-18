@@ -47,14 +47,18 @@ logged, the model forgets it, the log takes a new id and file, and the state and
 again from 1 (contract §2). Nothing from the old session is published after that.
 
 The caller owns the packets and the beat scheduler, and never feeds a packet through here: a
-packet fed twice changes the baseline without a trace. Use from one thread, the bridge's loop.
+packet fed twice changes the baseline without a trace. ``bridge.live.LiveLoop`` is that caller. It
+runs all of this on one asyncio loop and is the only production wiring:
 
-    session = Session(model, log, server.publish, now_ms=now)
-    # every packet: result = scheduler.on_packet(now, payload); model.on_packet(now, result)
-    #               for event in result.events: server.publish(session.beat_message(event))
-    # every tick:   for event in scheduler.tick(now): server.publish(session.beat_message(event))
-    #               session.tick(now)
-    # the attendant: session.start(now), session.stop(now)
+    source = SyntheticPacketSource()  # 2.8 changes only this to BlePacketSource()
+    live = LiveLoop(source, server.publish, log, psv_feed=feed, session_gain=gain,
+                    heartbeat=heartbeat, beat_sink=host.shim, phase=phase)
+    await live.run()
+
+Inside it, every packet takes ``scheduler.on_packet`` before ``model.on_packet``; every 20 to
+100 ms tick takes ``scheduler.tick`` before ``session.tick``; every resulting event goes through
+``session.beat_message``; and the local attendant calls ``session.start`` and ``session.stop``.
+State publication also drives PsvFeed, SessionGain and HeartbeatLevel on that same loop.
 """
 
 from __future__ import annotations

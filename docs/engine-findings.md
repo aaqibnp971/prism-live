@@ -2,7 +2,7 @@
 
 **Written:** 11 September 2026, for prompt 0.4 in `docs/all-prompts.md`.
 **Read-only.** Nothing in `D:\ANP\prism-core` was changed. Upstream was read from a separate fresh clone.
-**Checked how:** each answer was investigated from source on every revision below, then checked by two adversarial verifiers, one re-opening every quoted line and one trying to refute the answer. Nothing here has been run; runtime checks are listed where they matter.
+**Checked how:** each original answer was investigated from source on every revision below, then checked by two adversarial verifiers, one re-opening every quoted line and one trying to refute the answer. Later dated implementation notes identify the runtime checks that have since been run.
 
 ---
 
@@ -70,6 +70,8 @@ Making the crossfade itself phase-preserving would be an engine change.
 ## Q3. How long does `prism_crossfade_scene` block? **Moot since 11 September.**
 
 CLAUDE.md open question 3. It is never called (decision 1 below). The only blocking call left is `prism_load_scene`, once per handle at startup; prompt 2.7 measures that. What follows is kept for the record.
+
+**Measured 18 September (prompt 2.7): `prism_load_scene` took 6.4859 ms** on this Windows x64 development machine for `assets/scenes.json` and the four generated float32 placeholder stems. This was one synchronous, instrumented call through `bridge.scene.load_scene`; the files total 2,880,000 samples. It runs on the control thread before the shim is created, only at startup or after a crash, never during a session. The number is a startup observation, not a scheduling lead and not a measurement of the unused crossfade call.
 
 From the code: the call blocks while it reads the manifest, parses the JSON and decodes every stem of the new scene, identical stems included (`core/src/prism_core.cpp:520-549`). It returns `PRISM_ERROR_BUSY` while a crossfade is in flight (`prism_core.h:257`). An armed swap waits until something renders, and `prism_stop` drops one that was never consumed (`:252-254`).
 
@@ -200,9 +202,11 @@ A gate change is scheduled at the stem's next loop boundary counted from scene l
 
 In the pull model the host knows every stem's phase exactly: frames passed to `prism_render` since `prism_load_scene`, modulo the stem's length. Only `prism_load_scene` and a scene crossfade reset it. Stopping the host stream pauses phase without resetting it.
 
+**Implemented 18 September (prompt 2.7).** `bridge/phase.py` reads that counter and does every calculation in integer frames. A crossing has an explicit send frame one maximum render block before its chosen boundary. `GateHysteresis` now protects only the actual 1.5 s ramp; a reversal before the boundary cancels cleanly. For regulate, air is assigned the last air boundary before pulse's first boundary, so its equal-length fade always finishes first. The offline real-DLL test covers all four exact loop lengths, both crossings arriving with zero late frames, nested audible gates, and bed phase after a 281 s worst-case session.
+
 ### Session start must align with the engine's phase
 
-Boundaries sit at fixed multiples of 11 s (pulse) and 13 s (air) from scene load, not from the session. For pulse to open exactly at load t=0, a pulse boundary must fall 45 s after baseline starts, so baseline must start when **phase mod 11 s = 10 s**: a wait of up to 11 s after the attendant presses start. Started at an arbitrary phase, pulse is either audible about 1 s before load or up to 10 s late. Pulse and air cannot be aligned at the same time (11 and 13 are coprime, by design); air lands on its nearest boundary, up to 6.5 s from the scripted moment. A fresh handle per visitor does not help: phase 0 puts pulse boundaries at 44 and 55 s.
+Boundaries sit at fixed multiples of 11 s (pulse) and 13 s (air) from scene load, not from the session. Load now starts 56 s after baseline begins. For pulse to open exactly at load t=0, baseline must therefore start when **phase mod 11 s = 10 s**: 56 and the former 45 s target differ by one pulse loop, so the condition is unchanged. `bridge.phase.PhaseTracker.start_alignment()` gives the attendant console a wait from zero up to (but not including) 11 s. That countdown occurs before `session.start` fires and is outside `t_session` and the 4:45 cap. Pulse and air cannot be aligned at the same time (11 and 13 are coprime, by design); air uses its accepted boundary timing, and its regulate close is explicitly ordered before pulse. A fresh handle per visitor does not help: phase 0 does not satisfy the required start condition.
 
 ### Starting poses for the `pose` source
 

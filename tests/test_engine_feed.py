@@ -13,6 +13,7 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import run_live
@@ -39,12 +40,35 @@ from bridge.engine_feed import (
 )
 from bridge.engine_mapping import DIMENSIONS, GATE_THRESHOLDS, density, map_effective
 from bridge.logging import SessionLog
+from bridge.phase import PULSE_ALIGNMENT_PHASE, SAMPLE_RATE, PhaseTracker, frames_from_ms
 from bridge.poses import pose_inputs
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tools" / "fixtures" / "synthetic-clean.jsonl"
 FIXTURE_PROFILE = "68:61,68-100:75,100-72:115,72:150"  # tools/record_fixture.py
-HOLD_MS = {stem: LOOP_MS[stem] + FADE_MS for stem in GATED}
+
+
+class Frames:
+    def __init__(self, value=0, block=512):
+        self.value = value
+        self.config = SimpleNamespace(max_block_frames=block)
+
+    def frames_rendered(self):
+        return self.value
+
+
+def feed_and_frames(sink, log, source="body", *, session_gates=False):
+    frames = Frames()
+    return (
+        PsvFeed(
+            sink,
+            log,
+            source,
+            phase=PhaseTracker.for_shim(frames),
+            session_gates=session_gates,
+        ),
+        frames,
+    )
 
 
 class Recorder:
@@ -115,11 +139,12 @@ class Checked:
 
     def __init__(self, log, source="body"):
         self.sink = Recorder()
-        self.feed = PsvFeed(self.sink, log, source)
+        self.feed, self.frames = feed_and_frames(self.sink, log, source)
         self.updates = []
         self.flips = {stem: [] for stem in GATED}
 
     def send(self, msg):
+        self.frames.value = frames_from_ms(msg["t_engine"])
         before = copy.deepcopy(msg)
         u = self.feed.on_state(msg)
         assert msg == before
@@ -134,8 +159,6 @@ class Checked:
             assert d >= threshold + MARGIN if u.gates[stem] else d <= threshold - MARGIN
             assert u.params.gates[stem] == u.gates[stem]
             if stem in u.flipped:
-                if self.flips[stem]:
-                    assert u.t_engine - self.flips[stem][-1] >= HOLD_MS[stem]
                 self.flips[stem].append(u.t_engine)
         chosen_d = density(u.chosen["arousal"], u.chosen["cognitive_load"])
         lo, hi = band(u.gates)
@@ -242,7 +265,8 @@ def test_authority_is_read_from_the_message_never_recomputed(tmp_path):
     msg = message(0, arousal=0.9, load=0.1, readiness=0.3, segment="load")
     msg["authority"] = {"arousal": 0.7, "valence": 0.0, "cognitive_load": 0.3, "readiness": 0.9}
     sink = Recorder()
-    PsvFeed(sink, open_log(tmp_path)).on_state(msg)
+    feed, _ = feed_and_frames(sink, open_log(tmp_path))
+    feed.on_state(msg)
     assert sink.moods == [(0.5 + 0.4 * 0.7, 0.5 - 0.4 * 0.3, 0.5 - 0.2 * 0.9)]
 
 
@@ -269,7 +293,8 @@ def test_the_feed_does_not_import_bridge_authority():
 
 def test_state_messages_are_never_modified(tmp_path):
     log = open_log(tmp_path)
-    feed, gain = PsvFeed(Recorder(), log), SessionGain(Recorder(), log)
+    feed, _ = feed_and_frames(Recorder(), log)
+    gain = SessionGain(Recorder(), log)
     states = fixture_states()
     pristine = copy.deepcopy(states)
     for k, msg in enumerate(states):
@@ -283,7 +308,7 @@ def test_state_messages_are_never_modified(tmp_path):
 def test_the_source_switch_is_logged_and_takes_effect_on_the_next_message(tmp_path):
     log = open_log(tmp_path)
     sink = Recorder()
-    feed = PsvFeed(sink, log)
+    feed, _ = feed_and_frames(sink, log)
     states = fixture_states()
     load = [k for k, m in enumerate(states) if m["segment"] == "load"]
     switch_after = load[10]
@@ -307,17 +332,19 @@ def test_the_source_switch_is_logged_and_takes_effect_on_the_next_message(tmp_pa
     feed.set_source("body")
     assert feed.on_state(states[switch_after + 2]).source == "body"
     with pytest.raises(ValueError):
-        PsvFeed(Recorder(), log, source="script")
+        feed_and_frames(Recorder(), log, source="script")
 
 
 def test_the_gate_state_outlives_a_source_switch(tmp_path):
     run = Checked(open_log(tmp_path))
-    run.send(message(0, 0.5))  # neutral body: pulse opens, held until 12.5 s
+    run.send(message(0, 0.5))  # neutral body schedules pulse to open at 11 s
     run.feed.set_source("pose")
-    u = run.send(message(2_000, 0.5, segment="baseline"))  # the pose would close it
-    assert u.gates["pulse"] and u.moved and u.params.density == pytest.approx(0.36)
+    # The pose closes it before that boundary. The pending open cancels cleanly; the state still
+    # outlives the source switch, but the old phase-blind 12.5 s hold is gone.
+    u = run.send(message(2_000, 0.5, segment="baseline"))
+    assert u.flipped == ("pulse",) and not u.gates["pulse"] and not u.moved
     u = run.send(message(12_500, 0.5, segment="baseline"))
-    assert u.flipped == ("pulse",) and u.sent == pose_inputs(message(0, 0.5, segment="baseline"))
+    assert not u.flipped and u.sent == pose_inputs(message(0, 0.5, segment="baseline"))
 
 
 # --- hysteresis ---
@@ -348,30 +375,31 @@ def test_jitter_inside_the_band_never_flips_a_gate(tmp_path, stem, start_open):
 
 
 @pytest.mark.parametrize("stem", GATED)
-def test_a_flip_holds_for_its_loop_and_the_fade(tmp_path, stem):
-    hold = LOOP_MS[stem] + FADE_MS
-    assert hold == {"pulse": 12_500, "air": 14_500}[stem]
+def test_a_flip_can_reverse_before_its_boundary_but_holds_across_the_actual_ramp(tmp_path, stem):
     low, high = (0.2, 0.45) if stem == "pulse" else (0.45, 0.7)
     run = Checked(open_log(tmp_path))
     run.send(at_density(0, low))
     run.send(at_density(30_000, low))
     u = run.send(at_density(40_000, high))
     assert stem in u.flipped and u.gates[stem]
-    assert u.held_until_ms[stem] == 40_000 + hold
-    # The body turns straight back. The gate holds open, at its band edge, until the hold ends.
-    for t in range(40_100, 40_000 + hold, 100):
+    start_frame, end_frame = u.ramps[stem]
+    start_ms, end_ms = start_frame / 48, end_frame / 48
+    assert start_ms == next(t for t in range(0, 100_000, LOOP_MS[stem]) if t > 40_000)
+    assert end_ms == start_ms + FADE_MS
+
+    # Before the boundary a reversal cancels cleanly, then another crossing can restore it.
+    u = run.send(at_density(start_ms - 1_000, low))
+    assert u.flipped == (stem,) and not u.gates[stem]
+    u = run.send(at_density(start_ms - 500, high))
+    assert u.flipped == (stem,) and u.gates[stem]
+
+    # Once the boundary arrives, the state is held only through the 1.5 s audible ramp.
+    for t in range(round(start_ms), round(end_ms), 100):
         u = run.send(at_density(t, low))
         assert u.gates[stem] and not u.flipped
         assert u.params.density == pytest.approx(GATE_THRESHOLDS[stem] + MARGIN, abs=1e-12)
-    u = run.send(at_density(40_000 + hold, low))
+    u = run.send(at_density(end_ms, low))
     assert u.flipped == (stem,) and not u.gates[stem] and not u.moved
-    # And the close holds as long.
-    closed_at = 40_000 + hold
-    for t in range(closed_at + 100, closed_at + hold, 700):
-        u = run.send(at_density(t, high))
-        assert not u.gates[stem]
-        assert u.params.density == pytest.approx(GATE_THRESHOLDS[stem] - MARGIN, abs=1e-12)
-    assert stem in run.send(at_density(closed_at + hold, high)).flipped
 
 
 def test_pulse_does_not_close_under_an_air_held_open(tmp_path):
@@ -379,13 +407,13 @@ def test_pulse_does_not_close_under_an_air_held_open(tmp_path):
     run.send(at_density(0, 0.2))
     u = run.send(at_density(20_000, 0.7))
     assert set(u.flipped) == {"pulse", "air"}
-    # At 12.5 s pulse's hold is over but air's is not: pulse stays open under it.
-    u = run.send(at_density(32_500, 0.2))
+    # Air's actual ramp is 26 to 27.5 s. During it, pulse stays open under the audible air.
+    u = run.send(at_density(26_500, 0.2))
     assert u.gates == {"pulse": True, "air": True} and u.deferred == ("pulse",)
     assert u.params.density == pytest.approx(0.56, abs=1e-12)
-    u = run.send(at_density(34_499, 0.2))
+    u = run.send(at_density(27_499, 0.2))
     assert u.gates == {"pulse": True, "air": True}
-    u = run.send(at_density(34_500, 0.2))
+    u = run.send(at_density(27_500, 0.2))
     assert set(u.flipped) == {"pulse", "air"} and u.gates == {"pulse": False, "air": False}
 
 
@@ -394,32 +422,30 @@ def test_air_does_not_open_over_a_pulse_held_closed(tmp_path):
     run.send(at_density(0, 0.45))
     u = run.send(at_density(20_000, 0.2))
     assert u.flipped == ("pulse",)
-    u = run.send(at_density(22_000, 0.9))
+    # Pulse closes from 22 to 23.5 s, and air cannot open over it during that ramp.
+    u = run.send(at_density(22_500, 0.9))
     assert u.gates == {"pulse": False, "air": False} and u.deferred == ("air",)
     assert u.params.density == pytest.approx(0.34, abs=1e-12)
-    u = run.send(at_density(32_500, 0.9))
+    u = run.send(at_density(23_500, 0.9))
     assert set(u.flipped) == {"pulse", "air"} and u.gates == {"pulse": True, "air": True}
 
 
 def test_load_moves_only_when_arousal_is_pinned(tmp_path):
     run = Checked(open_log(tmp_path), "pose")
-    # Pulse opens early in load, air only at 64 s, so air is still held when regulate begins
-    # at 75 s: the regulate pose is held back, and only arousal 1.0 with a lower load input
-    # keeps air open.
+    # Pulse opens early in load and air at 64 s. Its real ramp ends at 66.5 s, so the regulate
+    # pose at 75 s is no longer held back by the old phase-blind 14.5 s timer.
     for k in range(0, 76_000, 2_000):
         u = run.send(message(k, 0.6 if k < 64_000 else 0.9, segment="load", elapsed=k))
         assert u.gates == {"pulse": True, "air": k >= 64_000}
     u = run.send(message(75_000, 0.9, segment="regulate", elapsed=0))
-    assert u.deferred == ("pulse",) and u.gates == {"pulse": True, "air": True}
+    assert set(u.flipped) == {"pulse", "air"} and u.gates == {"pulse": False, "air": False}
     assert u.chosen == {"arousal": 0.771, "cognitive_load": 0.948, "readiness": 0.11}
-    assert u.sent["arousal"] == 1.0
-    assert u.sent["cognitive_load"] == pytest.approx(0.89, abs=1e-12)
-    assert u.params.density >= 0.56 and u.params.density == pytest.approx(0.56, abs=1e-12)
-    # Held closed with density pinned high: arousal 0, then load up.
+    assert u.sent == u.chosen and u.params.density < 0.34
+    # During pulse's actual close ramp, an attempted air open is pinned below both gates.
     run = Checked(open_log(tmp_path))
     run.send(at_density(0, 0.45))
     assert run.send(at_density(20_000, 0.2)).flipped == ("pulse",)
-    u = run.send(message(21_000, 1.0, load=0.0))
+    u = run.send(message(22_500, 1.0, load=0.0))
     assert u.gates == {"pulse": False, "air": False} and u.deferred == ("air",)
     assert u.sent["arousal"] == 0.0 and u.sent["cognitive_load"] == pytest.approx(0.21, abs=1e-12)
 
@@ -440,6 +466,84 @@ def test_random_inputs_keep_every_invariant(tmp_path):
     assert all(len(f) > 50 for f in run.flips.values())
     assert any(u.deferred for u in run.updates)
     assert any(u.sent["cognitive_load"] != u.chosen["cognitive_load"] for u in run.updates)
+
+
+# --- phase-aware session gates ------------------------------------------------------------------
+
+
+def test_an_aligned_session_prearms_pulse_and_closes_air_before_pulse(tmp_path):
+    log, sink = open_log(tmp_path), Recorder()
+    feed, frames = feed_and_frames(sink, log, "pose", session_gates=True)
+    frames.value = PULSE_ALIGNMENT_PHASE
+    baseline = message(0, 0.5, segment="baseline", elapsed=0, nominal=45_000)
+    assert feed.on_state(baseline).gates == {"pulse": False, "air": False}
+    plan = feed.gate_plan
+    assert plan is not None
+
+    # One block before load, pulse's crossing is the only extra PSV and schedules load's exact
+    # boundary. It remains the target when the load state arrives on that boundary.
+    frames.value = plan.pulse_open.send_frame
+    opened = feed.tick((frames.value - PULSE_ALIGNMENT_PHASE) / 48)
+    assert len(opened) == 1 and opened[0].reason == "load_pulse_open"
+    assert opened[0].flipped == ("pulse",)
+    assert opened[0].ramps["pulse"][0] == plan.load_frame
+    frames.value = plan.load_frame
+    load = message(56_000, 0.9, segment="load", elapsed=0, nominal=75_000)
+    assert feed.on_state(load).gates["pulse"]
+
+    # Let air open in load, then take the planned close exactly one block early. Its ramp begins
+    # before pulse's first regulate boundary and therefore also ends first.
+    frames.value = plan.load_frame + 40 * SAMPLE_RATE
+    feed.on_state(message(96_000, 0.9, segment="load", elapsed=40_000, nominal=75_000))
+    frames.value = plan.air_close.send_frame
+    closed_air = feed.tick((frames.value - PULSE_ALIGNMENT_PHASE) / 48)
+    assert len(closed_air) == 1 and closed_air[0].reason == "regulate_air_close"
+    assert closed_air[0].ramps["air"][0] == plan.air_close.boundary_frame
+
+    frames.value = plan.regulate_frame
+    regulate = feed.on_state(
+        message(131_000, 0.9, segment="regulate", elapsed=0, nominal=75_000)
+    )
+    assert regulate.gates == {"pulse": False, "air": False}
+    assert regulate.ramps["pulse"][0] == plan.pulse_close.boundary_frame
+    assert regulate.ramps["air"][1] < regulate.ramps["pulse"][1]
+
+    crossings = events(log, "engine_gate_crossing")
+    assert [event["reason"] for event in crossings] == [
+        "load_pulse_open",
+        "regulate_air_close",
+    ]
+    assert all(event["late_frames"] == 0 and not event["missed_boundary"] for event in crossings)
+
+
+def test_the_armed_start_frame_survives_a_state_callback_one_block_later(tmp_path):
+    log, sink = open_log(tmp_path), Recorder()
+    feed, frames = feed_and_frames(sink, log, "pose", session_gates=True)
+    feed.arm_start_frame(PULSE_ALIGNMENT_PHASE)
+    frames.value = PULSE_ALIGNMENT_PHASE + 480  # one real WASAPI period after start fired
+    feed.on_state(message(10_000, 0.5, segment="baseline", elapsed=0, nominal=45_000))
+    assert feed.gate_plan is not None
+    assert feed.gate_plan.baseline_frame == PULSE_ALIGNMENT_PHASE
+    assert not events(log, "engine_phase_misaligned")
+
+
+def test_an_unaligned_start_frame_is_refused_before_it_can_make_a_plan(tmp_path):
+    feed, _ = feed_and_frames(Recorder(), open_log(tmp_path), "pose", session_gates=True)
+    with pytest.raises(ValueError, match="not pulse-aligned"):
+        feed.arm_start_frame(PULSE_ALIGNMENT_PHASE + 1)
+
+
+@pytest.mark.parametrize("source", ["body", "pose"])
+@pytest.mark.parametrize("segment", ["idle", "reset"])
+def test_both_sources_send_the_baseline_pose_between_visitors(tmp_path, source, segment):
+    sink = Recorder()
+    feed, frames = feed_and_frames(sink, open_log(tmp_path), source, session_gates=True)
+    frames.value = PULSE_ALIGNMENT_PHASE
+    msg = message(0, 1.0, load=0.0, readiness=0.0, segment=segment)
+    update = feed.on_state(msg)
+    assert update.chosen == pose_inputs(msg)
+    assert update.sent == {"arousal": 0.486, "cognitive_load": 0.65, "readiness": 0.5}
+    assert update.gates == {"pulse": False, "air": False}
 
 
 # --- the session gain ---
@@ -548,7 +652,8 @@ def test_a_live_session_stopped_during_resolves_ending(tmp_path):
     assert 45_000 - 22_000 < 256_000 - resolve_at < 45_000 - 10_000
     log = open_log(tmp_path)
     sink = Recorder()
-    feed, gain = PsvFeed(sink, log, "pose"), SessionGain(sink, log)
+    feed, _ = feed_and_frames(sink, log, "pose")
+    gain = SessionGain(sink, log)
     commands = []
     for msg in live.states():
         u = feed.on_state(msg)

@@ -33,6 +33,7 @@ if __package__ in (None, ""):
 import argparse
 import asyncio
 import contextlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -54,7 +55,12 @@ from bridge.contract import (
     encode,
     validate,
 )
+from bridge.engine import EngineHost
+from bridge.engine_feed import HeartbeatLevel, PsvFeed, SessionGain
+from bridge.live import LiveLoop
 from bridge.logging import SessionLog
+from bridge.phase import PhaseTracker
+from tools.synthetic_rr import DEFAULT_PROFILE_SPEC, Profile, SyntheticPacketSource
 
 HELLO_TIMEOUT_S = 5.0
 SLOW_CLIENT_BYTES = 64 * 1024  # about 40 s of backlog: far past any use to a client
@@ -310,29 +316,154 @@ class LiveServer:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Serve the link on its own: answers hello and clock, logs everything, "
-        "publishes nothing. For a stream to build clients against, use tools.fake_sender."
+        description="Run the live bridge, synthetic armband, audio engine and WebSocket link."
     )
     parser.add_argument("--host", default=None, help="default: every interface")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--log-dir", default="logs")
+    parser.add_argument("--scene", default="assets/scenes.json")
+    parser.add_argument("--profile", default=DEFAULT_PROFILE_SPEC)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--one-session",
+        action="store_true",
+        help="start when the synthetic signal is ready, print live timing metrics, then exit",
+    )
     args = parser.parse_args(argv)
 
     async def run() -> None:
         log = SessionLog(args.log_dir)
-        session = log.start_session()
+        host = EngineHost()
+        host.open(args.scene)
+        assert host.engine is not None and host.shim is not None
+        phase = PhaseTracker.for_shim(host.shim)
+        feed = PsvFeed(host.engine, log, phase=phase)
+        gain = SessionGain(host.shim, log)
+        heartbeat = HeartbeatLevel(host.shim, log)
+
+        # Prompt 2.8 changes this one construction line to BlePacketSource(...).  Both sources
+        # asynchronously yield each raw HRM characteristic value once.
+        packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed)
 
         def task_event(msg: dict, client: Client) -> None:
             print(f"{client.label}: task_event {msg['event']}")
 
         server = LiveServer(log, host=args.host, port=args.port, on_task_event=task_event)
-        async with server:
-            print(f"ws://{args.host or 'localhost'}:{server.port}{PATH}  session {session}")
-            await asyncio.Future()
+        bridge = LiveLoop(
+            packet_source,
+            server.publish,
+            log,
+            psv_feed=feed,
+            session_gain=gain,
+            heartbeat=heartbeat,
+            beat_sink=host.shim,
+            phase=phase,
+        )
+        log.event("engine_scene_loaded", elapsed_ms=host.scene_load_ms, manifest=args.scene)
+        started = False
+        runtime: asyncio.Task | None = None
+        control: asyncio.Task | None = None
+        try:
+            host.start(gain, heartbeat)
+            started = True
+            async with server:
+                print(
+                    f"ws://{args.host or 'localhost'}:{server.port}{PATH}  "
+                    f"session {bridge.session.session}"
+                )
+                runtime = asyncio.create_task(bridge.run(), name="live bridge")
+                await asyncio.sleep(0)  # let LiveLoop establish ownership before local controls
+                control = asyncio.create_task(
+                    _one_session(bridge) if args.one_session else _console(bridge),
+                    name="local attendant",
+                )
+                done, _ = await asyncio.wait(
+                    (runtime, control), return_when=asyncio.FIRST_COMPLETED
+                )
+                if runtime in done:
+                    await runtime
+                else:
+                    await control
+        finally:
+            for task in (control, runtime):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (control, runtime) if task is not None),
+                return_exceptions=True,
+            )
+            try:
+                if started:
+                    await host.stop(gain, heartbeat)
+            finally:
+                host.close()
+                log.close()
 
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run())
     return 0
+
+
+async def _one_session(bridge: LiveLoop) -> None:
+    await bridge.wait_for_signal()
+    session = bridge.session.session
+    refusal = await bridge.attendant_start()
+    if refusal is not None:
+        raise RuntimeError(f"automatic start was refused: {refusal}")
+    metrics = await bridge.wait_for_completion(session)
+    print(json.dumps(metrics.as_dict(), indent=2))
+
+
+async def _console(bridge: LiveLoop) -> None:
+    """Temporary local attendant control until prompt 3.6.  It is never a link client."""
+    try:
+        import msvcrt
+    except ImportError:  # pragma: no cover - the booth and supported runtime are Windows
+        print("Local keys need Windows; Ctrl+C stops the bridge.")
+        await asyncio.Future()
+        return
+
+    print("Local keys: Space/Enter start, X stop, B body, P pose, Q quit")
+    starts: set[asyncio.Task] = set()
+    errors: list[Exception] = []
+
+    async def start() -> None:
+        refusal = await bridge.attendant_start()
+        print("started" if refusal is None else f"start refused: {refusal}")
+
+    def start_finished(task: asyncio.Task) -> None:
+        starts.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            errors.append(error)
+
+    try:
+        while True:
+            if errors:
+                raise errors[0]
+            if not msvcrt.kbhit():
+                await asyncio.sleep(0.03)
+                continue
+            key = msvcrt.getwch().lower()
+            if key in (" ", "\r"):
+                task = asyncio.create_task(start(), name="armed attendant start")
+                starts.add(task)
+                task.add_done_callback(start_finished)
+            elif key == "x":
+                print("stopped" if bridge.attendant_stop() else "nothing running")
+            elif key in ("b", "p"):
+                source = "body" if key == "b" else "pose"
+                bridge.set_psv_source(source)
+                print(f"PSV source: {source}")
+            elif key == "q":
+                return
+    finally:
+        for task in starts:
+            task.cancel()
+        await asyncio.gather(*starts, return_exceptions=True)
 
 
 if __name__ == "__main__":

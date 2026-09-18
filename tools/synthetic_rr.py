@@ -13,12 +13,13 @@ Run from the repo root:  python -m tools.synthetic_rr --help
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import random
 import sys
 import time
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 
 from bridge.hrm import encode_hrm, parse_hrm, rr_ms_to_raw
@@ -294,6 +295,54 @@ def generate(
     beats = apply_beat_faults(beats, faults, random.Random(f"{seed}:faults"))
     notes = notifications(beats, profile.duration_s, random.Random(f"{seed}:notify"))
     return apply_packet_faults(notes, faults)
+
+
+class SyntheticPacketSource:
+    """A real-time async HRM packet source for :mod:`bridge.live`.
+
+    ``bridge.ble`` implements this same one-method interface in prompt 2.8: async iteration
+    yields each raw Heart Rate Measurement characteristic value exactly once.  The live bridge
+    does not know which source it was given.
+
+    The default repeats because a physical armband does not stop after the four-minute profile.
+    ``repeat=False`` is useful for silence and shutdown tests.
+    """
+
+    def __init__(
+        self,
+        profile: Profile = DEFAULT_PROFILE,
+        faults: Sequence[Fault] = (),
+        seed: int = 1,
+        *,
+        repeat: bool = True,
+    ) -> None:
+        self.profile = profile
+        self.faults = tuple(faults)
+        self.seed = seed
+        self.repeat = repeat
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._packets()
+
+    async def _packets(self) -> AsyncIterator[bytes]:
+        loop = asyncio.get_running_loop()
+        origin = loop.time()
+        offset_s = 0.0
+        cycle = 0
+        while True:
+            last_s = 0.0
+            for note in generate(self.profile, self.faults, self.seed + cycle):
+                last_s = note.t_s
+                delay = origin + offset_s + note.t_s - loop.time()
+                if delay > 0.0:
+                    await asyncio.sleep(delay)
+                yield note.payload
+            if not self.repeat:
+                return
+            # A final notification can fall just beyond profile.duration_s while it flushes a
+            # pending beat.  Never schedule the next cycle before that packet.
+            offset_s += max(self.profile.duration_s, last_s)
+            cycle += 1
 
 
 # --- command line ----------------------------------------------------------------------------

@@ -313,6 +313,8 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > **Added 18 September:** the bed's energy must fall smoothly while remaining present through at least 6 kHz; a near-pure tone cannot exercise the engine's 620 Hz to 3,600 Hz master-filter arc. Build `tools/check_stems.py` as a separate file-based acceptance test, independent of the generator. It accepts any subset of role-labelled stems and checks exact counts, mono 48 kHz IEEE float32, endpoint value and first-derivative continuity within 1e-6, the 36 to 62 Hz reservation, true peak below −1.0 dBTP, and the bed's smoothly falling reach through 6 kHz. Run the same checker unchanged on the composer's October delivery. Generated placeholders live under `assets/placeholders/` and are gitignored.
 >
+> **Done 18 September in `be9f4f9`.** Both scripts are committed, the four generated files live under the gitignored `assets/placeholders/`, and `tools/check_stems.py` passes them. Do not rebuild this section in later prompts.
+>
 > Gate timing, from the findings: the engine opens or closes pulse and air only at that stem's next loop boundary counted from scene load (every 11 s for pulse, every 13 s for air), then fades over a fixed 1.5 s, and it takes a boundary only if the crossing PSV was consumed at least one render block before it. Build `bridge/phase.py` on the shim's `frames_rendered()`: every stem's phase, its next boundary, and when to send a gate-crossing PSV so it lands one block before a chosen boundary.
 >
 > **Decided 13 September: load starts on the pulse boundary 56 s after baseline begins.** 2.4 holds baseline past 45 s until `hr_base` arrives. The result needs an interval from after the window, so it can never be ready at 45 s, and a boundary aligned there would always be missed. So align the boundary to 56 s and hold to it: every measured wait for `hr_base` ends within 10.6 s, even with a packet lost just after the window. At 56 s, enter load on the boundary; if `hr_base` has still not come, enter it degraded as 2.4 describes, which makes the effective cap on the hold 11 s.
@@ -355,6 +357,12 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 
 **Nothing drives `bridge/session.py` outside tests yet.** Only the tests (`tests/conftest.py` `run_live` and `tests/test_session.py`) and the fixture recorder `tools/record_fixture.py` construct a `Session`, all on a simulated clock, and `bridge/server.py` `main()` publishes nothing. The Week B gate and 3.6 both need this loop.
 
+**Added 18 September:** default the packet source to `tools/synthetic_rr.py`, because
+`bridge/ble.py` does not exist until 2.8. Both expose the same async raw-packet interface, so the
+real armband replaces one construction line. During a complete session on the real clock, measure
+actual tick interval (median, p95, max) against 20 to 100 ms and beat lead at publish (median, p95,
+min) against the 300 ms floor. Record the results in `docs/known-limits.md`.
+
 > Build the live loop in the bridge: one asyncio loop on `T_engine`, the one thread `Session` is used from. It owns five things.
 >
 > 1. **Packets.** Every Heart Rate Measurement packet, from `bridge/ble.py` (2.8) or from `tools/synthetic_rr.py` through the same interface, goes to the beat scheduler first and then to the model: `result = scheduler.on_packet(now, payload)`, then `model.on_packet(now, result)`. Never the other way round, and never a packet fed twice: a doubled packet changes the baseline without a trace.
@@ -368,6 +376,12 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 > **The engine side, from 2.5.** Every state message also goes to `PsvFeed.on_state` and `SessionGain.on_state` (`bridge/engine_feed.py`), from this same loop, the engine's one control thread. A local key calls `PsvFeed.set_source("body" | "pose")`. The engine opens once at startup with `EngineHost.open` and `start(gain)`, keeps rendering between visitors, and closes on shutdown with `await EngineHost.stop(gain)` and then `close`. Once a `SessionGain` exists, nothing else calls `set_session_gain`. Nothing calls any of this yet.
 >
 > Tests, against the synthetic armband through the real loop on a real clock: a whole session from start to the end of reset, every message valid and every beat at least 300 ms ahead when sent; a double press and a stop mid-run; a packet source that goes silent in baseline reaches the gate at the cap; killing the loop mid-session and starting it again comes up in idle with a new session id, and nothing from the old session is sent again.
+
+**Implemented 18 September.** `bridge/live.py` owns the one-thread asyncio wiring; the server now
+runs it with `SyntheticPacketSource()` by default and a local keyboard attendant. State, beat,
+engine lifecycle, aligned start, clean restart and silent-source paths have real-loop tests. The
+full production-clock run and the cadence correction it exposed are recorded in
+`docs/known-limits.md`.
 
 ## GATE, end of Week B
 
