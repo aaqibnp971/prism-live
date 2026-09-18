@@ -46,8 +46,8 @@ There is a fifth stem in the spec called `lead`. **It is not used in v1.** Do no
 | Sample rate | **48,000 Hz** |
 | Bit format | **32-bit float** WAV |
 | Sample counts | `bed` 912,000 · `sub` 816,000 · `air` 624,000 · `pulse` 528,000 |
-| True peak | never above **−1.0 dBTP** in any file |
-| Loop join | seamless, verified by playing the file looped for two minutes with no audible click or swell at the wrap |
+| True peak | strictly below **−1.0 dBTP** in every file |
+| Loop join | seamless: endpoint sample and one-sided endpoint derivative each continuous within **1e-6**, then verified by playing the file looped for two minutes |
 
 The engine has **no resampler**. A file at 44.1 kHz is rejected outright and the segment fails to load. There is no stereo path anywhere in the engine, so a stereo file will be wrong in a way that is hard to hear until it is on a stall.
 
@@ -76,6 +76,8 @@ What this means for you:
 2. **Put the interest between 620 Hz and 3,600 Hz.** That is the band the person will experience opening and closing. Upper harmonics, movement, texture, the thing that makes it feel alive. That band is your instrument.
 3. **Below 620 Hz should be able to stand alone.** In the last stretch of regulate, that is all the person hears. If the bed and sub are uninteresting under 620 Hz, the payoff is muffled rather than intimate.
 4. **The `air` stem lives above 3 kHz.** It is what opens at the top of the load segment. It is also almost entirely filtered out during regulate, which is a large part of why regulate feels like relief.
+
+The bed's upper energy must fall smoothly rather than disappearing at one cutoff. A near-pure tone does not pass: it would leave the 620 Hz to 3,600 Hz sweep with almost nothing to reveal or withdraw.
 
 Author with the assumption that a filter is going to move across your work constantly. Check your stems through a low-pass at 620 Hz, at 1,400 Hz and at 3,600 Hz and make sure each of those three states is something you would be happy for someone to sit in for a minute.
 
@@ -152,7 +154,7 @@ Tick every line before handing over.
 - [ ] Four files: `bed.wav`, `sub.wav`, `air.wav`, `pulse.wav`
 - [ ] Mono, 48 kHz, 32-bit float
 - [ ] Exact sample counts: 912,000 / 816,000 / 624,000 / 528,000
-- [ ] Each loops seamlessly for two minutes with no click or swell at the wrap
+- [ ] Endpoint sample and first derivative are each continuous within 1e-6; each loop also plays for two minutes with no click or swell
 - [ ] No energy between 36 and 62 Hz in any file, checked on a spectrum analyser
 - [ ] `sub` high-passed at 62 Hz, 24 dB/oct, printed
 - [ ] `bed` has usable harmonic content to at least 6 kHz
@@ -160,6 +162,10 @@ Tick every line before handing over.
 - [ ] All four sound coherent together in D minor with no beating
 - [ ] Checked through a low-pass at 620 Hz, 1,400 Hz and 3,600 Hz
 - [ ] Balanced on flat reference, verified on XM5, not adjusted on XM5
+
+Run `python -m tools.check_stems <delivery-directory>` before handoff. It is the file-based acceptance test for format, counts, numerical loop continuity, the reserved band, true peak, and the bed's upper spectral reach. It does not replace the two-minute listening check or the monitoring checks.
+
+The checker's finite digital definition of “no energy” is at most −90 dBFS RMS across 36 to 62 Hz. For the bed it requires at least −60 dBFS RMS from 5.9 to 6.5 kHz, measures spectral density across 620–1,200 / 1,200–2,400 / 2,400–4,800 / 4,800–6,500 Hz, and permits no adjacent rise above 3 dB or drop above 18 dB. Those deliberately broad bands reject a spectral cliff or near-pure tone without prescribing the final timbre.
 
 ---
 
