@@ -405,6 +405,23 @@ Armband on, press start, four minutes, no manual intervention. Sound changes wit
 >
 > Connect to the WebSocket server. Read segment from `state` and start only when segment becomes `load`.
 
+**Added 19 September.** Convert the 6 to 19 degrees-per-second ramp through configurable viewing
+geometry rather than treating it as pixels: viewing distance and physical screen width, defaulting
+to a 27-inch 16:9 monitor at 60 cm. Show the assumption in a debug corner and record the conversion
+in `docs/known-limits.md`, so the browser and Unity versions can use the same angular maths. Add a
+standalone URL mode that runs the full 75 s without a bridge, uses the identical ramp and timing
+model as live mode, and writes its contract-shaped task events to the browser console. The source
+header must retain the warning that the values were authored for eye control, unavailable on Quest
+3S, and remain provisional for pointer and head control until Week E.
+
+**Implemented 19 September.** `web/task/` contains the plain browser task. Motion is integrated in
+visual degrees and projected onto the configured monitor plane; the on-screen debug corner shows
+the geometry and instantaneous conversion. Live mode starts and stops only from host `state`,
+freezes visibly on disconnect, and sends `task_event` messages. `?standalone=1` uses the same
+`LoadTask` instance type and event builder with a console sink, and can be restarted for repeated
+difficulty judging. Geometry, ramp, miss penalty, motion, events and state gating have deterministic
+JavaScript tests run through pytest.
+
 ## 3.2 Task events into cognitive_load
 
 > Emit `task_event` messages from the task screen per docs/message-contract-v1.md section 3: split, lock, miss, abandon, with dwell_ms, split_interval_ms and a difficulty value from 0.0 to 1.0.

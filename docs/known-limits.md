@@ -439,6 +439,36 @@ under synthetic input, not BLE contention; repeat the same one-session diagnosti
 
 ---
 
+## The browser load task's viewing geometry (prompt 3.1)
+
+**Handled by:** `web/task/task.js`, with the active assumption shown in the page's debug corner.
+The default is a 27-inch 16:9 monitor, whose physical width is **59.773 cm**, viewed from **60 cm**.
+That makes the full horizontal field of view:
+
+`FOV = 2 × atan(screen_width / (2 × viewing_distance)) = 52.956°`.
+
+The target is advanced in angular space at the authored 6 to 19 degrees per second. It is then
+projected onto the monitor plane, rather than being moved at one approximate fixed pixel speed:
+
+`x_px = viewport_width_px / 2 + tan(angle) × viewing_distance × viewport_width_px / screen_width`.
+
+At the centre of a 1,920-CSS-pixel full-screen viewport, the default converts 6 degrees per second
+to **201.827 px/s** and 19 degrees per second to **639.118 px/s**. The projected pixel speed rises
+toward the edges, as it must for the viewed angular speed to remain constant. The debug corner shows
+the instantaneous value. Unity should advance the target through the same angular coordinate and
+project it through its camera, not copy either centre pixel number.
+
+The URL parameters are `distance_cm` and `screen_width_cm`. The conversion assumes the browser is
+full-screen and its viewport width spans the configured physical screen width. It cannot verify the
+visitor's actual head distance or whether they move off-centre; measure the booth geometry and enter
+it before judging difficulty. `?standalone=1` removes the WebSocket and bridge but deliberately uses
+the same task model, ramp, deadlines and event builder as live mode.
+
+The dwell and speed numbers remain provisional. They were authored for eye control, which Quest 3S
+does not provide; pointer control and head-reticle control are retuned against real runs in Week E.
+
+---
+
 ## The PSV, for Week B and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Prism Live — Load Task</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main id="field" aria-label="Prism Live load task">
+      <header class="status-bar" aria-live="polite">
+        <div class="link-state">
+          <span id="link-dot" class="link-dot"></span>
+          <span id="link-label">CONNECTING</span>
+        </div>
+        <div id="segment-label" class="segment-label">WAITING FOR LOAD</div>
+        <div id="timer-label" class="timer-label">75.0</div>
+      </header>
+
+      <section id="instruction" class="instruction">
+        <p>FOLLOW THE HALF THAT KEEPS MOVING</p>
+        <span>Hold the reticle on it until it locks.</span>
+      </section>
+
+      <div id="target-layer" class="target-layer" aria-hidden="true"></div>
+
+      <div id="reticle" class="reticle" aria-hidden="true">
+        <div class="reticle-ring"></div>
+        <div class="reticle-dot"></div>
+      </div>
+
+      <div id="feedback" class="feedback" aria-live="polite"></div>
+
+      <section id="connection-overlay" class="overlay overlay--connection">
+        <strong id="overlay-title">WAITING FOR BRIDGE</strong>
+        <span id="overlay-detail">The task starts only when the host enters LOAD.</span>
+      </section>
+
+      <section id="complete-overlay" class="overlay overlay--complete" hidden>
+        <strong>75 SECONDS COMPLETE</strong>
+        <span>Standalone run finished.</span>
+        <button id="restart-button" type="button">RUN AGAIN</button>
+      </section>
+
+      <aside id="debug-panel" class="debug-panel">
+        <div class="debug-title">TASK GEOMETRY</div>
+        <div id="geometry-label"></div>
+        <div id="fov-label"></div>
+        <div id="speed-label"></div>
+        <div id="difficulty-label"></div>
+        <div class="debug-actions">
+          <button id="fullscreen-button" type="button">FULLSCREEN</button>
+          <button id="debug-restart-button" type="button" hidden>RESTART</button>
+        </div>
+      </aside>
+    </main>
+
+    <script src="task.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
