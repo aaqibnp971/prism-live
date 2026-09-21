@@ -14,7 +14,7 @@
   "use strict";
 
   const VERSION = 1;
-  const BUILD = "3.3.0";
+  const BUILD = "3.3.1";
   const STATE_STALE_MS = 2_500;
   const FULL_RESET_MS = 20_000;
   const TRACE_LIMIT = 1_024;
@@ -126,6 +126,7 @@
         kind: "active",
         session: state.session,
         segment: state.segment,
+        sessionElapsedMs: state.t_session,
         title: copy.title,
         verb: copy.verb,
         progress: segmentProgress(state),
@@ -232,6 +233,18 @@
       maximum += 5;
     }
     return Object.freeze({ minimum, maximum });
+  }
+
+  // Visual uncertainty, not a statistical interval or a new confidence estimate. Keep the v3
+  // hatch convention (half-width .45 * (1-confidence)), using the host's actual confidence.
+  // Zero confidence has no reading fill/marker; valence can never look like a measured value.
+  function readingTreatment(dimension) {
+    const readable = dimension.key !== "valence" && dimension.confidence > 0;
+    const midpoint = readable ? dimension.value : 0.5;
+    const halfWidth = (1 - dimension.confidence) * 0.45;
+    const left = clamp(midpoint - halfWidth, 0, 1);
+    const right = clamp(midpoint + halfWidth, 0, 1);
+    return Object.freeze({ readable, fill: readable ? dimension.value : 0, left, width: right - left });
   }
 
   function tracePoints(samples, width, height, inset = 12) {
@@ -391,6 +404,7 @@
     SEGMENT_COPY,
     SpectatorModel,
     dimensionViews,
+    readingTreatment,
     linkState,
     segmentProgress,
     tracePoints,

@@ -177,3 +177,40 @@ test("trace geometry uses scheduled play time and the computed scale", () => {
   assert.ok(points[0].x < points[1].x && points[1].x < points[2].x);
   assert.ok(points[1].y < points[2].y && points[2].y < points[0].y);
 });
+
+test("every trace point, including a new minimum and the endpoint, stays inside plot bounds", () => {
+  // Regression: the old CSS let the whole SVG spill over its card even with sound data scaling.
+  // Browser coverage checks the actual card; this checks the full range before clipping.
+  for (const bpms of [[82, 78, 34], [178, 205, 240], [68, 68, 68], [1, 250, 2]]) {
+    const samples = bpms.map((bpm, index) => ({ bpm, tPlay: 1000 + index * 800, quality: "ok" }));
+    const scale = Spectator.traceScale(samples);
+    assert.ok(scale.minimum <= Math.min(...bpms));
+    assert.ok(scale.maximum >= Math.max(...bpms));
+    for (const [width, height] of [[1000, 210], [1000, 280], [300, 85]]) {
+      for (const point of Spectator.tracePoints(samples, width, height)) {
+        assert.ok(point.x >= 12 && point.x <= width - 12);
+        assert.ok(point.y >= 12 && point.y <= height - 12);
+      }
+    }
+  }
+});
+
+test("reading hatches use host confidence while authority is passed through unchanged", () => {
+  const model = new Spectator.SpectatorModel();
+  model.onState(state("regulate", {
+    confidence: { arousal: 0.4, valence: 0, cognitive_load: 0, readiness: 0.6 },
+    authority: { arousal: 0.137, valence: 0, cognitive_load: 0, readiness: 0.271 },
+  }));
+  const dims = model.view().readings.dimensions;
+  assert.equal(dims[0].authority, 0.137);
+  assert.equal(dims[3].authority, 0.271);
+  const arousal = Spectator.readingTreatment(dims[0]);
+  assert.equal(arousal.fill, dims[0].value);
+  assert.ok(Math.abs(arousal.width - 0.54) < 1e-9);
+  for (const dim of [dims[1], dims[2]]) {
+    const unknown = Spectator.readingTreatment(dim);
+    assert.equal(unknown.fill, 0);
+    assert.equal(unknown.readable, false);
+    assert.ok(Math.abs(unknown.width - 0.9) < 1e-9);
+  }
+});

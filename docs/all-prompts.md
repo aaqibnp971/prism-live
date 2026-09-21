@@ -479,6 +479,12 @@ readings in idle. A socket failure, invalid message, or 2.5 s without a state fr
 a full-width red lost-feed banner and reconnects without synthesising data. Deterministic JavaScript
 tests run through pytest; operating notes are in `web/spectator/README.md`.
 
+**Visual design port, 21 September.** The component inside `docs/design/spectator-v3.html` now supplies
+the layout, type, palette, uncertainty/authority bars and baseline learning fill. The live plain-JS
+architecture and tests remain; no framework, build step or simulation mode was imported. Fonts are
+local. Header overlap and trace overflow are fixed, with numerical and real-browser bounds tests.
+The field remains a placeholder for 3.4; the v3 reveal is still reserved for 3.5.
+
 ## 3.4 Ambient field for regulate and resolve
 
 > Build the ambient visual field in `web/task/` for the regulate and resolve segments, using the token sheet in docs/experience-script.md section 4.

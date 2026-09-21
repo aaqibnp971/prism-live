@@ -12,6 +12,7 @@
   const params = new URLSearchParams(globalThis.location.search);
   const elements = collectElements();
   const scheduledBeats = new Set();
+  const stageSegments = ["baseline", "load", "regulate", "resolve"];
   let pendingBeats = [];
   let socket = null;
   let clockSync = null;
@@ -235,12 +236,15 @@
   }
 
   function render() {
+    elements.stage.style.setProperty("--stage-scale", Math.min(innerWidth / 1920, innerHeight / 1080));
     const view = model.view();
     document.body.dataset.view = view.kind;
     elements.idleCold.hidden = view.kind !== "idle-cold" && view.kind !== "waiting";
     elements.resettingPanel.hidden = view.kind !== "resetting";
     elements.traceHold.hidden = view.kind !== "idle-trace" && view.kind !== "trace-hold";
     elements.activeDashboard.hidden = view.kind !== "active";
+    elements.segmentStrip.hidden = view.kind !== "active";
+    elements.segmentTiming.hidden = view.kind !== "active";
 
     elements.headerSegment.textContent = headerFor(view);
     elements.headerSession.textContent =
@@ -256,21 +260,39 @@
       view.kind === "idle-cold" ? "NO PROGRESS YET • NO PREVIOUS READINGS" : "NO LIVE DATA YET";
 
     if (view.kind === "active") renderActive(view);
+    else {
+      elements.segmentTitle.textContent = view.kind === "resetting" ? "RESETTING" : "READY";
+      elements.segmentVerb.textContent = view.kind === "waiting" ? "WAITING FOR LIVE DATA" : "WAITING FOR YOUR NEXT SESSION";
+      elements.sessionTime.textContent = "—:—";
+    }
     if (view.kind === "idle-trace" || view.kind === "trace-hold") {
       renderTrace("held", view.trace, 1_000, 280);
     }
   }
 
   function renderActive(view) {
-    elements.segmentTitle.textContent = view.title;
+    elements.segmentTitle.textContent = view.segment.toUpperCase();
+    elements.headerSegment.textContent = `SEGMENT ${String(stageSegments.indexOf(view.segment) + 1).padStart(2, "0")} / 4`;
     elements.segmentVerb.textContent = view.verb;
     const progress = view.progress;
+    elements.sessionTime.textContent = `T+${duration(view.sessionElapsedMs)}`;
     elements.segmentTime.textContent = duration(progress.elapsedMs);
     elements.segmentNominal.textContent = `OF ${duration(progress.nominalMs)}`;
-    elements.progressFill.style.width = `${(progress.fraction * 100).toFixed(3)}%`;
+    const currentSegment = stageSegments.indexOf(view.segment);
+    for (const [index, segment] of stageSegments.entries()) {
+      const fill = index < currentSegment ? 1 : index === currentSegment ? progress.fraction : 0;
+      const bar = elements.segmentProgress[segment];
+      bar.style.width = `${fill * 100}%`;
+      bar.parentElement.parentElement.setAttribute("aria-current", index === currentSegment ? "step" : "false");
+    }
     elements.progressNote.textContent = progress.overrunMs
-      ? `HOST HOLD +${(progress.overrunMs / 1000).toFixed(0)} S`
-      : "HOST TIMING";
+      ? `· HOLD +${(progress.overrunMs / 1000).toFixed(0)} S`
+      : "· SEGMENT";
+    elements.baselineLearning.hidden = view.segment !== "baseline";
+    elements.baselineLearningFill.style.width = `${progress.fraction * 100}%`;
+    elements.railNote.textContent = view.segment === "baseline"
+      ? "Learning your baseline. The hatch shows uncertainty in each reading."
+      : "Your pulse and task inputs. Under each: how far it may move your world.";
 
     const readings = view.readings;
     elements.heartBpm.textContent = bpm(readings.heartBpm);
@@ -280,23 +302,17 @@
 
     for (const dimension of readings.dimensions) {
       const value = elements.dimensions[dimension.key];
-      value.reading.textContent = dimension.value.toFixed(2);
+      const treatment = Spectator.readingTreatment(dimension);
+      value.reading.textContent = dimension.key === "valence" || treatment.readable ? dimension.value.toFixed(2) : "—";
       value.confidence.textContent = dimension.confidence.toFixed(2);
       value.authority.textContent = dimension.authority.toFixed(2);
-      value.confidenceBar.style.width = `${dimension.confidence * 100}%`;
+      value.readingBar.style.width = `${treatment.fill * 100}%`;
+      value.uncertainty.style.left = `${treatment.left * 100}%`;
+      value.uncertainty.style.width = `${treatment.width * 100}%`;
+      value.marker.hidden = !treatment.readable;
+      value.marker.style.left = `${dimension.value * 100}%`;
       value.authorityBar.style.width = `${dimension.authority * 100}%`;
     }
-
-    const byKey = Object.fromEntries(readings.dimensions.map((dimension) => [dimension.key, dimension]));
-    const authority =
-      (byKey.arousal.authority + byKey.cognitive_load.authority + byKey.readiness.authority) / 3;
-    elements.fieldMirror.style.setProperty(
-      "--field-hue",
-      (188 + byKey.cognitive_load.value * 36).toFixed(2),
-    );
-    elements.fieldMirror.style.setProperty("--field-energy", (0.22 + authority * 0.78).toFixed(3));
-    elements.fieldMirror.style.setProperty("--field-x", `${20 + byKey.arousal.value * 60}%`);
-    elements.fieldMirror.style.setProperty("--field-y", `${72 - byKey.readiness.value * 44}%`);
 
     elements.traceCount.textContent = view.trace.length
       ? `${view.trace.length} BEATS SHOWN`
@@ -316,7 +332,7 @@
     target.glow.setAttribute("d", path);
     target.maximum.textContent = scale ? Math.round(scale.maximum) : "—";
     target.minimum.textContent = scale ? Math.round(scale.minimum) : "—";
-    target.end.hidden = points.length === 0;
+    target.end.toggleAttribute("hidden", points.length === 0);
     if (points.length) {
       const last = points.at(-1);
       target.end.setAttribute("cx", last.x.toFixed(2));
@@ -409,18 +425,22 @@
         reading: required(`${key}-value`),
         confidence: required(`${key}-confidence`),
         authority: required(`${key}-authority`),
-        confidenceBar: required(`${key}-confidence-bar`),
+        readingBar: required(`${key}-reading-bar`),
+        uncertainty: required(`${key}-uncertainty`),
+        marker: required(`${key}-marker`),
         authorityBar: required(`${key}-authority-bar`),
       };
     }
     return {
       activeDashboard: required("active-dashboard"),
+      stage: required("spectator-stage"),
+      baselineLearning: required("baseline-learning"),
+      baselineLearningFill: required("baseline-learning-fill"),
       connectionBanner: required("connection-banner"),
       connectionDetail: required("connection-detail"),
       connectionTitle: required("connection-title"),
       contactState: required("contact-state"),
       dimensions,
-      fieldMirror: required("field-mirror"),
       fullscreenButton: required("fullscreen-button"),
       headerSegment: required("header-segment"),
       headerSession: required("header-session"),
@@ -432,7 +452,11 @@
       linkBadge: required("link-badge"),
       linkLabel: required("link-label"),
       liveTrace: traceElements("live"),
-      progressFill: required("progress-fill"),
+      segmentStrip: required("segment-strip"),
+      segmentTiming: required("segment-timing"),
+      segmentProgress: Object.fromEntries(["baseline", "load", "regulate", "resolve"].map((key) => [key, required(`${key}-progress`)])),
+      sessionTime: required("session-time"),
+      railNote: required("rail-note"),
       progressNote: required("progress-note"),
       resettingPanel: required("resetting-panel"),
       restingBpm: required("resting-bpm"),

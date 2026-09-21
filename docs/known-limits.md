@@ -531,6 +531,14 @@ fixed 2-second state cadence. It freezes the last verified view, cancels pending
 a full-width red marker over it. This is intentionally aggressive for an exhibition display; verify
 on the booth network that normal scheduling jitter does not create false disconnects.
 
+**Visual port, 21 September:** v3's uncertainty hatching is a display convention: its half-width is
+`0.45 × (1 − confidence)` around the host reading, clipped to 0–1. It is not a calibrated statistical
+interval and cannot add confidence or authority. Unknown readings show no reading fill; valence
+always has zero confidence and authority. The field remains a 3.4 placeholder and the reveal panel
+is reserved for 3.5. Local IBM Plex fonts make the layout independent of internet access. The browser
+regression check covers trace/card clipping, including a low endpoint of 34 BPM, and loss of state
+messages while clock replies continue. Booth-distance readability still needs an on-site check.
+
 ---
 
 ## The PSV, for Week B and for validation
