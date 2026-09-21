@@ -11,7 +11,7 @@ from bridge import session as machine
 from bridge.baseline import Baseline
 from bridge.beat_scheduler import PacketResult
 from bridge.contract import MIN_LEAD_MS, validate
-from bridge.live import LiveLoop
+from bridge.live import LiveLoop, LiveLoopError
 from bridge.logging import SessionLog
 from bridge.psv import BaselinePhase, PsvModel
 from bridge.session import Timings
@@ -367,3 +367,77 @@ def test_each_packet_reaches_scheduler_before_model_and_only_once(tmp_path):
 
     asyncio.run(scenario())
     assert calls == [("scheduler", b"packet"), ("model", PacketResult((), ()))]
+
+
+def test_task_events_reach_psv_only_for_the_current_session_during_load(tmp_path, monkeypatch):
+    timings = short_session(monkeypatch)
+
+    async def scenario():
+        clock = RealClock()
+        log = SessionLog(tmp_path, clock=clock)
+        model = FastBaselineModel()
+        live = LiveLoop(
+            SyntheticBurst(),
+            lambda msg: True,
+            log,
+            clock=clock,
+            tick_ms=20.0,
+            timings=timings,
+            model=model,
+        )
+        session = live.session.session
+
+        def event(kind="split", *, message_session=session):
+            return {
+                "type": "task_event",
+                "v": 1,
+                "session": message_session,
+                "t_client": 100.0,
+                "event": kind,
+                "dwell_ms": 700.0,
+                "split_interval_ms": 3_000.0,
+                "difficulty": 0.4,
+            }
+
+        # Nothing outside the running loop may mutate its model.
+        assert not live.on_task_event(clock(), event())
+        task = asyncio.create_task(live.run())
+        await asyncio.sleep(0)
+        await asyncio.wait_for(live.wait_for_signal(), 1.0)
+
+        # The task screen may connect before start, but it is not evidence until LOAD.
+        assert not live.on_task_event(clock(), event())
+        assert model._task_load(clock()) is None
+
+        assert await live.attendant_start() is None
+        while live.session.segment == "baseline":
+            await asyncio.sleep(0.01)
+        assert live.session.segment == "load"
+
+        arrival = clock()
+        assert live.on_task_event(arrival, event())
+        assert model._task_load(arrival) is not None
+        assert not live.on_task_event(
+            clock(), event(message_session="S-19700101-0001")
+        )
+        assert live.on_task_event(clock(), event("lock"))
+        with pytest.raises(LiveLoopError, match="PSV model rejected"):
+            live.on_task_event(clock(), event("lock"))
+
+        assert live.attendant_stop()
+        assert not live.on_task_event(clock(), event("lock"))
+        await stop_task(task)
+        assert not live.on_task_event(clock(), event("lock"))
+        log.close()
+
+    asyncio.run(scenario())
+    records = []
+    for path in tmp_path.glob("S-*.jsonl"):
+        records += [json.loads(line) for line in path.read_text().splitlines()]
+    ignored = [record for record in records if record.get("event") == "task_event_ignored"]
+    assert {record["reason"] for record in ignored} == {
+        "loop_not_running",
+        "model_rejected",
+        "not_load",
+        "stale_session",
+    }

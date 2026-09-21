@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Prism Live — Spectator</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-view="waiting">
+    <aside id="connection-banner" class="connection-banner" data-mode="waiting" role="status" aria-live="assertive">
+      <span class="connection-mark" aria-hidden="true"></span>
+      <strong id="connection-title">WAITING FOR LIVE BRIDGE</strong>
+      <span id="connection-detail">No live session data has arrived.</span>
+    </aside>
+
+    <div class="page-shell">
+      <header class="masthead">
+        <a class="wordmark" href="#" aria-label="Prism Live spectator screen">
+          <span class="prism-mark" aria-hidden="true"></span>
+          <span>PRISM</span>
+          <em>LIVE</em>
+        </a>
+        <div class="masthead-centre">
+          <span id="header-segment">LIVE SYSTEM</span>
+          <small id="header-session">WAITING FOR DATA</small>
+        </div>
+        <div id="link-badge" class="link-badge" data-state="waiting">
+          <span class="link-dot" aria-hidden="true"></span>
+          <span id="link-label">CONNECTING</span>
+        </div>
+      </header>
+
+      <main>
+        <section id="idle-cold" class="mode-panel idle-cold" aria-labelledby="idle-title">
+          <div class="idle-orbit" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="eyebrow">LIVE SYSTEM • WAITING</p>
+          <h1 id="idle-title">READY FOR THE NEXT SESSION</h1>
+          <p id="idle-copy" class="idle-copy">Waiting for a verified state from the live bridge.</p>
+          <div class="idle-rule" aria-hidden="true"></div>
+          <p id="idle-foot" class="idle-foot">NO LIVE DATA YET</p>
+        </section>
+
+        <section id="resetting-panel" class="mode-panel resetting-panel" hidden aria-labelledby="reset-title">
+          <p class="eyebrow">LIVE SYSTEM • RESETTING</p>
+          <h1 id="reset-title">READYING THE NEXT SESSION</h1>
+          <p>The previous live readings have been cleared.</p>
+        </section>
+
+        <section id="trace-hold" class="mode-panel trace-hold" hidden aria-labelledby="held-title">
+          <div class="held-heading">
+            <div>
+              <p class="eyebrow">LAST COMPLETED SESSION • HELD ON SCREEN</p>
+              <h1 id="held-title">YOUR FOUR MINUTES</h1>
+            </div>
+            <p>Your trace remains here until the next baseline begins.</p>
+          </div>
+          <div class="trace-frame trace-frame--held">
+            <div class="trace-axis">
+              <span id="held-trace-max">—</span>
+              <span>BPM</span>
+              <span id="held-trace-min">—</span>
+            </div>
+            <svg id="held-trace-svg" class="trace-svg" viewBox="0 0 1000 280" preserveAspectRatio="none" role="img" aria-label="Your completed heart rate trace">
+              <g class="trace-grid" aria-hidden="true">
+                <line x1="0" y1="70" x2="1000" y2="70"></line>
+                <line x1="0" y1="140" x2="1000" y2="140"></line>
+                <line x1="0" y1="210" x2="1000" y2="210"></line>
+              </g>
+              <path id="held-trace-glow" class="trace-line trace-line--glow"></path>
+              <path id="held-trace-line" class="trace-line"></path>
+              <circle id="held-trace-end" class="trace-end" r="6"></circle>
+            </svg>
+            <div class="trace-time"><span>SESSION START</span><span>SESSION END</span></div>
+          </div>
+        </section>
+
+        <section id="active-dashboard" class="active-dashboard" hidden aria-label="Your live session">
+          <header class="session-heading">
+            <div>
+              <p id="segment-verb" class="eyebrow">LEARNING YOUR RHYTHM</p>
+              <h1 id="segment-title">YOUR BASELINE</h1>
+            </div>
+            <div class="segment-time">
+              <strong id="segment-time">0:00</strong>
+              <span id="segment-nominal">OF 0:45</span>
+            </div>
+          </header>
+
+          <div id="progress-wrap" class="progress-wrap" aria-label="Host segment progress">
+            <div class="progress-track"><span id="progress-fill"></span></div>
+            <span id="progress-note">HOST TIMING</span>
+          </div>
+
+          <div class="live-grid">
+            <section class="heart-card panel" aria-labelledby="heart-title">
+              <p class="eyebrow">MEASURED LIVE</p>
+              <h2 id="heart-title">YOUR HEART</h2>
+              <div class="heart-value"><strong id="heart-bpm">—</strong><span>BPM</span></div>
+              <dl class="heart-details">
+                <div><dt>YOUR RESTING RATE</dt><dd id="resting-bpm">—</dd></div>
+                <div><dt>YOUR SIGNAL</dt><dd id="signal-quality">—</dd></div>
+                <div><dt>ARMBAND CONTACT</dt><dd id="contact-state">—</dd></div>
+              </dl>
+            </section>
+
+            <section id="field-mirror" class="field-card panel" aria-labelledby="field-title">
+              <p class="eyebrow">THE SAME NUMBERS, DRAWN HERE</p>
+              <h2 id="field-title">YOUR LIVE FIELD</h2>
+              <div class="field-visual" aria-hidden="true">
+                <div class="field-horizon"></div>
+                <div class="field-orb field-orb--one"></div>
+                <div class="field-orb field-orb--two"></div>
+                <div class="field-core"></div>
+              </div>
+              <p class="field-note">A screen rendering of the host values—not a headset camera.</p>
+            </section>
+          </div>
+
+          <section class="dimensions" aria-label="Your live PSV values">
+            <article class="dimension-card" data-dimension="arousal">
+              <header><h2>YOUR AROUSAL</h2><span class="dimension-chip">LIVE READING</span></header>
+              <strong id="arousal-value" class="dimension-value">—</strong>
+              <div class="meter-row"><span>CONFIDENCE <output id="arousal-confidence">0.00</output></span><div class="meter"><i id="arousal-confidence-bar"></i></div></div>
+              <div class="meter-row"><span>AUTHORITY <output id="arousal-authority">0.00</output></span><div class="meter meter--authority"><i id="arousal-authority-bar"></i></div></div>
+            </article>
+
+            <article class="dimension-card dimension-card--valence" data-dimension="valence">
+              <header><h2>YOUR VALENCE</h2><span class="dimension-chip dimension-chip--unknown">NOT READABLE</span></header>
+              <strong id="valence-value" class="dimension-value">0.50</strong>
+              <div class="meter-row"><span>CONFIDENCE <output id="valence-confidence">0.00</output></span><div class="meter"><i id="valence-confidence-bar" style="width:0%"></i></div></div>
+              <div class="meter-row"><span>AUTHORITY <output id="valence-authority">0.00</output></span><div class="meter meter--authority"><i id="valence-authority-bar" style="width:0%"></i></div></div>
+              <p>Heart rate cannot tell the system whether a feeling is positive or negative.</p>
+            </article>
+
+            <article class="dimension-card" data-dimension="cognitive_load">
+              <header><h2>YOUR COGNITIVE LOAD</h2><span class="dimension-chip">LIVE READING</span></header>
+              <strong id="cognitive_load-value" class="dimension-value">—</strong>
+              <div class="meter-row"><span>CONFIDENCE <output id="cognitive_load-confidence">0.00</output></span><div class="meter"><i id="cognitive_load-confidence-bar"></i></div></div>
+              <div class="meter-row"><span>AUTHORITY <output id="cognitive_load-authority">0.00</output></span><div class="meter meter--authority"><i id="cognitive_load-authority-bar"></i></div></div>
+            </article>
+
+            <article class="dimension-card" data-dimension="readiness">
+              <header><h2>YOUR READINESS</h2><span class="dimension-chip">LIVE READING</span></header>
+              <strong id="readiness-value" class="dimension-value">—</strong>
+              <div class="meter-row"><span>CONFIDENCE <output id="readiness-confidence">0.00</output></span><div class="meter"><i id="readiness-confidence-bar"></i></div></div>
+              <div class="meter-row"><span>AUTHORITY <output id="readiness-authority">0.00</output></span><div class="meter meter--authority"><i id="readiness-authority-bar"></i></div></div>
+            </article>
+          </section>
+
+          <section class="trace-card panel" aria-labelledby="live-trace-title">
+            <div class="trace-heading">
+              <div><p class="eyebrow">ONE SAMPLE FOR EVERY SCHEDULED BEAT</p><h2 id="live-trace-title">YOUR HEART, BEAT BY BEAT</h2></div>
+              <span id="trace-count">WAITING FOR YOUR FIRST BEAT</span>
+            </div>
+            <div class="trace-frame">
+              <div class="trace-axis"><span id="live-trace-max">—</span><span>BPM</span><span id="live-trace-min">—</span></div>
+              <svg id="live-trace-svg" class="trace-svg" viewBox="0 0 1000 210" preserveAspectRatio="none" role="img" aria-label="Your live heart rate trace">
+                <g class="trace-grid" aria-hidden="true">
+                  <line x1="0" y1="52.5" x2="1000" y2="52.5"></line>
+                  <line x1="0" y1="105" x2="1000" y2="105"></line>
+                  <line x1="0" y1="157.5" x2="1000" y2="157.5"></line>
+                </g>
+                <path id="live-trace-glow" class="trace-line trace-line--glow"></path>
+                <path id="live-trace-line" class="trace-line"></path>
+                <circle id="live-trace-end" class="trace-end" r="5"></circle>
+              </svg>
+              <div class="trace-empty" id="trace-empty">THE TRACE BEGINS WITH YOUR NEXT SCHEDULED BEAT</div>
+            </div>
+          </section>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>LIVE HOST DATA • NO CANNED CURVES</span>
+        <button id="fullscreen-button" type="button">FULL SCREEN</button>
+      </footer>
+    </div>
+
+    <script src="../shared/clock_sync_core.js"></script>
+    <script src="model.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

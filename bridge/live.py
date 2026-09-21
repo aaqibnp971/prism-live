@@ -238,6 +238,56 @@ class LiveLoop:
             raise RuntimeError("the engine PSV feed is not configured")
         self.psv_feed.set_source(source, t_engine=self.clock())
 
+    def on_task_event(self, arrival_ms: float, msg: dict) -> bool:
+        """Feed one validated task event to PSV, at its T_engine arrival time.
+
+        The WebSocket server invokes this on the owning asyncio loop. Events for a previous session
+        or outside LOAD are logged and ignored so a stale screen cannot change the next visitor.
+        """
+        if not self._running:
+            self.log.event(
+                "task_event_ignored",
+                t_engine=arrival_ms,
+                reason="loop_not_running",
+            )
+            return False
+        self._check_owner()
+        if msg["session"] != self.session.session:
+            self.log.event(
+                "task_event_ignored",
+                t_engine=arrival_ms,
+                reason="stale_session",
+                message_session=msg["session"],
+                current_session=self.session.session,
+            )
+            return False
+        if self.session.segment != "load":
+            self.log.event(
+                "task_event_ignored",
+                t_engine=arrival_ms,
+                reason="not_load",
+                segment=self.session.segment,
+            )
+            return False
+        accepted = self.model.add_task_event(
+            arrival_ms,
+            msg["event"],
+            msg["difficulty"],
+            msg["dwell_ms"],
+            msg["split_interval_ms"],
+        )
+        if not accepted:
+            # The contract already checked the fields. Reaching this branch means T_engine moved
+            # backwards or the model and contract have diverged, either of which is a loop fault.
+            self.log.event(
+                "task_event_ignored",
+                t_engine=arrival_ms,
+                reason="model_rejected",
+                segment=self.session.segment,
+            )
+            raise LiveLoopError("the PSV model rejected a contract-valid task event")
+        return True
+
     async def wait_for_signal(self, poll_s: float = 0.05) -> None:
         """Wait until Session sees a trusted beat.  Used by the one-session diagnostic."""
         self._check_owner()

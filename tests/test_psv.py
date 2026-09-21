@@ -394,10 +394,196 @@ def test_task_events_come_first_and_heart_rate_never_adds_confidence_alone():
 
 def test_task_events_are_kept_only_when_they_make_sense():
     model = PsvModel()
-    assert model.add_task_event(1000, "miss", 0.4, 480, 3100)
+    assert not model.add_task_event(999, "miss", 0.4, 480, 3100)  # no open split
+    assert model.add_task_event(1000, "split", 0.4, 480, 3100)
+    assert model.add_task_event(2000, "miss", 0.4, 480, 3100)
+    assert not model.add_task_event(2001, "lock", 0.4, 480, 3100)  # already resolved
     assert not model.add_task_event(1000, "wobble", 0.4)
     assert not model.add_task_event(1000, "miss", 1.5)
-    assert dict(model.estimate(1000).components)["task_events"] == 1
+    assert dict(model.estimate(2001).components)["task_events"] == 2
+
+
+def add_task_rounds(
+    model: PsvModel,
+    outcomes: list[str],
+    *,
+    start_ms: float = 1_000,
+    interval_ms: float = 3_000,
+    difficulty: float = 0.7,
+    dwell_ms: float = 600,
+) -> float:
+    """Contract-order rounds. A timeout miss lands immediately before the next split."""
+    now = start_ms
+    for outcome in outcomes:
+        assert model.add_task_event(now, "split", difficulty, dwell_ms, interval_ms)
+        if outcome == "lock":
+            assert model.add_task_event(
+                now + 0.4 * interval_ms, "lock", difficulty, dwell_ms, interval_ms
+            )
+        elif outcome == "abandon_lock":
+            assert model.add_task_event(
+                now + 0.2 * interval_ms, "abandon", difficulty, dwell_ms, interval_ms
+            )
+            assert model.add_task_event(
+                now + 0.7 * interval_ms, "lock", difficulty, dwell_ms, interval_ms
+            )
+        elif outcome == "early_miss":
+            assert model.add_task_event(
+                now + 0.5 * interval_ms, "miss", difficulty, dwell_ms, interval_ms
+            )
+        elif outcome == "chasing_miss":
+            assert model.add_task_event(
+                now + 0.3 * interval_ms, "abandon", difficulty, dwell_ms, interval_ms
+            )
+            assert model.add_task_event(
+                now + interval_ms, "miss", difficulty, dwell_ms, interval_ms
+            )
+        elif outcome == "timeout":
+            assert model.add_task_event(
+                now + interval_ms, "miss", difficulty, dwell_ms, interval_ms
+            )
+        else:
+            raise AssertionError(f"unknown outcome {outcome}")
+        now += interval_ms
+    return now
+
+
+def test_a_miss_is_load_only_when_the_event_stream_shows_active_pursuit():
+    chasing, disengaged = PsvModel(), PsvModel()
+    chasing_now = add_task_rounds(chasing, ["chasing_miss"] * 4)
+    disengaged_now = add_task_rounds(disengaged, ["timeout"] * 4)
+    chasing_load = chasing._task_load(chasing_now)
+    disengaged_load = disengaged._task_load(disengaged_now)
+    assert chasing_load is not None and disengaged_load is not None
+    assert chasing_load.value == pytest.approx(0.72)
+    assert chasing_load.engagement == pytest.approx(0.8) and chasing_load.strain == 1.0
+    assert disengaged_load.value == pytest.approx(psv.TASK_DISENGAGED_VALUE)
+    assert disengaged_load.engagement == 0.0 and disengaged_load.strain == 0.0
+    assert chasing_load.confidence == disengaged_load.confidence == 0.5
+
+
+def test_an_early_wrong_target_miss_is_engagement_without_an_abandon():
+    early, timeout = PsvModel(), PsvModel()
+    early_now = add_task_rounds(early, ["early_miss"] * 3)
+    timeout_now = add_task_rounds(timeout, ["timeout"] * 3)
+    assert early._task_load(early_now).value > 0.8
+    assert timeout._task_load(timeout_now).value == psv.TASK_DISENGAGED_VALUE
+
+
+def test_a_deadline_miss_preserves_when_the_last_real_pursuit_happened():
+    early, late = PsvModel(), PsvModel()
+    for model, abandon_at in ((early, 1_100), (late, 5_900)):
+        assert model.add_task_event(1_000, "split", 0.7, 900, 5_000)
+        assert model.add_task_event(abandon_at, "abandon", 0.7, 900, 5_000)
+        assert model.add_task_event(6_000, "miss", 0.7, 900, 5_000)
+
+    early_load, late_load = early._task_load(6_000), late._task_load(6_000)
+    assert early_load is not None and late_load is not None
+    assert early_load.interaction_gap_ms == 4_900
+    assert late_load.interaction_gap_ms == 100
+    assert early_load.engagement < late_load.engagement
+    assert early_load.value < late_load.value
+
+
+def test_task_confidence_starts_at_zero_then_rises_by_distinct_opportunities():
+    model = PsvModel()
+    assert model._task_load(0) is None
+    assert model.estimate(0).confidence.cognitive_load == 0.0
+    confidences = []
+    now = 1_000.0
+    for _ in range(psv.TASK_FULL_OPPORTUNITIES):
+        now = add_task_rounds(model, ["lock"], start_ms=now, difficulty=0.8)
+        confidences.append(model._task_load(now - 1_800).confidence)
+    assert confidences[0] == pytest.approx(1 / psv.TASK_FULL_OPPORTUNITIES)
+    assert confidences[-1] == 1.0
+    assert all(after > before for before, after in zip(confidences, confidences[1:], strict=False))
+
+
+def test_interaction_silence_means_disengagement_but_stream_silence_removes_confidence():
+    model = PsvModel()
+    now = add_task_rounds(model, ["lock"] * 4 + ["timeout"] * 4, difficulty=0.8)
+    running = model._task_load(now)
+    assert running is not None
+    assert running.stream_freshness == 1.0 and running.confidence == 1.0
+    assert running.engagement == 0.0 and running.value == psv.TASK_DISENGAGED_VALUE
+    silent = model._task_load(now + 4 * 3_000)
+    assert silent is not None
+    assert silent.stream_freshness == 0.0 and silent.confidence == 0.0
+
+
+def test_task_mapping_does_not_depend_on_mouse_or_head_dwell_distribution():
+    mouse, head = PsvModel(), PsvModel()
+    outcomes = ["lock", "abandon_lock", "early_miss", "lock"]
+    mouse_now = add_task_rounds(mouse, outcomes, dwell_ms=420)
+    head_now = add_task_rounds(head, outcomes, dwell_ms=1_200)
+    assert mouse_now == head_now
+    assert mouse._task_load(mouse_now) == head._task_load(head_now)
+
+
+def test_abandon_frequency_cannot_evict_splits_or_inflate_confidence():
+    model = PsvModel()
+    now = add_task_rounds(model, ["lock"] * psv.TASK_FULL_OPPORTUNITIES)
+    assert model._task_load(now - 1_800).confidence == 1.0
+
+    assert model.add_task_event(now, "split", 0.8, 700, 3_000)
+    for offset in range(600):
+        assert model.add_task_event(now + offset + 1, "abandon", 0.8, 700, 3_000)
+    flooded = model._task_load(now + 600)
+    assert flooded is not None
+    assert flooded.opportunities == psv.TASK_FULL_OPPORTUNITIES + 1
+    assert flooded.confidence == 1.0
+
+
+def test_orphan_and_duplicate_interactions_refresh_nothing():
+    orphan = PsvModel()
+    assert not orphan.add_task_event(1_000, "abandon", 0.8, 700, 3_000)
+    assert not orphan.add_task_event(1_001, "lock", 0.8, 700, 3_000)
+    assert orphan._task_load(1_001) is None
+
+    model = PsvModel()
+    now = add_task_rounds(model, ["lock"] * psv.TASK_FULL_OPPORTUNITIES)
+    check_at = now + 9_000
+    before = model._task_load(check_at)
+    assert not model.add_task_event(check_at, "lock", 0.8, 700, 3_000)
+    assert not model.add_task_event(check_at, "abandon", 0.8, 700, 3_000)
+    assert model._task_load(check_at) == before
+
+
+def test_relative_event_timing_not_raw_split_interval_classifies_engagement():
+    fast, slow = PsvModel(), PsvModel()
+    fast_now = add_task_rounds(fast, ["early_miss"] * 4, interval_ms=2_000)
+    slow_now = add_task_rounds(slow, ["early_miss"] * 4, interval_ms=5_000)
+    fast_load, slow_load = fast._task_load(fast_now), slow._task_load(slow_now)
+    assert fast_load.value == slow_load.value
+    assert fast_load.confidence == slow_load.confidence
+    assert fast_load.engagement == slow_load.engagement == 1.0
+
+
+def test_task_events_are_session_scoped_and_arrival_order_cannot_go_backwards():
+    model = PsvModel()
+    assert model.add_task_event(2_000, "split", 0.2, 900, 5_000)
+    assert not model.add_task_event(1_999, "lock", 0.2, 900, 5_000)
+    assert model._task_load(2_000) is not None
+    model.reset()
+    assert model._task_load(2_000) is None
+    assert model.estimate(2_000).confidence.cognitive_load == 0.0
+
+
+def test_task_diagnostics_are_in_the_psv_log_components():
+    model = PsvModel()
+    now = add_task_rounds(model, ["abandon_lock"] * 2)
+    components = dict(model.estimate(now).components)
+    for name in (
+        "task_load",
+        "task_load_confidence",
+        "task_engagement",
+        "task_difficulty",
+        "task_strain",
+        "task_stream_freshness",
+        "task_opportunities",
+        "task_interaction_gap_ms",
+    ):
+        assert components[name] is not None
 
 
 # --- the signal ---

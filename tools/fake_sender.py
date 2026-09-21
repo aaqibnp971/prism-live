@@ -93,8 +93,9 @@ async def run(args: argparse.Namespace) -> None:
     log = SessionLog(args.log_dir)
     log.start_session()
 
-    def task_event(msg: dict, client: Client) -> None:
+    def task_event(msg: dict, client: Client, _arrival_ms: float) -> bool:
         print(f"  {client.label}: task_event {msg['event']}")
+        return True
 
     async with LiveServer(log, host=args.host, port=args.port, on_task_event=task_event) as server:
         print(f"fake_sender  ws://{args.host or 'localhost'}:{server.port}{PATH}")

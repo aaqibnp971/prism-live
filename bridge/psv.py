@@ -15,9 +15,16 @@ What each value is, in this module and nowhere else:
   people, so nothing here scores anyone against a norm. "Recovery" is the share of the rise that
   has come back, not a slope: a 30 s slope follows the breath and steps on and off. Confidence
   never goes above 0.6; the experience script expects readiness to act weakly.
-- cognitive_load: from task events first and heart rate second. Task events arrive in prompt
-  3.2; until then there is no evidence at all, so it is 0.5 with confidence 0.0. Heart rate alone
-  is arousal again, and must never be shown as load.
+- cognitive_load: from task events first and heart rate second. Events are grouped into the
+  opportunities opened by ``split``. A lock, an abandon, or a miss before 85 % of the advertised
+  split interval says the person is still pursuing the target; a deadline miss without an abandon
+  says disengagement, not overload. The gap since the last participant-driven event fades
+  engagement after half an expected interval and to zero by one and a half. A gap in the whole
+  event stream instead fades confidence, because a dead task screen is not evidence of
+  disengagement. Raw dwell duration is deliberately not mapped: pointer and head control have
+  different dwell distributions.
+  Heart rate is only a 20 % secondary term after task evidence exists. On its own it is arousal
+  again and leaves cognitive_load at 0.5 with confidence exactly 0.0.
 - valence: 0.5 with confidence exactly 0.0, always. It cannot be read from a pulse. It is not a
   field of anything here: Values and Confidences answer it from module constants, and no
   constructor accepts it.
@@ -124,6 +131,20 @@ RISE_WEIGHT_BPM = (3.0, 8.0)  # a rise under 3 bpm says nothing about recovery; 
 
 # --- cognitive load ---
 TASK_WEIGHT = 0.8  # task events first, heart rate second
+TASK_WINDOW_MS = 30_000
+TASK_FULL_OPPORTUNITIES = 8  # distinct rounds, not raw abandons from one input device
+TASK_DEFAULT_INTERVAL_MS = 3_500
+TASK_INTERVAL_RANGE_MS = (1_000.0, 10_000.0)
+TASK_EARLY_MISS_FRACTION = 0.85
+TASK_INTERACTION_FRESH_INTERVALS = (0.5, 1.5)
+TASK_STREAM_FRESH_INTERVALS = (1.5, 4.0)
+TASK_OPPORTUNITY_LIMIT = 128  # over three times the physical maximum in the 75 s task
+TASK_DISENGAGED_VALUE = 0.20
+TASK_ENGAGED_BASE = 0.25
+TASK_DIFFICULTY_WEIGHT = 0.50
+TASK_STRAIN_WEIGHT = 0.25
+TASK_ABANDON_THEN_LOCK_STRAIN = 0.60
+TASK_ACTIVE_ABANDON_STRAIN = 0.50
 
 # --- confidence ---
 ACCEPTED_WINDOW_MS = 60_000
@@ -214,10 +235,27 @@ class HeartRateWindow:
 
 @dataclass(frozen=True)
 class TaskLoad:
-    """What task events say about cognitive load. Prompt 3.2 builds it; nothing does yet."""
+    """What task events say about cognitive load, plus diagnostics written to the session log."""
 
     value: float
     confidence: float
+    engagement: float = 0.0
+    difficulty: float = 0.0
+    strain: float = 0.0
+    stream_freshness: float = 0.0
+    opportunities: int = 0
+    interaction_gap_ms: float | None = None
+
+
+@dataclass
+class _TaskOpportunity:
+    """One split and what happened before the next split."""
+
+    start_ms: float
+    difficulty: float
+    interval_ms: float
+    abandoned: bool = False
+    outcome: str | None = None  # lock, engaged_miss, or timeout
 
 
 @dataclass(frozen=True)
@@ -349,13 +387,60 @@ class PsvModel:
         dwell_ms: float | None = None,
         split_interval_ms: float | None = None,
     ) -> bool:
-        """Stored for prompt 3.2, which turns them into a TaskLoad. Unused until then."""
+        """Add one contract task event, stamped with its bridge-arrival time on T_engine.
+
+        Arrival order is part of the evidence: a timeout ``miss`` immediately before the next
+        ``split`` is different from an early wrong-target miss. WebSocket preserves order, so a
+        backwards arrival time is rejected rather than silently reordering the stream.
+        """
         t, level = _num(t_engine_ms, *TIME_RANGE_MS), _num(difficulty, 0.0, 1.0)
         if t is None or level is None or not isinstance(event, str) or event not in TASK_EVENTS:
             return False
-        self._task_events.append(
-            (t, event, level, _num(dwell_ms, 0.0, 60_000.0), _num(split_interval_ms, 0.0, 60_000.0))
-        )
+        if self._task_last_arrival_ms is not None and t < self._task_last_arrival_ms:
+            return False
+        if dwell_ms is not None and _num(dwell_ms, 0.0, 60_000.0) is None:
+            return False
+        if split_interval_ms is not None and _num(split_interval_ms, 0.0, 60_000.0) is None:
+            return False
+
+        current = self._task_current
+        if event == "split":
+            # A missing timeout immediately before a split must not leave the preceding round
+            # unresolved forever. Preserve any real abandon time; the automatic boundary is not
+            # participant activity.
+            if current is not None and current.outcome is None:
+                current.outcome = "engaged_miss" if current.abandoned else "timeout"
+            current = _TaskOpportunity(t, level, _task_interval(split_interval_ms))
+            self._task_opportunities.append(current)
+            self._task_current = current
+            self._task_opportunity_count += 1
+            self._task_latest_interval_ms = current.interval_ms
+        elif current is None or current.outcome is not None:
+            # Orphan and post-resolution events cannot refresh engagement or confidence.
+            return False
+        elif event == "abandon":
+            current.abandoned = True
+            self._task_last_interaction_ms = t
+        elif event == "lock":
+            current.outcome = "lock"
+            self._task_last_interaction_ms = t
+        else:  # miss
+            early = t - current.start_ms < TASK_EARLY_MISS_FRACTION * current.interval_ms
+            current.outcome = "engaged_miss" if current.abandoned or early else "timeout"
+            # A wrong-target dwell is participant activity. An automatic deadline following an
+            # earlier abandon is not: retaining the abandon's timestamp lets the gap distinguish
+            # continued pursuit from somebody who stopped trying.
+            if early:
+                self._task_last_interaction_ms = t
+
+        # Dwell is deliberately not part of the mapping. The validation above only keeps direct
+        # callers as strict as the live path, which has already passed the message contract.
+        self._task_last_arrival_ms = t
+        self._task_last_event_ms = t
+        if self._task_first_event_ms is None:
+            self._task_first_event_ms = t
+        self._task_latest_difficulty = level
+        self._task_event_count += 1
         return True
 
     # --- windows, for the session state machine ---
@@ -515,8 +600,9 @@ class PsvModel:
                 + READINESS_LEVEL_SPAN * math.tanh(-(z_rmssd or 0.0))
             )
         scale = signal.factor * baseline_factor
+        task_load = self._task_load(now)
         load, load_confidence = blend_cognitive_load(
-            self._task_load(now),
+            task_load,
             NEUTRAL + 0.5 * math.tanh((z_hr or 0.0) / AROUSAL_Z_SCALE),
             scale * hr_fill,
         )
@@ -551,7 +637,15 @@ class PsvModel:
             ("silence_factor", signal.silence_factor),
             ("recovery_factor", signal.recovery_factor),
             ("contact_factor", signal.contact_factor),
-            ("task_events", float(len(self._task_events))),
+            ("task_events", float(self._task_event_count)),
+            ("task_load", task_load.value if task_load else None),
+            ("task_load_confidence", task_load.confidence if task_load else None),
+            ("task_engagement", task_load.engagement if task_load else None),
+            ("task_difficulty", task_load.difficulty if task_load else None),
+            ("task_strain", task_load.strain if task_load else None),
+            ("task_stream_freshness", task_load.stream_freshness if task_load else None),
+            ("task_opportunities", float(task_load.opportunities) if task_load else None),
+            ("task_interaction_gap_ms", task_load.interaction_gap_ms if task_load else None),
         )
         return PsvEstimate(
             t_ms=now,
@@ -581,7 +675,19 @@ class PsvModel:
         self._peak: float | None = None  # the highest heart rate since the baseline was ready
         self._z_rmssd: float | None = None  # held
         self._z_rmssd_now = False  # whether the latest packet could compute it
-        self._task_events: deque[tuple] = deque(maxlen=512)
+        # Store the event grammar, not every raw event. Head pose can emit far more abandons than
+        # a mouse; coalescing them into their opportunity prevents input frequency from evicting
+        # split boundaries or buying confidence.
+        self._task_opportunities: deque[_TaskOpportunity] = deque(maxlen=TASK_OPPORTUNITY_LIMIT)
+        self._task_current: _TaskOpportunity | None = None
+        self._task_event_count = 0
+        self._task_opportunity_count = 0
+        self._task_first_event_ms: float | None = None
+        self._task_last_event_ms: float | None = None
+        self._task_last_arrival_ms: float | None = None
+        self._task_last_interaction_ms: float | None = None
+        self._task_latest_difficulty = 0.0
+        self._task_latest_interval_ms = TASK_DEFAULT_INTERVAL_MS
 
     def _checked(
         self, raw: object, now: float, contact: bool | None
@@ -734,11 +840,103 @@ class PsvModel:
         tuning = self._tuning
         return 1.0 - _ramp(silence_ms, tuning.interpolate_after_ms, tuning.grace_ms)
 
-    def _task_load(self, _now: float) -> TaskLoad | None:
-        return None  # prompt 3.2: build a TaskLoad from self._task_events
+    def _task_load(self, now: float) -> TaskLoad | None:
+        """Infer load without turning every miss into overload.
+
+        ``split`` events define opportunities. A lock is engaged; an abandon on either half is
+        engaged but struggling; and a miss is engaged only when an abandon preceded it or it
+        arrived before
+        85 % of the round's advertised interval. A no-abandon miss at the deadline is the browser's
+        automatic timeout and therefore disengagement. Repeated abandons inside one opportunity do
+        not buy more confidence, because mouse and head input generate different counts.
+
+        The task value when engaged is ``.25 + .50*difficulty + .25*strain``. Strain is 1 for an
+        engaged miss, .60 for a lock after an abandon, and .50 while an abandoned round remains
+        unresolved. Disengaged value is .20. Engagement blends between those values and fades from
+        half to one and a half expected intervals since the last participant-driven event.
+        Confidence rises over eight distinct opportunities and is independently faded when the
+        *entire* event stream goes quiet from 1.5 to 4 expected intervals. Thus a running stream of
+        timeout misses means low load with confidence; a dead task screen means no confidence. With
+        no event at all this returns None, preserving cognitive-load confidence at exactly zero even
+        if heart rate rises.
+        """
+        if self._task_first_event_ms is None or now < self._task_first_event_ms:
+            return None
+        interval_ms = self._task_latest_interval_ms
+        stream_gap_ms = max(0.0, now - self._task_last_event_ms)
+        stream_freshness = 1.0 - _ramp(
+            stream_gap_ms / interval_ms, *TASK_STREAM_FRESH_INTERVALS
+        )
+
+        interaction_anchor = (
+            self._task_last_interaction_ms
+            if self._task_last_interaction_ms is not None
+            else self._task_first_event_ms
+        )
+        interaction_gap_ms = max(0.0, now - interaction_anchor)
+        interaction_freshness = 1.0 - _ramp(
+            interaction_gap_ms / interval_ms, *TASK_INTERACTION_FRESH_INTERVALS
+        )
+
+        recent = [
+            opportunity
+            for opportunity in self._task_opportunities
+            if now - TASK_WINDOW_MS < opportunity.start_ms <= now
+        ]
+        engagement_samples: list[float] = []
+        strain_samples: list[float] = []
+        for opportunity in recent:
+            if opportunity.outcome == "timeout":
+                engagement_samples.append(0.0)
+            elif opportunity.outcome == "engaged_miss":
+                engagement_samples.append(1.0)
+                strain_samples.append(1.0)
+            elif opportunity.outcome == "lock":
+                engagement_samples.append(1.0)
+                strain_samples.append(
+                    TASK_ABANDON_THEN_LOCK_STRAIN if opportunity.abandoned else 0.0
+                )
+            elif opportunity.abandoned:
+                engagement_samples.append(1.0)
+                strain_samples.append(TASK_ACTIVE_ABANDON_STRAIN)
+
+        observed_engagement = (
+            sum(engagement_samples) / len(engagement_samples) if engagement_samples else 0.5
+        )
+        engagement = _unit(observed_engagement * interaction_freshness, 0.0)
+        strain = _unit(
+            sum(strain_samples) / len(strain_samples) if strain_samples else 0.0,
+            0.0,
+        )
+        difficulty = self._task_latest_difficulty
+        engaged_value = (
+            TASK_ENGAGED_BASE
+            + TASK_DIFFICULTY_WEIGHT * difficulty
+            + TASK_STRAIN_WEIGHT * strain
+        )
+        value = TASK_DISENGAGED_VALUE + engagement * (engaged_value - TASK_DISENGAGED_VALUE)
+
+        opportunity_count = self._task_opportunity_count
+        sample_factor = min(1.0, opportunity_count / TASK_FULL_OPPORTUNITIES)
+        confidence = sample_factor * stream_freshness
+        return TaskLoad(
+            value=_unit(value, NEUTRAL),
+            confidence=_unit(confidence, 0.0),
+            engagement=engagement,
+            difficulty=difficulty,
+            strain=strain,
+            stream_freshness=stream_freshness,
+            opportunities=opportunity_count,
+            interaction_gap_ms=interaction_gap_ms,
+        )
 
 
 _CAPTURE_PHASES = (BaselinePhase.CAPTURING, BaselinePhase.AWAITING)
+
+
+def _task_interval(value: object) -> float:
+    """A plausible advertised round interval, or the middle of the authored ramp."""
+    return _num(value, *TASK_INTERVAL_RANGE_MS) or TASK_DEFAULT_INTERVAL_MS
 
 
 def blend_cognitive_load(

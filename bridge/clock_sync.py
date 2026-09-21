@@ -1,8 +1,9 @@
 """The client side of the clock exchange (contract §2, ``clock``).
 
-Every client needs this arithmetic before it can render anything at t_play. The web screens
-use web/shared/clock_sync.js, a line-for-line port; tests/test_clock_sync.py checks that both
-give identical offsets from the same pongs. Unity will need a third copy.
+Every client needs this arithmetic before it can render anything at t_play. The web screens use
+the shared implementation in web/shared/clock_sync_core.js (with clock_sync.js as its ES-module
+facade); tests/test_clock_sync.py checks that it and this file give identical offsets from the same
+pongs. Unity will need a third copy.
 
 From the contract:
 

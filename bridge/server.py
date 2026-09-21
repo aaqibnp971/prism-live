@@ -17,6 +17,8 @@ Policy where the contract leaves the laptop to decide:
   never rendered.
 - A client more than SLOW_CLIENT_BYTES behind is closed with 1013. It reconnects; until then
   it shows its disconnected marker, which is the contract's behaviour for a lost connection.
+- Only one configured task-event client owns the input stream at a time. A second producer is
+  refused, and ownership is released when the first connection closes so a reload can take over.
 
 Run from the repo root as a module:  python -m bridge.server
 """
@@ -45,6 +47,7 @@ from websockets.http11 import Request, Response
 
 from bridge.clock import t_engine_ms
 from bridge.contract import (
+    CLIENTS,
     MIN_LEAD_MS,
     PATH,
     PORT,
@@ -101,7 +104,10 @@ class _Refuse(Exception):
 class LiveServer:
     """Serve the link. Use from the event loop's thread; other threads use publish_threadsafe.
 
-    ``on_task_event(msg, client)`` is called on the loop thread for each valid task event.
+    ``on_task_event(msg, client, arrival_ms)`` is called on the loop thread for each valid task
+    event. It returns true when the event was accepted; the first accepted event binds that client
+    as the sole producer until it disconnects. ``arrival_ms`` is captured before parsing, on the
+    server's T_engine clock; the message's ``t_client`` is never substituted for it.
     """
 
     def __init__(
@@ -111,15 +117,19 @@ class LiveServer:
         host: str | None = None,  # None: every interface, IPv4 and IPv6
         port: int = PORT,
         clock: Callable[[], float] = t_engine_ms,
-        on_task_event: Callable[[dict, Client], None] | None = None,
+        on_task_event: Callable[[dict, Client, float], bool] | None = None,
+        task_event_client: str = "task-screen",
     ) -> None:
         if host is None and port == 0:
             # Every interface binds IPv4 and IPv6 separately, and each would pick its own port.
             raise ValueError("port 0 needs an explicit host")
+        if task_event_client not in CLIENTS:
+            raise ValueError(f"task_event_client must be one of {', '.join(CLIENTS)}")
         self.log = log
         self.host = host
         self.clock = clock
         self.on_task_event = on_task_event
+        self.task_event_client = task_event_client
         self.stats = Stats()
         self._port = port
         self._server: Server | None = None
@@ -127,6 +137,7 @@ class LiveServer:
         self._clients: dict[ServerConnection, Client] = {}  # past hello: these get the stream
         self._connections = 0
         self._closing: set[asyncio.Task] = set()
+        self._task_event_producer: Client | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -162,6 +173,10 @@ class LiveServer:
     @property
     def clients(self) -> list[Client]:
         return list(self._clients.values())
+
+    @property
+    def task_event_producer(self) -> Client | None:
+        return self._task_event_producer
 
     async def wait_for_client(self, poll_s: float = 0.05) -> None:
         while not self._clients:
@@ -240,6 +255,9 @@ class LiveServer:
             raise
         finally:
             self._clients.pop(connection, None)
+            if self._task_event_producer is client:
+                self._task_event_producer = None
+                self.log.event("task_event_producer_released", client=client.label)
             # Both sides: websockets fails a connection itself (keepalive timeout 1011, an
             # oversized frame 1009) without waiting for the peer's close, which then reads 1006.
             sent, rcvd = connection.protocol.close_sent, connection.protocol.close_rcvd
@@ -289,11 +307,25 @@ class LiveServer:
         self.log.message("in", msg, client.label, t)
         if msg["type"] == "hello":
             raise _Refuse(CloseCode.POLICY_VIOLATION, "hello is sent once, on connect")
-        if self.on_task_event is not None:
-            try:
-                self.on_task_event(msg, client)
-            except Exception as error:  # a handler bug must not drop the task screen
-                self.log.event("task_event_handler_failed", client=client.label, error=repr(error))
+        if client.kind != self.task_event_client:
+            raise _Refuse(
+                CloseCode.POLICY_VIOLATION,
+                f"task_event belongs to {self.task_event_client}",
+            )
+        if self._task_event_producer is not None and self._task_event_producer is not client:
+            raise _Refuse(CloseCode.POLICY_VIOLATION, "another task-event producer is active")
+        if self.on_task_event is None:
+            raise RuntimeError("task_event handler is not configured")
+        try:
+            accepted = self.on_task_event(msg, client, t)
+        except Exception as error:
+            # Let the connection close with 1011: a visibly disconnected task is safer than a
+            # screen that claims to be connected while every cognitive-load event is discarded.
+            self.log.event("task_event_handler_failed", client=client.label, error=repr(error))
+            raise
+        if accepted and self._task_event_producer is None:
+            self._task_event_producer = client
+            self.log.event("task_event_producer_bound", client=client.label)
 
     def _parse(self, client: Client, data: str | bytes, t: float) -> dict:
         self.stats.received += 1
@@ -345,10 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         # asynchronously yield each raw HRM characteristic value once.
         packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed)
 
-        def task_event(msg: dict, client: Client) -> None:
-            print(f"{client.label}: task_event {msg['event']}")
-
-        server = LiveServer(log, host=args.host, port=args.port, on_task_event=task_event)
+        server = LiveServer(log, host=args.host, port=args.port)
         bridge = LiveLoop(
             packet_source,
             server.publish,
@@ -359,6 +388,14 @@ def main(argv: list[str] | None = None) -> int:
             beat_sink=host.shim,
             phase=phase,
         )
+
+        def task_event(msg: dict, client: Client, arrival_ms: float) -> bool:
+            accepted = bridge.on_task_event(arrival_ms, msg)
+            suffix = "" if accepted else " (ignored)"
+            print(f"{client.label}: task_event {msg['event']}{suffix}")
+            return accepted
+
+        server.on_task_event = task_event
         log.event("engine_scene_loaded", elapsed_ms=host.scene_load_ms, manifest=args.scene)
         started = False
         runtime: asyncio.Task | None = None

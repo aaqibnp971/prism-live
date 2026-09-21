@@ -469,6 +469,70 @@ does not provide; pointer control and head-reticle control are retuned against r
 
 ---
 
+## Cognitive load from task events (prompt 3.2)
+
+**Handled by:** `bridge/psv.py`, from events stamped at WebSocket arrival on `T_engine`. The mapping
+is deliberately based on the event grammar rather than on mouse-specific dwell durations.
+
+The chosen rule is:
+
+- Each `split` opens one opportunity. A `lock` proves active pursuit. An `abandon` on either the
+  moving half or a distractor also proves active pursuit, but with strain: the reticle reached a
+  valid half and left before its dwell completed.
+- A `miss` before 85 % of that opportunity's advertised split interval is a wrong-target dwell, so
+  it proves active pursuit and high strain. A later miss after an `abandon` also means the person
+  was still chasing. A deadline miss with no abandon is the task's automatic timeout and is treated
+  as disengagement, not overload.
+- Participant engagement stays fully fresh for half an advertised interval after the last `lock`,
+  `abandon` or wrong-target miss, then falls linearly to zero by one and a half intervals. An
+  automatic deadline miss never refreshes that timestamp, even when an earlier abandon makes the
+  round an engaged miss. This is the event-gap signal that separates an early attempt followed by
+  silence from someone still chasing near the deadline.
+- A separate gap in the whole event stream is a task-screen failure, not evidence about the person.
+  It holds confidence through 1.5 advertised intervals and fades it to zero by four intervals.
+- Over the last 30 s, disengagement maps to 0.20. Engaged load is
+  `0.25 + 0.50 × difficulty + 0.25 × strain`; strain is 1.0 for an engaged miss, 0.60 for a lock
+  after an abandon, and 0.50 while an abandoned opportunity remains unresolved. Engagement blends
+  between the engaged value and 0.20.
+- Confidence grows from 0 to 1 across eight distinct split opportunities, rather than raw event or
+  abandon count, and is multiplied by whole-stream freshness. Task load supplies 80 % of the final
+  cognitive-load value and heart rate supplies 20 %. With no task event, the value is neutral and
+  confidence is **exactly 0.0** regardless of heart rate; heart rate alone is arousal, not load.
+
+There is an unavoidable ambiguity: a person who is overloaded and becomes completely motionless
+looks the same as a person who has disengaged. The implementation chooses the conservative answer,
+low load, because the stream contains no evidence of continued pursuit. The diagnostic components
+(`task_engagement`, `task_strain`, freshness, opportunity count and interaction gap) are written to
+the PSV session log so that this choice can be checked against observed runs.
+
+The current event distribution comes from a mouse. Head pose in VR will change dwell timing,
+wrong-target misses and especially abandon frequency. Raw `dwell_ms` is therefore not used, timing
+tests are expressed as a fraction of each advertised split interval, and repeated abandons within
+one opportunity are coalesced into that opportunity and do not raise confidence or evict its split
+boundary. Those protections do not prove the mapping transfers:
+the 85 % boundary, freshness windows, strain weights and eight-opportunity confidence ramp remain
+provisional until Week E runs with head control. Arrival-time classification also assumes the local
+WebSocket does not add interval-scale jitter.
+
+---
+
+## The spectator's held trace (prompt 3.3)
+
+**Handled by:** `web/spectator/`. The frozen contract carries live beat and state messages, but no
+history. The screen can therefore hold the completed trace through the 20-second reset and following
+idle only while that browser page remains open. Reloading or opening a second spectator during idle
+produces the honest cold-idle view, with no trace, rather than inventing or replaying one. A page
+opened during a session starts its trace with the next scheduled live beat, so its final held trace
+contains only the part it actually observed. Persisting or reconstructing a trace would require a
+future, explicitly versioned contract change.
+
+The screen judges the feed lost after **2.5 seconds without a state message**, against the host's
+fixed 2-second state cadence. It freezes the last verified view, cancels pending beat draws and puts
+a full-width red marker over it. This is intentionally aggressive for an exhibition display; verify
+on the booth network that normal scheduling jitter does not create false disconnects.
+
+---
+
 ## The PSV, for Week B and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns

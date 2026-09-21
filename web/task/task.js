@@ -18,7 +18,7 @@
   "use strict";
 
   const VERSION = 1;
-  const BUILD = "3.1.0";
+  const BUILD = "3.2.0";
   const LOAD_DURATION_MS = 75_000;
   const DEFAULT_DISTANCE_CM = 60;
   const DEFAULT_DIAGONAL_IN = 27;
@@ -297,7 +297,10 @@
         hoveredId === "moving" || this.round.decoys.some((decoy) => decoy.id === hoveredId);
       const nextHovered = valid ? hoveredId : null;
       if (nextHovered !== this.hoveredId) {
-        if (this.hoveredId === "moving" && this.hoverStartedClientMs !== null) {
+        // Leaving either half before dwell completes is evidence that the person is still
+        // pursuing the task. Restricting abandon to the moving half would make a brief chase of a
+        // distractor invisible and its later automatic timeout look like disengagement.
+        if (this.hoveredId !== null && this.hoverStartedClientMs !== null) {
           const heldMs = nowMs - this.hoverStartedClientMs;
           if (heldMs > 0 && heldMs < rampAt(elapsedMs, this.misses).dwellMs) {
             this.#emit("abandon", nowMs, elapsedMs);

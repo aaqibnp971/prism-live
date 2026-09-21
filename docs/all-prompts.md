@@ -430,6 +430,23 @@ JavaScript tests run through pytest.
 >
 > The stub is in place: `PsvModel.add_task_event(t_engine_ms, event, difficulty, dwell_ms, split_interval_ms)` stores events, `PsvModel._task_load` returns nothing yet, and `blend_cognitive_load` already combines a `TaskLoad` with heart rate so that heart rate never adds confidence alone. Stamp each event with its arrival time on T_engine: `task_event` carries only the client's clock, and the server's `on_task_event(msg, client)` callback does not pass the arrival time yet.
 
+**Added 20 September.** A miss alone is ambiguous: struggling while still chasing is load, while
+having stopped trying is not. Use `abandon` and the gap between participant-driven events to
+separate them, state the rule in code and `docs/known-limits.md`, and keep cognitive-load confidence
+at exactly zero until task events arrive. The browser currently supplies mouse events, while the
+shipping VR input is head pose; do not tune the mapping to raw mouse dwell and abandon counts, and
+record that transfer risk in `docs/known-limits.md`.
+
+**Implemented 20 September.** `bridge/server.py` stamps each valid event with its arrival on
+`T_engine`; `bridge/live.py` accepts it only for the current session during LOAD; and
+`bridge/psv.py` groups events into split opportunities and applies the documented engagement rule.
+Task evidence carries 80 % of the value and heart rate 20 %, but heart rate cannot create task
+confidence. Confidence grows over distinct opportunities and falls to zero if the event stream
+stops. One configured task screen owns the event stream at a time, a reconnect can take over after
+it closes, and a handler fault visibly disconnects the screen rather than silently discarding load
+evidence. The inference, exact zero-confidence gate, session reset, arrival stamping and live-loop
+scope have deterministic tests. The chosen rule and its transfer limits are recorded below.
+
 ## 3.3 Spectator screen, fed live
 
 > The spectator screen design exists but is a mock with hardcoded data. Rebuild it in `web/spectator/` reading the live WebSocket feed.
@@ -446,6 +463,21 @@ JavaScript tests run through pytest.
 > - the trace samples per beat, not once per second
 >
 > No simulation mode in this build. None. A screen that looks live while playing a canned curve is undetectable from the room and is the worst failure this project can have.
+
+**Added 20 September.** Idle is a designed exhibition state, not an empty dashboard: cold idle has
+no progress, trace or previous visitor readings, while idle after a completed session keeps only the
+last trace as required by prompt 3.5. The model resets between visitors, so no PSV confidence is
+carried over. A lost live feed freezes the last verified view but adds an unmistakable hall-visible
+marker within a couple of seconds.
+
+**Implemented 20 September.** `web/spectator/` is a live-only, build-free WebSocket client. Host
+state alone selects the segment and progress; accepted beat messages add one trace sample at their
+scheduled `t_play`; the heart-rate axis follows the observed data; and valence remains neutral,
+zero-confidence, zero-authority and labelled NOT READABLE. It has separate cold and held-trace idle
+views, clears the held trace only on the next host-declared baseline, and never exposes stale live
+readings in idle. A socket failure, invalid message, or 2.5 s without a state freezes the view under
+a full-width red lost-feed banner and reconnects without synthesising data. Deterministic JavaScript
+tests run through pytest; operating notes are in `web/spectator/README.md`.
 
 ## 3.4 Ambient field for regulate and resolve
 

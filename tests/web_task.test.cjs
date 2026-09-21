@@ -113,6 +113,16 @@ test("split, abandon, lock and wrong-target miss use contract-shaped events", ()
   assert.equal(wrong.round.outcome, "miss");
 });
 
+test("leaving a distractor before dwell emits abandon as active pursuit", () => {
+  const events = [];
+  const task = new Task.LoadTask({ emit: (event) => events.push(event), random: () => 0 });
+  task.start({ session: "S-20260919-0007", nowMs: 0 });
+  task.tick(5500);
+  task.tick(5501, "decoy-0");
+  task.tick(5601, null);
+  assert.deepEqual(events.map((event) => event.event), ["split", "abandon"]);
+});
+
 test("the live gate starts only on host LOAD, freezes, resumes, and stops on exit", () => {
   const task = new Task.LoadTask({ emit() {} });
   const gate = new Task.StateGate(task);

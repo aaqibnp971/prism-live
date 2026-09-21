@@ -32,6 +32,13 @@ def beat(session, t_play, quality="ok", seq=1):
             "rr_ms": 800.0, "hr_bpm": 75.0, "quality": quality}  # fmt: skip
 
 
+def task_event(session, event="split"):
+    return {
+        "type": "task_event", "v": 1, "session": session, "t_client": 40_530.5,
+        "event": event, "dwell_ms": 470, "split_interval_ms": 3_100, "difficulty": 0.4,
+    }  # fmt: skip
+
+
 def with_server(tmp_path, scenario, **kwargs):
     """Run scenario(server, url) against a LiveServer on a free port; return the log lines.
 
@@ -218,22 +225,106 @@ def test_task_events_reach_the_handler_and_the_log(tmp_path):
     async def scenario(server, url):
         async with connect(url) as ws:
             await ws.send(encode(dict(HELLO, client="task-screen")))
-            await ws.send(encode({
-                "type": "task_event", "v": 1, "session": server.log.session, "t_client": 40530.5,
-                "event": "lock", "dwell_ms": 470, "split_interval_ms": 3100, "difficulty": 0.4,
-            }))  # fmt: skip
+            await ws.send(encode(task_event(server.log.session, "lock")))
             for _ in range(50):
                 if received:
                     break
                 await asyncio.sleep(0.02)
 
+    def receive(msg, client, arrival):
+        received.append((msg["event"], client.label, arrival))
+        return True
+
     lines = with_server(
         tmp_path,
         scenario,
-        on_task_event=lambda msg, client: received.append((msg["event"], client.label)),
+        on_task_event=receive,
     )
-    assert received == [("lock", "c1/task-screen")]
+    assert len(received) == 1
+    event, client, arrival = received[0]
+    assert (event, client) == ("lock", "c1/task-screen")
+    assert arrival >= 60_000
     assert any(r.get("msg", {}).get("type") == "task_event" for r in lines)
+
+
+def test_only_the_configured_client_kind_can_send_task_events(tmp_path):
+    received = []
+
+    async def scenario(server, url):
+        async with connect(url) as ws:
+            await ws.send(encode(HELLO))  # spectator
+            await ws.send(encode(task_event(server.log.session)))
+            code, reason = await closed_with(ws)
+            assert code == 1008 and "task-screen" in reason
+
+    def receive(msg, client, arrival):
+        received.append(msg)
+        return True
+
+    with_server(tmp_path, scenario, on_task_event=receive)
+    assert received == []
+
+
+def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path):
+    received = []
+
+    async def scenario(server, url):
+        first, second = await connect(url), await connect(url)
+        try:
+            hello = encode(dict(HELLO, client="task-screen"))
+            await first.send(hello)
+            await second.send(hello)
+            await first.send(encode(task_event(server.log.session)))
+            for _ in range(50):
+                if server.task_event_producer is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert server.task_event_producer.label == "c1/task-screen"
+
+            await second.send(encode(task_event(server.log.session)))
+            code, reason = await closed_with(second)
+            assert code == 1008 and "another task-event producer" in reason
+        finally:
+            await first.close()
+            await second.close()
+
+        for _ in range(50):
+            if server.task_event_producer is None:
+                break
+            await asyncio.sleep(0.01)
+        assert server.task_event_producer is None
+
+        async with connect(url) as replacement:
+            await replacement.send(encode(dict(HELLO, client="task-screen")))
+            await replacement.send(encode(task_event(server.log.session)))
+            for _ in range(50):
+                if len(received) == 2:
+                    break
+                await asyncio.sleep(0.01)
+
+    def receive(msg, client, arrival):
+        received.append(client.label)
+        return True
+
+    lines = with_server(tmp_path, scenario, on_task_event=receive)
+    assert received == ["c1/task-screen", "c3/task-screen"]
+    assert sum(r.get("event") == "task_event_producer_bound" for r in lines) == 2
+    assert sum(r.get("event") == "task_event_producer_released" for r in lines) == 2
+
+
+def test_a_task_handler_failure_visibly_disconnects_the_screen(tmp_path):
+    async def scenario(server, url):
+        async with connect(url) as ws:
+            await ws.send(encode(dict(HELLO, client="task-screen")))
+            await ws.send(encode(task_event(server.log.session)))
+            assert (await closed_with(ws))[0] == 1011
+
+    def broken_handler(msg, client, arrival):
+        raise RuntimeError("PSV task handler broke")
+
+    lines = with_server(tmp_path, scenario, on_task_event=broken_handler)
+    assert any(r.get("event") == "task_event_handler_failed" for r in lines)
+    assert any(r.get("event") == "handler_failed" for r in lines)
 
 
 def test_a_client_too_far_behind_is_closed(tmp_path, monkeypatch):
