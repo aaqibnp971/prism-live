@@ -1,5 +1,5 @@
 /*
- * Prism Live spectator state, prompt 3.3.
+ * Prism Live spectator state and trace reveal, prompts 3.3 / 3.5.
  *
  * This file contains no DOM, timers, fixture data or fallback animation. It turns only validated
  * contract messages into a view. In particular, idle never exposes the previous visitor's live
@@ -14,10 +14,10 @@
   "use strict";
 
   const VERSION = 1;
-  const BUILD = "3.3.1";
+  const BUILD = "3.5.0";
   const STATE_STALE_MS = 2_500;
   const FULL_RESET_MS = 20_000;
-  const TRACE_LIMIT = 1_024;
+  const REVEAL_REMAINING_MS = 20_000;
   const DIMENSIONS = Object.freeze(["arousal", "valence", "cognitive_load", "readiness"]);
   const SEGMENTS = Object.freeze(["idle", "baseline", "load", "regulate", "resolve", "reset"]);
   const TRACE_SEGMENTS = new Set(["baseline", "load", "regulate", "resolve"]);
@@ -38,6 +38,11 @@
       this.traceSession = null;
       this.heldTrace = null;
       this.heldSession = null;
+      this.heldSummary = null;
+      this.boundaries = [];
+      this.restingBpm = null;
+      this.authorityHistory = Object.fromEntries(DIMENSIONS.map((key) => [key, 0]));
+      this.partialHistory = false;
       this.lastBeatSeq = 0;
       this.stateSeqSession = null;
       this.lastStateSeq = 0;
@@ -57,10 +62,31 @@
         // trace held through idle is cleared (prompt 3.5).
         this.heldTrace = null;
         this.heldSession = null;
+        this.heldSummary = null;
         this.#startTrace(message.session);
       } else if (TRACE_SEGMENTS.has(message.segment) && this.traceSession !== message.session) {
         // A screen opened mid-session has no past samples to invent; it starts with the next beat.
         this.#startTrace(message.session);
+      }
+
+      if (this.traceSession === message.session && (TRACE_SEGMENTS.has(message.segment) || message.segment === "reset")) {
+        if (this.boundaries.length === 0) {
+          this.partialHistory = message.segment !== "baseline" || message.segment_elapsed_ms > 0;
+        }
+        if (this.boundaries.at(-1)?.segment !== message.segment) {
+          // Classify by scheduled play time against HOST boundaries, not packet arrival or a
+          // guessed nominal timeline. A delayed boundary can correct a beat's classification.
+          this.boundaries.push(Object.freeze({
+            segment: message.segment,
+            start: message.t_engine - message.segment_elapsed_ms,
+          }));
+        }
+        if (TRACE_SEGMENTS.has(message.segment)) {
+          this.restingBpm = message.hr_base; // Null clears it; never substitute first/average HR.
+          for (const key of DIMENSIONS) {
+            this.authorityHistory[key] = Math.max(this.authorityHistory[key], message.authority[key]);
+          }
+        }
       }
 
       this.state = copyState(message);
@@ -71,10 +97,12 @@
         message.segment === "reset" &&
         message.segment_nominal_ms === FULL_RESET_MS &&
         this.traceSession === message.session &&
-        this.trace.length > 0
+        this.trace.length > 0 &&
+        this.heldSession !== message.session
       ) {
         this.heldTrace = copyTrace(this.trace);
         this.heldSession = message.session;
+        this.heldSummary = this.#summary();
       }
       return true;
     }
@@ -99,8 +127,14 @@
           seq: message.seq,
         }),
       );
-      if (this.trace.length > TRACE_LIMIT) this.trace.shift();
+      // Retain the entire host session, not a rolling window that loses "sat down at".
       return true;
+    }
+
+    markInterrupted() {
+      // No reconstruction after a reconnect. This flag appears only when a valid state resumes
+      // rendering; the lost-feed screen itself stays frozen. Completed held summaries stay fixed.
+      if (this.state && TRACE_SEGMENTS.has(this.state.segment)) this.partialHistory = true;
     }
 
     view() {
@@ -109,14 +143,14 @@
 
       if (state.segment === "idle") {
         if (this.heldTrace?.length) {
-          return passiveView("idle-trace", state, this.heldTrace, this.heldSession);
+          return passiveView("idle-trace", state, this.heldTrace, this.heldSession, this.heldSummary);
         }
         return passiveView("idle-cold", state, [], null);
       }
 
       if (state.segment === "reset") {
         if (this.heldTrace?.length) {
-          return passiveView("trace-hold", state, this.heldTrace, this.heldSession);
+          return passiveView("trace-hold", state, this.heldTrace, this.heldSession, this.heldSummary);
         }
         return passiveView("resetting", state, [], null);
       }
@@ -139,6 +173,32 @@
           dimensions: dimensionViews(state),
         }),
         trace: copyTrace(this.trace),
+        reveal: state.segment === "resolve" && state.segment_nominal_ms > 0 &&
+          state.segment_nominal_ms - state.segment_elapsed_ms <= REVEAL_REMAINING_MS,
+        summary: this.#summary(),
+      });
+    }
+
+    #summary() {
+      // Numbers describe the plotted, non-rejected beats, not the 2 s state HR or drop_bpm.
+      // A high baseline/regulate reading must NEVER inflate the task's peak.
+      const segmentAt = (t) => this.boundaries.filter((b) => b.start <= t)
+        .sort((a, b) => a.start - b.start).at(-1)?.segment;
+      const load = this.trace.filter((sample) => segmentAt(sample.tPlay) === "load");
+      const resolve = this.trace.filter((sample) => segmentAt(sample.tPlay) === "resolve");
+      const first = this.trace[0];
+      // If the screen joined after baseline, the person's first reading is unknown.
+      const satDownAt = first && segmentAt(first.tPlay) === "baseline" ? shownBpm(first.bpm) : null;
+      const peakedAt = load.length ? shownBpm(Math.max(...load.map((sample) => sample.bpm))) : null;
+      const leftAt = resolve.length ? shownBpm(resolve.at(-1).bpm) : null;
+      return Object.freeze({
+        satDownAt, peakedAt, leftAt,
+        // Subtract the SAME one-decimal numbers on screen. No threshold, clamp or verdict.
+        difference: peakedAt === null || leftAt === null ? null :
+          (Math.round(peakedAt * 10) - Math.round(leftAt * 10)) / 10,
+        restingBpm: this.restingBpm,
+        authority: Object.freeze({ ...this.authorityHistory }),
+        partialHistory: this.partialHistory,
       });
     }
 
@@ -146,6 +206,10 @@
       this.trace = [];
       this.traceSession = session;
       this.lastBeatSeq = 0;
+      this.boundaries = [];
+      this.restingBpm = null;
+      this.authorityHistory = Object.fromEntries(DIMENSIONS.map((key) => [key, 0]));
+      this.partialHistory = false;
     }
   }
 
@@ -163,7 +227,7 @@
     });
   }
 
-  function passiveView(kind, state, trace, traceSession) {
+  function passiveView(kind, state, trace, traceSession, summary = null) {
     return Object.freeze({
       kind,
       session: state.session,
@@ -174,6 +238,7 @@
       readings: null,
       trace: copyTrace(trace),
       traceSession,
+      summary,
     });
   }
 
@@ -212,10 +277,15 @@
     );
   }
 
-  function traceScale(samples) {
+  function shownBpm(value) {
+    return Math.round(value * 10) / 10;
+  }
+
+  function traceScale(samples, restingBpm = null) {
     const values = samples
       .map((sample) => (typeof sample === "number" ? sample : sample?.bpm))
       .filter((value) => finite(value) && value > 0);
+    if (finite(restingBpm) && restingBpm > 0) values.push(restingBpm);
     if (values.length === 0) return null;
 
     let low = Math.min(...values);
@@ -247,9 +317,9 @@
     return Object.freeze({ readable, fill: readable ? dimension.value : 0, left, width: right - left });
   }
 
-  function tracePoints(samples, width, height, inset = 12) {
-    const scale = traceScale(samples);
-    if (scale === null || !(width > 2 * inset) || !(height > 2 * inset)) return Object.freeze([]);
+  function tracePoints(samples, width, height, inset = 12, restingBpm = null) {
+    const scale = traceScale(samples, restingBpm);
+    if (samples.length === 0 || scale === null || !(width > 2 * inset) || !(height > 2 * inset)) return Object.freeze([]);
     const first = samples[0].tPlay;
     const last = samples.at(-1).tPlay;
     const duration = Math.max(1, last - first);
@@ -267,6 +337,12 @@
         });
       }),
     );
+  }
+
+  function referenceY(samples, restingBpm, height, inset = 12) {
+    if (!(finite(restingBpm) && restingBpm > 0) || !(height > 2 * inset)) return null;
+    const scale = traceScale(samples, restingBpm);
+    return inset + (1 - (restingBpm - scale.minimum) / (scale.maximum - scale.minimum)) * (height - 2 * inset);
   }
 
   function linkState(socketOpen, hasState, lastStateAt, now) {
@@ -399,7 +475,7 @@
     BUILD,
     STATE_STALE_MS,
     FULL_RESET_MS,
-    TRACE_LIMIT,
+    REVEAL_REMAINING_MS,
     DIMENSIONS,
     SEGMENT_COPY,
     SpectatorModel,
@@ -409,6 +485,7 @@
     segmentProgress,
     tracePoints,
     traceScale,
+    referenceY,
     validBeat,
     validPong,
     validState,

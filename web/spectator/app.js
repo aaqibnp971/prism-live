@@ -1,4 +1,4 @@
-/* Live-only browser shell for the Prism spectator screen (prompt 3.3). */
+/* Live-only browser shell for the Prism spectator screen (prompts 3.3 / 3.5). */
 
 (function runSpectator() {
   "use strict";
@@ -130,6 +130,7 @@
 
     connection.addEventListener("close", () => {
       if (socket !== connection) return;
+      model.markInterrupted();
       socket = null;
       failedOnce = true;
       feedFrozen = hasState;
@@ -241,8 +242,9 @@
     document.body.dataset.view = view.kind;
     elements.idleCold.hidden = view.kind !== "idle-cold" && view.kind !== "waiting";
     elements.resettingPanel.hidden = view.kind !== "resetting";
-    elements.traceHold.hidden = view.kind !== "idle-trace" && view.kind !== "trace-hold";
-    elements.activeDashboard.hidden = view.kind !== "active";
+    const held = view.kind === "idle-trace" || view.kind === "trace-hold";
+    elements.traceHold.hidden = !held && !view.reveal;
+    elements.activeDashboard.hidden = view.kind !== "active" || view.reveal;
     elements.segmentStrip.hidden = view.kind !== "active";
     elements.segmentTiming.hidden = view.kind !== "active";
 
@@ -265,9 +267,7 @@
       elements.segmentVerb.textContent = view.kind === "waiting" ? "WAITING FOR LIVE DATA" : "WAITING FOR YOUR NEXT SESSION";
       elements.sessionTime.textContent = "—:—";
     }
-    if (view.kind === "idle-trace" || view.kind === "trace-hold") {
-      renderTrace("held", view.trace, 1_000, 280);
-    }
+    if (held || view.reveal) renderReveal(view, held);
   }
 
   function renderActive(view) {
@@ -318,13 +318,38 @@
       ? `${view.trace.length} BEATS SHOWN`
       : "WAITING FOR YOUR FIRST BEAT";
     elements.traceEmpty.hidden = view.trace.length > 0;
-    renderTrace("live", view.trace, 1_000, 210);
+    renderTrace("live", view.trace, 1_000, 210, readings.restingBpm);
   }
 
-  function renderTrace(which, trace, width, height) {
+  function renderReveal(view, held) {
+    const summary = view.summary;
+    elements.revealStart.textContent = preciseBpm(summary.satDownAt);
+    elements.revealPeak.textContent = preciseBpm(summary.peakedAt);
+    elements.revealEnd.textContent = preciseBpm(summary.leftAt);
+    elements.revealEquation.textContent = `${preciseBpm(summary.peakedAt)} − ${preciseBpm(summary.leftAt)} = `;
+    elements.revealDifference.textContent = preciseBpm(summary.difference);
+    elements.revealStatus.textContent = (summary.partialHistory ? "PARTIAL TRACE · MISSING SESSION HISTORY · " : "") +
+      (held ? "YOUR SESSION TRACE · HELD UNTIL THE NEXT BASELINE" : "YOUR SESSION TRACE · STILL RECORDING");
+    elements.revealEndNote.textContent = held ? "YOUR FINAL OBSERVED RESOLVE BEAT" : "YOUR LATEST RESOLVE BEAT · UPDATING";
+    elements.revealEmpty.hidden = view.trace.length > 0;
+    for (const key of Spectator.DIMENSIONS) {
+      const authority = summary.authority[key]; // Observed maximum, never a client ceiling.
+      const target = elements.authorityHistory[key];
+      target.value.textContent = authority.toFixed(2);
+      target.bar.style.width = `${authority * 100}%`;
+      if (target.status) target.status.textContent = authority > 0 ? "HAD AUTHORITY" : "NONE OBSERVED";
+    }
+    renderTrace("held", view.trace, 1_000, 420, summary.restingBpm);
+  }
+
+  function preciseBpm(value) {
+    return value === null ? "—" : value.toFixed(1).replace("-", "−");
+  }
+
+  function renderTrace(which, trace, width, height, restingBpm = null) {
     const target = which === "held" ? elements.heldTrace : elements.liveTrace;
-    const scale = Spectator.traceScale(trace);
-    const points = Spectator.tracePoints(trace, width, height);
+    const scale = Spectator.traceScale(trace, restingBpm);
+    const points = Spectator.tracePoints(trace, width, height, 12, restingBpm);
     const path = points.length
       ? points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ")
       : "";
@@ -332,6 +357,18 @@
     target.glow.setAttribute("d", path);
     target.maximum.textContent = scale ? Math.round(scale.maximum) : "—";
     target.minimum.textContent = scale ? Math.round(scale.minimum) : "—";
+    const referenceY = Spectator.referenceY(trace, restingBpm, height);
+    target.restingReference.toggleAttribute("hidden", referenceY === null);
+    target.restingLabel.hidden = referenceY === null;
+    if (referenceY !== null) {
+      target.restingLine.setAttribute("d", `M0 ${referenceY.toFixed(2)}H${width}`);
+      target.restingLabel.style.top = `${referenceY / height * 100}%`;
+      target.restingLabel.style.transform = referenceY < 36 ? "translateY(4px)" : "translateY(calc(-100% - 4px))";
+      target.restingLabel.textContent = `YOUR RESTING RATE ${preciseBpm(restingBpm)}`;
+    } else {
+      target.restingLine.setAttribute("d", "");
+      target.restingLabel.textContent = "";
+    }
     target.end.toggleAttribute("hidden", points.length === 0);
     if (points.length) {
       const last = points.at(-1);
@@ -415,12 +452,21 @@
       end: required(`${prefix}-trace-end`),
       maximum: required(`${prefix}-trace-max`),
       minimum: required(`${prefix}-trace-min`),
+      restingReference: required(`${prefix}-resting-reference`),
+      restingLine: required(`${prefix}-resting-line`),
+      restingLabel: required(`${prefix}-resting-label`),
     };
   }
 
   function collectElements() {
     const dimensions = {};
+    const authorityHistory = {};
     for (const key of Spectator.DIMENSIONS) {
+      authorityHistory[key] = {
+        value: required(`history-${key}-value`),
+        bar: required(`history-${key}-bar`),
+        status: key === "valence" ? null : required(`history-${key}-status`),
+      };
       dimensions[key] = {
         reading: required(`${key}-value`),
         confidence: required(`${key}-confidence`),
@@ -441,6 +487,7 @@
       connectionTitle: required("connection-title"),
       contactState: required("contact-state"),
       dimensions,
+      authorityHistory,
       fullscreenButton: required("fullscreen-button"),
       headerSegment: required("header-segment"),
       headerSession: required("header-session"),
@@ -468,6 +515,14 @@
       traceCount: required("trace-count"),
       traceEmpty: required("trace-empty"),
       traceHold: required("trace-hold"),
+      revealStart: required("reveal-start"),
+      revealPeak: required("reveal-peak"),
+      revealEnd: required("reveal-end"),
+      revealEndNote: required("reveal-end-note"),
+      revealDifference: required("reveal-difference"),
+      revealEquation: required("reveal-equation"),
+      revealStatus: required("reveal-status"),
+      revealEmpty: required("reveal-empty"),
     };
   }
 })();

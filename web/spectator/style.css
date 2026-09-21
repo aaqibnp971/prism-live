@@ -92,16 +92,43 @@ output, strong, .time-heading { font-variant-numeric: tabular-nums; }
 .trace-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .trace-line--glow { display: none; }
 .trace-end { fill: var(--ink); }
+.resting-reference { fill: none; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 7 6; vector-effect: non-scaling-stroke; }
+.resting-label { position: absolute; left: 12px; padding: 2px 4px; color: var(--muted); background: #120d0a; font: 18px var(--mono); }
+#live-resting-label { font-size: 14px; }
 .trace-empty { position: absolute; inset: 40% 0 auto; text-align: center; font: 16px var(--mono); letter-spacing: .12em; color: var(--quiet); }
 .trace-count { position: absolute; left: 40px; bottom: 12px; font: 12px var(--mono); letter-spacing: .08em; color: var(--quiet); }
 
 .passive-panel { position: absolute; top: 176px; bottom: 52px; left: 0; right: 0; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 24px; padding: 70px 80px; background: #140e0b; }
 .passive-panel h2 { font-size: 116px; font-weight: 600; line-height: .94; color: var(--accent); }
 .passive-panel > p:not(.eyebrow) { max-width: 980px; font-size: 34px; line-height: 1.35; }
-.held-panel { position: absolute; top: 176px; bottom: 52px; left: 0; right: 0; padding: 45px 60px; display: grid; grid-template-rows: auto minmax(0,1fr); gap: 36px; }
-.held-panel h2 { margin: 12px 0; font-size: 72px; font-weight: 600; }
-.held-panel header > p:last-child { font-size: 24px; color: var(--muted); }
-.held-trace-card { display: grid; grid-template-rows: auto minmax(0,1fr); gap: 20px; min-height: 0; overflow: hidden; padding: 24px; background: var(--panel); border: 2px solid var(--line); }
+/* v3's reveal: 52 px title, three 112 px Mono readings, large trace, same 492 px rail. */
+.reveal-panel { position: absolute; top: 176px; bottom: 0; left: 0; right: 492px; padding: 30px 40px 34px; display: grid; grid-template-rows: auto auto auto auto minmax(0,1fr); gap: 20px; background: var(--panel); }
+.reveal-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; }
+.reveal-heading h2 { font-size: 52px; font-weight: 600; line-height: 1; letter-spacing: -.01em; }
+.reveal-heading p { font: 26px var(--mono); letter-spacing: .18em; color: var(--accent); }
+.reveal-status { font: 16px var(--mono); color: var(--muted); letter-spacing: .04em; }
+.reveal-numbers { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 2px; }
+.reveal-numbers article { background: #17100c; border: 2px solid var(--line); padding: 18px 22px 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.reveal-numbers h3 { font: 24px var(--mono); letter-spacing: .16em; color: var(--muted); }
+.reveal-numbers article > div { display: flex; align-items: baseline; gap: 10px; }
+.reveal-numbers output { font: 500 112px/.86 var(--mono); }
+.reveal-numbers article > div > span { font: 26px var(--mono); color: var(--quiet); }
+.reveal-numbers article > p { font: 14px var(--mono); color: var(--quiet); }
+.reveal-numbers .reveal-ending { border-color: #5a4232; }
+.reveal-ending h3, .reveal-ending output { color: var(--accent); }
+.reveal-difference { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; border-bottom: 2px solid var(--line); padding-bottom: 14px; }
+.reveal-difference h3 { font: 24px var(--mono); letter-spacing: .1em; color: var(--muted); }
+.reveal-difference p { font: 30px var(--mono); }
+.reveal-difference output { font-size: 48px; color: var(--accent); }
+.held-trace-card { display: grid; grid-template-rows: auto minmax(0,1fr); gap: 14px; min-height: 0; overflow: hidden; background: var(--panel); }
+.reveal-authority { position: absolute; top: 176px; right: 0; bottom: 0; width: 492px; padding: 26px 40px 44px; background: var(--panel); border-left: 2px solid var(--line); display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
+.reveal-authority h2 { font: 26px/1.4 var(--mono); letter-spacing: .2em; color: var(--accent); }
+.reveal-authority header p { margin-top: 10px; font-size: 22px; line-height: 1.3; color: var(--muted); }
+.reveal-authority article { display: flex; flex-direction: column; gap: 8px; }
+.reveal-authority h3 { font-size: 26px; font-weight: 600; }
+.reveal-authority article > p { display: flex; justify-content: space-between; font: 18px var(--mono); color: var(--muted); }
+.reveal-authority article output { color: var(--authority); }
+.reveal-authority .unknown-chip { align-self: flex-start; }
 .system-footer { position: absolute; bottom: 10px; right: 20px; display: flex; align-items: center; gap: 15px; font: 11px var(--mono); color: var(--quiet); }
 .system-footer button { background: var(--panel); color: var(--muted); border: 1px solid var(--line); padding: 5px 8px; cursor: pointer; }
 .system-footer button:focus-visible { outline: 2px solid var(--accent); }

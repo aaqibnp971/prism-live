@@ -516,7 +516,7 @@ WebSocket does not add interval-scale jitter.
 
 ---
 
-## The spectator's held trace (prompt 3.3)
+## The spectator's trace and reveal (prompts 3.3, 3.5)
 
 **Handled by:** `web/spectator/`. The frozen contract carries live beat and state messages, but no
 history. The screen can therefore hold the completed trace through the 20-second reset and following
@@ -534,10 +534,35 @@ on the booth network that normal scheduling jitter does not create false disconn
 **Visual port, 21 September:** v3's uncertainty hatching is a display convention: its half-width is
 `0.45 × (1 − confidence)` around the host reading, clipped to 0–1. It is not a calibrated statistical
 interval and cannot add confidence or authority. Unknown readings show no reading fill; valence
-always has zero confidence and authority. The field remains a 3.4 placeholder and the reveal panel
-is reserved for 3.5. Local IBM Plex fonts make the layout independent of internet access. The browser
+always has zero confidence and authority. The field remains a 3.4 placeholder; the 3.5 reveal uses
+the same local IBM Plex fonts, independent of internet access. The browser
 regression check covers trace/card clipping, including a low endpoint of 34 BPM, and loss of state
 messages while clock replies continue. Booth-distance readability still needs an on-site check.
+
+**Trace reveal, 21 September:** the screen shows it on the first resolve state reporting at most
+20 s remaining, not on a local timer. With the frozen 2 s state cadence the reveal can appear up to
+one state interval after the threshold. No session-duration assumption or adaptive-regulate guess
+is involved. The three numbers use the plotted non-rejected beats: first baseline reading, maximum
+in **load only**, latest resolve reading. Segment membership uses `t_play` and host boundaries
+(`t_engine − segment_elapsed_ms`), so a delayed boundary can correct a provisional classification.
+The contract does not carry the earlier physiological detection timestamp; this is the displayed,
+scheduled-beat timeline. State-cadence HR, whole-session peaks and `drop_bpm` never supply N.
+
+The values display one decimal; N subtracts those same displayed numbers and stays signed. It does
+not choose a close or declare a result. While resolve continues, LEFT AT is labelled as updating;
+on completed reset it freezes at the final observed resolve beat. If no resolve beat was observed,
+LEFT AT and N stay unavailable. If load was not observed, its peak and N stay unavailable. Late-open
+or reconnected screens label partial history; they cannot reconstruct missing beats or guarantee a
+missing load peak. Opening after baseline also leaves SAT DOWN AT unavailable. Keep the spectator
+open and connected from baseline to photograph a whole session.
+
+The historical authority bars show **maximum observed `state.authority`**, not current idle values,
+not inferred confidence and not a client-computed ceiling. NONE OBSERVED does not claim there was
+none in missing history. Live resting references use only current `hr_base`; a null removes line
+and label, with no fallback to first HR or a client mean. Completed reveals retain that session's
+last reference with the frozen trace; idle's new, empty session does not overwrite it. A new baseline
+clears it, so a degraded visitor never inherits the previous visitor's resting rate. Autoscaling
+includes both all plotted beats and a non-null resting reference. Nothing is persisted on reload.
 
 ---
 

@@ -93,6 +93,7 @@ class FixtureFeed:
         self.beat_seq = 0
         self.current = None
         self.silent = False
+        self.session_counter = 1
         self.session = "S-20260921-0001"
         self.set_state("regulate", 30_000)
 
@@ -101,7 +102,8 @@ class FixtureFeed:
 
     def set_state(self, segment, elapsed, *, new_session=False):
         if new_session:
-            self.session = "S-20260921-0002"
+            self.session_counter += 1
+            self.session = f"S-20260921-{self.session_counter:04d}"
             self.seq = self.beat_seq = 0
         matches = [m for _, m in self.records if m["type"] == "state" and m["segment"] == segment]
         self.current = copy.deepcopy(
@@ -211,9 +213,120 @@ BOUNDS = r"""(() => {
     valence: ['confidence','authority'].map(k=>get('valence-'+k).textContent),
     zeroBars: ['reading','authority'].every(k=>rect(get('valence-'+k+'-bar')).width === 0),
     traceMinimum: Number(get('live-trace-min').textContent),
+    referenceLabelInside: get('live-resting-label').hidden ||
+      inside(rect(get('live-resting-label')),rect(frame)),
     authority: get('arousal-authority').textContent
   };
 })()"""
+
+REVEAL = r"""(() => {
+  const get = id => document.getElementById(id), rect = node => node.getBoundingClientRect();
+  const panel = document.querySelector('.reveal-panel'), svg = get('held-trace-svg');
+  const inside = (a,b) => a.left >= b.left-.1 && a.top >= b.top-.1 &&
+    a.right <= b.right+.1 && a.bottom <= b.bottom+.1;
+  const rail = document.querySelector('.reveal-authority');
+  const line = get('held-trace-line').getBBox(), box = svg.viewBox.baseVal;
+  return {
+    visible: !get('trace-hold').hidden,
+    values: ['start','peak','end','difference'].map(k=>get('reveal-'+k).textContent),
+    trace: get('held-trace-line').getAttribute('d'),
+    referenceVisible: !get('held-resting-reference').hasAttribute('hidden'),
+    referenceLabel: get('held-resting-label').textContent,
+    referencePath: get('held-resting-line').getAttribute('d'),
+    authority: ['arousal','valence','cognitive_load','readiness'].map(k=>
+      [get('history-'+k+'-value').textContent,get('history-'+k+'-bar').style.width]),
+    plotInside: inside(rect(svg),rect(panel)) && inside(rect(svg),rect(svg.parentElement)),
+    referenceLabelInside: get('held-resting-label').hidden ||
+      inside(rect(get('held-resting-label')),rect(svg.parentElement)),
+    pathInside: line.x >= 0 && line.y >= 0 && line.x+line.width <= box.width &&
+      line.y+line.height <= box.height,
+    numbersFit: [...document.querySelectorAll('.reveal-numbers article')].every(card=>
+      [...card.children].every(child=>inside(rect(child),rect(card)) &&
+        child.scrollWidth <= child.clientWidth)),
+    railFits: inside(rect(rail.querySelector('.rail-footer')),rect(rail))
+  };
+})()"""
+
+
+async def check_reveal(cdp, feed, output):
+    """A deliberately high baseline/regulate, smaller load peak and evolving endpoint."""
+    feed.set_state("baseline", 0, new_session=True)
+    await cdp.until("document.getElementById('baseline-learning-fill').style.width === '0%'")
+    await feed.trace([160.14, 145, 127, 110, 96, 81, 72])
+    assert await cdp.evaluate(
+        "document.getElementById('live-resting-reference').hasAttribute('hidden')"
+    )
+    feed.set_state("load", 0)
+    feed.current["hr_base"] = 68.2
+    await cdp.until("document.getElementById('segment-title').textContent === 'LOAD'")
+    await feed.trace([78, 86, 98.24, 110.06, 104])
+    assert (
+        await cdp.evaluate("document.getElementById('live-resting-label').textContent")
+        == "YOUR RESTING RATE 68.2"
+    )
+    feed.set_state("regulate", 0)
+    feed.current["authority"] = dict(
+        arousal=0.437, valence=0, cognitive_load=0.313, readiness=0.127
+    )
+    feed.current["confidence"] = dict(arousal=0.8, valence=0, cognitive_load=0.5, readiness=0.4)
+    await cdp.until("document.getElementById('segment-title').textContent === 'REGULATE'")
+    await feed.trace([180, 130, 94, 88])
+    feed.set_state("resolve", 0)
+    feed.current["authority"] = dict.fromkeys(feed.current["authority"], 0)
+    await cdp.until("document.getElementById('segment-title').textContent === 'RESOLVE'")
+    await feed.trace([84, 82.18])
+    feed.set_state("resolve", 24_999)
+    feed.current["hr_base"] = 68.2
+    await cdp.until("document.getElementById('segment-time').textContent === '0:25'")
+    assert await cdp.evaluate("document.getElementById('trace-hold').hidden")
+    feed.set_state("resolve", 25_000)
+    feed.current["hr_base"] = 68.2
+    await cdp.until("!document.getElementById('trace-hold').hidden")
+    reveal = await cdp.evaluate(REVEAL)
+    assert reveal["values"] == ["160.1", "110.1", "82.2", "27.9"], reveal
+    assert reveal["referenceVisible"] and reveal["referenceLabel"] == "YOUR RESTING RATE 68.2"
+    assert reveal["authority"][0] == ["0.44", "43.7%"], reveal
+    assert reveal["authority"][1] == ["0.00", "0%"], reveal
+    for key in ("plotInside", "pathInside", "numbersFit", "railFits", "referenceLabelInside"):
+        assert reveal[key], (key, reveal)
+    if output:
+        await cdp.screenshot(output / "reveal-1920x1080.png")
+    await feed.trace([80.14])
+    final = await cdp.evaluate(REVEAL)
+    assert final["values"] == ["160.1", "110.1", "80.1", "30.0"]
+    feed.set_state("reset", 0)
+    feed.current["hr_base"] = None
+    await cdp.until("document.body.dataset.view === 'trace-hold'")
+    feed.set_state("idle", 0, new_session=True)
+    await cdp.until("document.body.dataset.view === 'idle-trace'")
+    assert await cdp.evaluate(REVEAL) == final  # Including the old session's resting reference.
+    if output:
+        await cdp.screenshot(output / "reveal-held-idle-1920x1080.png")
+    feed.set_state("baseline", 0)
+    await cdp.until("document.body.dataset.view === 'active'")
+    assert await cdp.evaluate("document.getElementById('trace-hold').hidden")
+    assert await cdp.evaluate(
+        "document.getElementById('live-resting-reference').hasAttribute('hidden')"
+    )
+    await feed.trace([72])
+    feed.set_state("load", 0)
+    feed.current["hr_base"] = None
+    await cdp.until("document.getElementById('segment-title').textContent === 'LOAD'")
+    await feed.trace([90])
+    feed.set_state("resolve", 0)
+    feed.current["hr_base"] = None
+    await cdp.until("document.getElementById('segment-title').textContent === 'RESOLVE'")
+    await feed.trace([95])
+    feed.set_state("resolve", 25_000)
+    feed.current["hr_base"] = None
+    await cdp.until("!document.getElementById('trace-hold').hidden")
+    degraded = await cdp.evaluate(REVEAL)
+    assert degraded["values"] == ["72.0", "90.0", "95.0", "−5.0"], degraded
+    assert not degraded["referenceVisible"]
+    assert degraded["referenceLabel"] == "" and degraded["referencePath"] == ""
+    if output:
+        await cdp.screenshot(output / "reveal-degraded-1920x1080.png")
+    return {"reveal": reveal, "held": final, "degraded": degraded}
 
 
 async def check(browser, output=None, reference=None):
@@ -291,6 +404,7 @@ async def check(browser, output=None, reference=None):
                         "monoLoaded",
                         "sansLoaded",
                         "zeroBars",
+                        "referenceLabelInside",
                     ):
                         assert report["running"][key], (key, report["running"])
                     assert report["running"]["valence"] == ["0.00", "0.00"]
@@ -332,6 +446,7 @@ async def check(browser, output=None, reference=None):
                     await cdp.until("document.body.dataset.view === 'idle-cold'")
                     if output:
                         await cdp.screenshot(output / "idle-cold-1920x1080.png")
+                    report.update(await check_reveal(cdp, feed, output))
                     feed.set_state("regulate", 90_000)
                     await cdp.until(
                         "document.getElementById('progress-note').textContent.includes('HOLD +15')"
@@ -394,13 +509,15 @@ img{display:block;width:1920px;height:1080px}</style><main>
                     await cdp.call("Browser.close")
             finally:
                 publisher.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await publisher
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    await asyncio.to_thread(process.wait, 5)
-                if process.poll() is None:
-                    process.terminate()
-                    await asyncio.to_thread(process.wait, 5)
+                try:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await publisher
+                finally:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        await asyncio.to_thread(process.wait, 5)
+                    if process.poll() is None:
+                        process.terminate()
+                        await asyncio.to_thread(process.wait, 5)
     if output:
         (output / "checks.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report

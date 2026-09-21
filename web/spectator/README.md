@@ -43,8 +43,8 @@ MAY MOVE bar reads the host's authority directly. Valence has no reading or auth
 fill and each segment's progress use host elapsed/nominal time; strip widths are layout proportions,
 not a four-minute deadline. The timer shows host `t_session` without a fixed total.
 
-The field is deliberately a placeholder for 3.4. The existing held-trace behaviour remains; v3's
-reveal statistics/layout belong to 3.5 and are not implemented here. Dimension titles are slightly
+The field is deliberately a placeholder for 3.4. The 3.5 reveal ports v3's three large-number cards,
+photograph heading and expanded trace, with the live rules below. Dimension titles are slightly
 smaller than v3 to fit second-person labels and NOT READABLE; compact numeric confidence labels,
 signal status and live-link/fullscreen controls are retained from the live screen.
 
@@ -61,3 +61,31 @@ python -m tools.check_spectator_browser --output working/spectator-check
 
 This tool supplies test messages over a localhost WebSocket; it adds no simulation mode or fixture
 data to the production page.
+
+## Trace reveal (3.5)
+
+Resolve reveals the panel on the first host state with `segment_nominal_ms − segment_elapsed_ms`
+at or below 20,000. The local clock never starts it; the 2 s host cadence bounds its timing precision.
+
+- SAT DOWN AT: first plotted baseline reading, including an elevated arrival rate.
+- PEAKED AT: maximum plotted rate **in load only**, never baseline, regulate or resolve.
+- LEFT AT: most recent plotted resolve beat, labelled as updating until the completed reset.
+- PEAKED AT − LEFT AT: subtract those same one-decimal displayed values. Negative values stay
+  negative. There is no threshold colour, outcome, recommended close or `drop_bpm` substitution.
+
+The trace retains all session beats, not a rolling 1,024-point tail. Only scheduled, non-rejected
+beats supply its values; 2 s state HR messages do not add samples or replace extrema. Host boundary
+times classify beats by `t_play`, including a boundary message arriving after a beat was plotted.
+The history rail records the maximum observed host authority on each dimension. Its label describes
+history, not current idle authority; valence remains NOT READABLE with exactly zero confidence and
+authority. No authority or confidence is inferred by this page.
+
+The resting-rate dashed line comes only from `hr_base`, on both small and expanded traces. A null
+removes line and label; baseline/degraded sessions do not substitute an average or first reading.
+The axis includes the resting line as well as every beat so neither falls outside the plot.
+
+A completed 20 s reset freezes the whole summary, trace and resting reference. Idle's new session
+id does not overwrite them; the next baseline clears all of them. A stopped/failed 3 s reset does
+not present a completed result. A screen opened late or disconnected mid-session cannot backfill:
+it marks PARTIAL TRACE, uses only observed readings and shows a dash for missing first/load/resolve
+readings or N. Opening after baseline cannot supply SAT DOWN AT. Reloading in idle remains cold.

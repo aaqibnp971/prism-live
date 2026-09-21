@@ -483,7 +483,7 @@ tests run through pytest; operating notes are in `web/spectator/README.md`.
 the layout, type, palette, uncertainty/authority bars and baseline learning fill. The live plain-JS
 architecture and tests remain; no framework, build step or simulation mode was imported. Fonts are
 local. Header overlap and trace overflow are fixed, with numerical and real-browser bounds tests.
-The field remains a placeholder for 3.4; the v3 reveal is still reserved for 3.5.
+The field remains a placeholder for 3.4; the v3 reveal is implemented separately in 3.5 below.
 
 ## 3.4 Ambient field for regulate and resolve
 
@@ -508,6 +508,19 @@ The field remains a placeholder for 3.4; the v3 reveal is still reserved for 3.5
 > **Hold the last trace through idle** (decided 14 September). When reset ends, the session id changes and `segment` goes to `idle`, before the attendant has spoken the close. Keep the last session's trace and its three numbers on screen through idle, and clear them only when the next session's baseline begins. Holding what was last shown is not a decision; the screen still takes segment and timing from the `state` message.
 >
 > The attendant's close reads its N off this screen: peaked at minus left at (docs/experience-script.md §3). Make that difference easy to read at a glance, from the same three numbers. Never show the session's `drop_bpm` as N.
+
+**Implemented 21 September.** The extracted v3 reveal supplies the three large IBM Plex Mono
+numbers, photograph heading and expanded trace, with corrected second-person copy and no framework
+or simulation code. It appears when the host's resolve elapsed/nominal fields report at most 20 s
+remaining. Peaked at is strictly the load-only maximum; sat down at is the first plotted baseline
+reading and left at updates with resolve beats until the completed reset freezes it. Their visible
+one-decimal subtraction is shown without a verdict. The right rail records the highest observed
+host authority per dimension, not a client ceiling; valence stays exactly zero and NOT READABLE.
+The full trace, numbers, authority history and resting reference survive reset and the new idle
+session id, clearing only on the next baseline. The resting line uses `state.hr_base` only and is
+absent when null, including degraded sessions. Missing history is not fabricated. Model and browser
+tests cover reveal timing, elevated-baseline/load-only peak, negative/missing N, null references,
+geometry and reset/idle retention. See `web/spectator/README.md` for display definitions and limits.
 
 ## 3.6 Attendant controls and crash recovery
 

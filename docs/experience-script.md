@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.5**
+# **Prism Live: Experience Script v1.6**
 
 &nbsp;
 
@@ -233,6 +233,8 @@ Four variants, one spine. Only Beat 1 changes.
 
 **\[N\]** is the visible fall on the trace screen: **peaked at minus left at** (prompt 3.5), read live. It is never the session's `drop_bpm`, which is HR\_load minus the lowest 20 s window, a different number. **The close follows N alone.** 3 bpm or more takes the "It moved" close (close A). Under 3 bpm takes the "It did not move" close (close B), whatever the threshold logic decided and whether regulate timed out. The state machine produces no verdict; the attendant reads N off the screen.
 
+**Definition, 21 September:** **Peaked at is the highest heart rate during the load segment only, not the whole session.** A person may sit down elevated from the exhibition floor and settle through baseline; that settling is not a response to the task. Close A says "from where the task put it", so only load contributes to its peak. **Sat down at stays the first reading**, honestly showing that settling. **Left at is the latest plotted resolve reading**, updating until the session ends and then held with the trace through reset and idle. The screen uses non-rejected scheduled beats, classified against host segment boundaries, for all three numbers. It displays one decimal place and subtracts those same displayed peak and endpoint numbers for N; a negative N stays negative. Missing readings show a dash, never an invented zero. No on-screen verdict or choice of close is produced.
+
 **Both closes need a rewrite. Not rewritten yet (14 September).** Measured on synthetic sessions in the design critique of 13 September, against the closes as they were chosen until 14 September, by the threshold logic with close B on a timeout:
 
 - **Close A's first clause asserts a rise that 13 % of regulated runs never had.** "It went up when the task got hard" (student), and "from where the task put it" (investor), are said to people who never met the load activation test: 107 of 818 regulated sessions, with simulated load rises of 0 to 20 bpm.
@@ -368,6 +370,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.3 | 13 Sep 2026 | §0: hard cap 4:30 to 4:45, since the baseline hold and regulate's extension together reach 4:42. The 4:00 nominal is provisional until Week E, and any cut comes from baseline and resolve, never load or regulate. §2: the hold runs to the pulse boundary at 56 s. |
 | 1.4 | 14 Sep 2026 | §0: the nominal is 4:11 from baseline start; the hard cap counts from the attendant's press, which arms a countdown of up to 11 s; the worst case from the press, 4:52, is over the cap and open. §2 BASELINE: entry is when the start button fires. §2 REGULATE: a timeout no longer picks close B. §2 RESOLVE: the trace is held through idle until the next baseline (prompt 3.5), so the attendant's "about twenty seconds" line is marked for a rewrite. §3: N is peaked at minus left at on the trace screen, never `drop_bpm`, and alone picks the close; the machine gives no verdict; both closes are marked for a rewrite, with the two measured mismatches. |
 | 1.5 | 14 Sep 2026 | §0: the hard cap counts from when start fires, not from the press, correcting 1.4. The console's countdown is not part of the experience, so it does not count against the cap. The worst case is 56 + 75 + 105 + 45 = 281 s, 4:41, inside the cap, and nothing is cut. |
+| 1.6 | 21 Sep 2026 | §3: peaked at is the load-only maximum, excluding baseline settling and later spikes. Sat down at remains the first reading; left at updates through resolve and freezes at session end. N subtracts the same displayed numbers, never `drop_bpm`; the screen gives no verdict. |
 
 &nbsp;
 

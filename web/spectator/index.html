@@ -50,9 +50,11 @@
                 <defs><clipPath id="live-plot-clip"><rect x="0" y="0" width="1000" height="210" /></clipPath></defs>
                 <g class="plot-content" clip-path="url(#live-plot-clip)">
                   <g class="trace-grid" aria-hidden="true"><path d="M0 12H1000 M0 105H1000 M0 198H1000" /></g>
+                  <g id="live-resting-reference" hidden><path id="live-resting-line" class="resting-reference" /></g>
                   <path id="live-trace-glow" class="trace-line trace-line--glow" /><path id="live-trace-line" class="trace-line" /><circle id="live-trace-end" class="trace-end" r="5" hidden />
                 </g>
               </svg>
+              <p id="live-resting-label" class="resting-label" hidden></p>
               <p id="trace-empty" class="trace-empty">WAITING FOR YOUR NEXT SCHEDULED BEAT</p>
             </div>
             <span id="trace-count" class="trace-count">WAITING FOR YOUR FIRST BEAT</span>
@@ -98,20 +100,40 @@
         <section id="resetting-panel" class="passive-panel" hidden>
           <p class="eyebrow">LIVE SYSTEM · RESETTING</p><h2>READYING YOUR<br />NEXT SESSION</h2><p>Your live readings have been cleared.</p>
         </section>
-        <section id="trace-hold" class="held-panel" hidden aria-labelledby="held-title">
-          <header><p class="eyebrow">LAST COMPLETED SESSION · HELD ON SCREEN</p><h2 id="held-title">YOUR FOUR MINUTES</h2><p>Your trace remains here until the next baseline begins.</p></header>
-          <div class="held-trace-card">
+        <section id="trace-hold" hidden aria-labelledby="held-title">
+          <div class="reveal-panel">
+            <header class="reveal-heading"><h2 id="held-title">YOUR FOUR MINUTES</h2><p>PHOTOGRAPH THIS</p></header>
+            <p id="reveal-status" class="reveal-status">YOUR SESSION TRACE</p>
+            <div class="reveal-numbers">
+              <article><h3>SAT DOWN AT</h3><div><output id="reveal-start">—</output><span>BPM</span></div><p>YOUR FIRST READING</p></article>
+              <article><h3>PEAKED AT</h3><div><output id="reveal-peak">—</output><span>BPM</span></div><p>YOUR LOAD SEGMENT ONLY</p></article>
+              <article class="reveal-ending"><h3>LEFT AT</h3><div><output id="reveal-end">—</output><span>BPM</span></div><p id="reveal-end-note">YOUR LATEST RESOLVE BEAT</p></article>
+            </div>
+            <div class="reveal-difference"><h3>PEAKED AT − LEFT AT</h3><p><span id="reveal-equation">— − — = </span><output id="reveal-difference">—</output> <span>BPM</span></p></div>
+            <div class="held-trace-card">
             <div class="trace-heading"><span>YOUR HEART, BEAT BY BEAT</span><span><span id="held-trace-min">—</span> – <span id="held-trace-max">—</span> BPM</span></div>
             <div class="trace-frame">
-              <svg id="held-trace-svg" class="trace-svg" viewBox="0 0 1000 280" preserveAspectRatio="none" role="img" aria-label="Your held heart rate trace">
-                <defs><clipPath id="held-plot-clip"><rect x="0" y="0" width="1000" height="280" /></clipPath></defs>
+              <svg id="held-trace-svg" class="trace-svg" viewBox="0 0 1000 420" preserveAspectRatio="none" role="img" aria-label="Your session heart rate trace">
+                <defs><clipPath id="held-plot-clip"><rect x="0" y="0" width="1000" height="420" /></clipPath></defs>
                 <g class="plot-content" clip-path="url(#held-plot-clip)">
-                  <g class="trace-grid"><path d="M0 12H1000 M0 140H1000 M0 268H1000" /></g>
+                  <g class="trace-grid"><path d="M0 12H1000 M0 210H1000 M0 408H1000" /></g>
+                  <g id="held-resting-reference" hidden><path id="held-resting-line" class="resting-reference" /></g>
                   <path id="held-trace-glow" class="trace-line trace-line--glow" /><path id="held-trace-line" class="trace-line" /><circle id="held-trace-end" class="trace-end" r="5" hidden />
                 </g>
               </svg>
+              <p id="held-resting-label" class="resting-label" hidden></p>
+              <p id="reveal-empty" class="trace-empty" hidden>NO SCHEDULED BEATS OBSERVED</p>
+            </div>
             </div>
           </div>
+          <aside class="reveal-authority" aria-label="Your recorded session authority">
+            <header><h2>WHAT HELD<br />AUTHORITY</h2><p>Your session history, from the host. Each bar shows its highest observed authority.</p></header>
+            <article><h3>YOUR AROUSAL</h3><p><span id="history-arousal-status">NONE OBSERVED</span><output id="history-arousal-value">0.00</output></p><div class="authority-meter"><i id="history-arousal-bar"></i></div></article>
+            <article class="dimension-card--valence"><h3>YOUR VALENCE</h3><span class="unknown-chip">NOT READABLE</span><p class="confidence-label">CONFIDENCE <output>0.00</output></p><p><span>AUTHORITY</span><output id="history-valence-value">0.00</output></p><div class="authority-meter"><i id="history-valence-bar"></i><span class="dead-zone"></span><span class="stop-marker"></span></div><p class="valence-note">YOUR PULSE CANNOT SEE THIS</p></article>
+            <article><h3>YOUR COG LOAD</h3><p><span id="history-cognitive_load-status">NONE OBSERVED</span><output id="history-cognitive_load-value">0.00</output></p><div class="authority-meter"><i id="history-cognitive_load-bar"></i></div></article>
+            <article><h3>YOUR READINESS</h3><p><span id="history-readiness-status">NONE OBSERVED</span><output id="history-readiness-value">0.00</output></p><div class="authority-meter"><i id="history-readiness-bar"></i></div></article>
+            <p class="rail-footer">IT ONLY MOVES<br />WHAT IT KNOWS</p>
+          </aside>
         </section>
       </main>
       <footer class="system-footer">
