@@ -566,6 +566,83 @@ includes both all plotted beats and a non-null resting reference. Nothing is per
 
 ---
 
+## The attendant console and recovery (prompt 3.6)
+
+**21 September.** The console is `bridge/console.py`, on the live loop's asyncio thread, in
+the same process. There is no network control path. Space or Enter arms in idle, cancels and
+disarms during the pulse-aligned countdown, and stops a running session through its existing
+3 s reset. During reset, another press only says to wait. The host owns all timing; the countdown
+does not start a session clock. Press, planned wait, cancellation and firing are logged. The
+final alignment wait now yields to local input instead of blocking cancellation in its last 50 ms.
+
+Signal loss uses `Session.signal_lost`, unchanged at 6.2 s after the last accepted beat, with a
+red background over the whole console and large LOST lettering. It never triggers a console
+auto-stop. Baseline notices use only `baseline_end.outcome` and `problems`; slope quality cannot
+turn a failed gate into success. The console never reads `regulate_result` and never calculates
+or chooses a spoken close. Its reminder points to peaked-at minus left-at on the spectator trace.
+
+**Two-display booth, clarified 21 September:** the external display is the spectator; the laptop
+does everything else. A full-screen console would hide the load task. The launcher instead tiles
+the laptop 65% task / 35% terminal console, keeping the warning visible, and makes the spectator
+full screen. Task geometry uses the measured monitor width apportioned to its actual viewport,
+including Windows DPI scaling, and updates on resize. Its fullscreen button is hidden in this
+layout so it cannot cover the console. The default physical width is still the explicitly
+provisional 27-inch/59.77 cm assumption: supply the **actual laptop width** and seated viewing
+distance in the launcher options. Window tiling does not validate these physical measurements.
+
+`python -m tools.launch` supervises the real bridge/engine and two separately owned Edge profiles.
+The console is its own Windows Console Host window; no extra dependency or service is installed.
+Read-only status files and read-only browser diagnostics monitor readiness; neither carries a
+session command. A bridge crash gives a fresh idle session id, no armed start and an explicit
+VISITOR MUST START AGAIN notice, held until a new start succeeds. A browser-only restart keeps the
+host session running, but cannot recover missing trace history (the reveal remains labelled partial).
+The default packet source remains synthetic until 2.8 and the console labels that plainly.
+
+Q deliberately shuts down the booth; crashes are restarted. The supervisor is the outer lifetime
+boundary: killing it, shutting down Windows or removing power is not automatically recovered by
+an uninstalled OS service. Hardware loss, missing dependencies and a permanently failing process
+cannot be promised a 30 s recovery. The existing armband/audio hardware checklist is unchanged.
+
+**Measured 21 September, 12:54 +0400**, by `python -m tools.check_recovery`. This run used the
+committed engine/shim, the real default audio device and real clock, synthetic RR, and two
+headless Edge pages. Each role was killed during baseline. Recovery ended only when audio was
+advancing, the console was fresh, trusted beats were arriving and both pages had reconnected.
+
+| Process killed | Full software recovery | Session afterwards |
+|---|---|---|
+| Bridge (including its console and engine) | 6.469 s | New id, idle, disarmed; VISITOR MUST START AGAIN |
+| Task browser | 2.438 s | Same host session, still baseline |
+| Spectator browser | 3.559 s | Same host session; new screen has partial history |
+
+All three were below 30 s. Both aligned starts in that run fired at frame 480,000 with zero
+late frames. Q then shut down the booth cleanly. Reproduction logs and JSON report are under
+`logs/recovery-20260921-125334/` (gitignored). Windows terminal input was separately exercised
+against the real bridge: press, cancel about 499 ms later, no start firing, then clean Q shutdown.
+Unit tests cover stop/reset, all four refusal strings, final-window cancellation, restart warning,
+signal-loss display without auto-stop, and failed gate reporting despite a slope quality of 1.0.
+The owned Console Host window was separately placed at x=1248 on the 1920-pixel laptop display,
+with width 672 and height 1038 (Windows quantizes the terminal to character cells). Ten consecutive
+placement checks stayed stable. An actual Edge task viewport at 960 CSS pixels / DPR 1.25 on a
+configured 1920-pixel, 60 cm-wide monitor reported 37.5 cm; resizing to 768 reported 30.0 cm.
+Its fullscreen button stayed hidden, with no JavaScript exceptions. These are separate checks,
+not a claim that the unavailable external display was exercised.
+
+**Startup contention found, not hidden:** the first two attempts used fresh Edge profiles on the
+project's D: drive. Local page loading stalled for seconds; the combined run starved the bridge,
+and scheduler events with RR over the shim's accepted range caused `PLS_ERROR_INVALID_ARGUMENT`.
+The launcher now creates isolated profiles in the system temporary directory on C:. An isolated
+task page then loaded in 1.114 s versus 11.477 s, and the combined recovery run above passed without
+unplanned restarts. No heartbeat or scheduler algorithm was changed under this light-review task.
+This is not proof against arbitrary OS/disk stalls: recurring starvation or out-of-range accepted
+RR needs a separately authorised heavy-review timing investigation.
+
+**Still unverified:** physical placement/fullscreen on the actual two-display booth, visibility
+from across the hall, the measured laptop viewing geometry, recovery with the real BLE source,
+and the existing wired-headphone/DAC/device-loss checks. Only one physical display was connected
+for this run. Headless timing verifies software recovery, not the missing display or armband.
+
+---
+
 ## The PSV, for Week B and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns

@@ -524,6 +524,13 @@ geometry and reset/idle retention. See `web/spectator/README.md` for display def
 
 ## 3.6 Attendant controls and crash recovery
 
+**Implementation, 21 September:** `bridge/console.py` supplies the in-process terminal button;
+`tools/launch.py` supervises the bridge and both live browser screens. Idle press arms, countdown
+press cancels, running press stops through the 3 s reset. No control HTTP/WebSocket is added.
+The confirmed booth has two displays: the laptop tiles task and console, while the external
+spectator is full screen. See `docs/launcher.md` for the command and configuration, and
+`docs/known-limits.md` for measured recovery and outstanding hardware/display verification.
+
 > Single-button start, stop and reset for the attendant.
 >
 > The console is a local control on the laptop, driven through the live loop (2.9), never a client on the WebSocket link (CLAUDE.md hard rule 9): the frozen contract carries no start or stop, and no network round trip may sit between the button and a session beginning.

@@ -15,8 +15,11 @@
   const params = new URLSearchParams(globalThis.location.search);
   const standalone = params.has("standalone") && params.get("standalone") !== "0";
   const distanceCm = positiveParameter("distance_cm", Task.DEFAULT_DISTANCE_CM);
-  const screenWidthCm = positiveParameter("screen_width_cm", Task.DEFAULT_SCREEN_WIDTH_CM);
-  const geometry = Task.createGeometry(distanceCm, screenWidthCm);
+  let screenWidthCm = positiveParameter("screen_width_cm", Task.DEFAULT_SCREEN_WIDTH_CM);
+  let geometry = Task.createGeometry(distanceCm, screenWidthCm);
+  const tiled = params.get("tiled") === "1";
+  const monitorWidthCm = positiveParameter("monitor_width_cm", 0);
+  const monitorWidthPx = positiveParameter("monitor_width_px", 0);
 
   const field = requiredElement("field");
   const targetLayer = requiredElement("target-layer");
@@ -52,14 +55,16 @@
   const task = new Task.LoadTask({ emit: deliverTaskEvent });
   const stateGate = new Task.StateGate(task);
 
-  const defaultGeometry = !params.has("distance_cm") && !params.has("screen_width_cm");
-  geometryLabel.textContent = `${distanceCm.toFixed(1)} cm distance • ${screenWidthCm.toFixed(1)} cm screen width${
-    defaultGeometry ? " • 27-inch 16:9 default" : " • configured"
-  }`;
-  fovLabel.textContent = `${Task.horizontalFovDeg(geometry).toFixed(2)}° horizontal field • full-screen width assumed`;
-
+  const defaultGeometry = !params.has("distance_cm") && !params.has("screen_width_cm") &&
+    !params.has("monitor_width_cm");
+  // A shared laptop keeps the attendant warning visible beside this window. Never offer a
+  // page fullscreen button that would cover it. The launcher's measured monitor width is
+  // apportioned to this actual CSS viewport (including Windows DPI scaling), on every resize.
+  fullscreenButton.hidden = tiled;
   fullscreenButton.addEventListener("click", () => {
-    field.requestFullscreen?.().catch((error) => console.warn("Fullscreen was refused", error));
+    if (!tiled) {
+      field.requestFullscreen?.().catch((error) => console.warn("Fullscreen was refused", error));
+    }
   });
   restartButton.addEventListener("click", startStandalone);
   debugRestartButton.addEventListener("click", startStandalone);
@@ -307,6 +312,16 @@
 
   function updateMotionLimit() {
     const width = Math.max(1, field.getBoundingClientRect().width);
+    if (monitorWidthCm > 0 && monitorWidthPx > 0) {
+      screenWidthCm = monitorWidthCm * width * (globalThis.devicePixelRatio || 1) / monitorWidthPx;
+      geometry = Task.createGeometry(distanceCm, screenWidthCm);
+    }
+    geometryLabel.textContent = `${distanceCm.toFixed(1)} cm distance • ${screenWidthCm.toFixed(1)} cm screen width${
+      defaultGeometry ? " • 27-inch 16:9 default" : " • configured"
+    }`;
+    fovLabel.textContent = `${Task.horizontalFovDeg(geometry).toFixed(2)}° horizontal field • ${
+      monitorWidthCm > 0 && monitorWidthPx > 0 ? "viewport-scaled geometry" : "full-screen width assumed"
+    }`;
     const margin = Math.max(70, targetSizePx() * 1.25);
     const limit = Math.abs(Task.pixelToAngle(width - margin, width, geometry));
     task.setMotionLimitDegrees(Math.max(3, limit));

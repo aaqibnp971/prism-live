@@ -27,7 +27,7 @@ from bridge.contract import MIN_LEAD_MS, validate
 from bridge.engine import PLS_BEAT_INTERPOLATED, PLS_BEAT_OK
 from bridge.engine_feed import HeartbeatLevel, PsvFeed, SessionGain
 from bridge.logging import SessionLog
-from bridge.phase import SAMPLE_RATE, PhaseTracker
+from bridge.phase import SAMPLE_RATE, PhaseTracker, StartAlignment
 from bridge.psv import PsvModel
 from bridge.session import Session, Timings
 
@@ -166,6 +166,7 @@ class LiveLoop:
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._start_lock: asyncio.Lock | None = None
+        self.start_alignment: StartAlignment | None = None
         self._measurement: _Measurement | None = None
         self._completed: list[SessionMetrics] = []
         self._completed_event: asyncio.Event | None = None
@@ -214,6 +215,7 @@ class LiveLoop:
                 return self._start_now(self.clock(), None)
 
             alignment = None if self.phase is None else self.phase.start_alignment()
+            self.start_alignment = alignment
             wait_ms = 0.0 if alignment is None else alignment.wait_ms
             self.log.event(
                 "attendant_start_armed",
@@ -222,13 +224,24 @@ class LiveLoop:
                 pressed_frame=None if alignment is None else alignment.pressed_frame,
                 fire_frame=None if alignment is None else alignment.fire_frame,
             )
-            if alignment is not None:
-                await self._wait_for_frame(alignment.fire_frame)
-            return self._start_now(self.clock(), alignment)
+            try:
+                if alignment is not None:
+                    await self._wait_for_frame(alignment.fire_frame)
+                return self._start_now(self.clock(), alignment)
+            except asyncio.CancelledError:
+                self.log.event(
+                    "attendant_start_cancelled",
+                    t_engine=self.clock(),
+                    waited_ms=max(0.0, self.clock() - pressed_t),
+                )
+                raise
+            finally:
+                self.start_alignment = None
 
     def attendant_stop(self) -> bool:
         """Route the local stop key straight to Session on this loop."""
         self._check_owner()
+        self.log.event("attendant_stop_pressed", t_engine=self.clock())
         return self.session.stop(self.clock())
 
     def set_psv_source(self, source: str) -> None:
@@ -422,6 +435,9 @@ class LiveLoop:
 
             deadline = time.perf_counter() + remaining_s + 0.010
             while time.perf_counter() < deadline:
+                # Keep local cancel/stop and session ticks responsive even in the final
+                # alignment window. sleep(0) yields without a coarse Windows timer delay.
+                await asyncio.sleep(0)
                 frame = self.phase.frame()
                 if frame == target:
                     return

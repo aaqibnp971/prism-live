@@ -3,6 +3,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Task = require("../web/task/task.js");
+const fs = require("node:fs");
+const vm = require("node:vm");
 
 function close(actual, expected, tolerance = 1e-9) {
   assert.ok(
@@ -10,6 +12,55 @@ function close(actual, expected, tolerance = 1e-9) {
     `expected ${actual} to be within ${tolerance} of ${expected}`,
   );
 }
+
+function taskShell(search, width, scale = 1) {
+  const elements = new Map();
+  const listeners = new Map();
+  const viewport = { width };
+  let fullscreenCalls = 0;
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, {
+      hidden: false, dataset: {}, textContent: "", handlers: new Map(),
+      addEventListener(name, handler) { this.handlers.set(name, handler); },
+      getBoundingClientRect() { return { width: viewport.width, height: 800 }; },
+      requestFullscreen() { fullscreenCalls++; return Promise.resolve(); },
+    });
+    return elements.get(id);
+  }
+  const context = {
+    PrismLoadTask: Task, URLSearchParams, Map, console,
+    document: { getElementById: element, documentElement: {} },
+    location: { search, protocol: "file:", hostname: "" },
+    devicePixelRatio: scale,
+    addEventListener(name, handler) { listeners.set(name, handler); },
+    requestAnimationFrame() {},
+    getComputedStyle() { return { getPropertyValue() { return "58px"; } }; },
+    WebSocket: class { addEventListener() {} },
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../web/task/app.js"), "utf8"), context);
+  return { element, listeners, viewport, fullscreenCalls: () => fullscreenCalls };
+}
+
+test("shared laptop task measures physical viewport and cannot cover the console", () => {
+  const shell = taskShell("?tiled=1&monitor_width_cm=60&monitor_width_px=1920", 960, 1.25);
+  assert.equal(shell.element("fullscreen-button").hidden, true);
+  shell.element("fullscreen-button").handlers.get("click")();
+  assert.equal(shell.fullscreenCalls(), 0);
+  assert.match(shell.element("geometry-label").textContent, /37\.5 cm screen width/);
+  assert.match(shell.element("fov-label").textContent, /viewport-scaled geometry/);
+  shell.viewport.width = 768;
+  shell.listeners.get("resize")();
+  assert.match(shell.element("geometry-label").textContent, /30\.0 cm screen width/);
+});
+
+test("ordinary task page retains its full-screen control and configured geometry", () => {
+  const shell = taskShell("?screen_width_cm=59.77", 1920);
+  assert.equal(shell.element("fullscreen-button").hidden, false);
+  shell.element("fullscreen-button").handlers.get("click")();
+  assert.equal(shell.fullscreenCalls(), 1);
+  assert.match(shell.element("geometry-label").textContent, /59\.8 cm screen width/);
+  assert.match(shell.element("fov-label").textContent, /full-screen width assumed/);
+});
 
 test("27-inch 16:9 default and projection use the configured physical geometry", () => {
   close(Task.DEFAULT_SCREEN_WIDTH_CM, 59.768, 0.01);
