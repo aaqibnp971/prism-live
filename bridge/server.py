@@ -115,7 +115,7 @@ class LiveServer:
         self,
         log: SessionLog,
         *,
-        host: str | None = None,  # None: every interface, IPv4 and IPv6
+        host: str | None = "127.0.0.1",  # Network access must be selected explicitly.
         port: int = PORT,
         clock: Callable[[], float] = t_engine_ms,
         on_task_event: Callable[[dict, Client, float], bool] | None = None,
@@ -351,14 +351,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run the live bridge, synthetic armband, audio engine and WebSocket link."
     )
-    parser.add_argument("--host", default=None, help="default: every interface")
+    parser.add_argument("--host", default="127.0.0.1", help="default: localhost only")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--scene", default="assets/scenes.json")
     parser.add_argument("--profile", default=DEFAULT_PROFILE_SPEC)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--task-event-client",
+        choices=("task-screen", "quest"),
+        default="task-screen",
+        help="The one permitted task-event producer kind",
+    )
     parser.add_argument("--restart-generation", type=int, default=0)
     parser.add_argument("--status-file", help="read-only supervisor telemetry JSON file")
+    parser.add_argument(
+        "--console-fullscreen",
+        action="store_true",
+        help="Use the owned Windows Console Host's full-screen mode",
+    )
     parser.add_argument(
         "--console-input",
         choices=("terminal", "pipe"),
@@ -386,7 +397,9 @@ def main(argv: list[str] | None = None) -> int:
         # asynchronously yield each raw HRM characteristic value once.
         packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed)
 
-        server = LiveServer(log, host=args.host, port=args.port)
+        server = LiveServer(
+            log, host=args.host, port=args.port, task_event_client=args.task_event_client
+        )
         bridge = LiveLoop(
             packet_source,
             server.publish,
@@ -423,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
                         bridge,
                         generation=args.restart_generation,
                         input_mode=args.console_input,
+                        fullscreen=args.console_fullscreen,
                         status_file=args.status_file,
                         clients=lambda: [client.kind for client in server.clients],
                     ),

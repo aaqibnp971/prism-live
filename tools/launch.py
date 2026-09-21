@@ -12,10 +12,12 @@ import argparse
 import asyncio
 import contextlib
 import ctypes
+import ipaddress
 import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -34,7 +36,7 @@ POLL_SECONDS = 0.25
 STARTUP_TIMEOUT = 15.0
 HEALTH_TIMEOUT = 5.0
 PROBE_INTERVAL = 1.0
-ROLES = ("bridge", "task", "spectator")
+ROLES = ("bridge", "task", "spectator")  # Default testing configuration, loopback only.
 
 
 @dataclass(frozen=True)
@@ -100,9 +102,11 @@ def list_displays() -> list[Display]:
 
 
 def display_roles(
-    displays: list[Display], console: int, task: int, spectator: int
+    displays: list[Display], console: int, task: int | None, spectator: int
 ) -> dict[str, Display]:
-    requested = {"console": console, "task": task, "spectator": spectator}
+    requested = {"console": console, "spectator": spectator}
+    if task is not None:
+        requested["task"] = task
     if spectator in (console, task):
         raise ValueError("The spectator needs its own display; do not hide the console or task.")
     available = {display.index: display for display in displays}
@@ -115,9 +119,11 @@ def display_roles(
 
 
 def role_bounds(config: Config, role: str) -> tuple[int, int, int, int]:
-    """Two-screen booth: task left 65%, console right 35%; spectator owns its screen."""
+    """Booth mode uses whole displays; default browser testing shares the laptop."""
     display = config.displays[role]
-    shared = config.displays["task"].index == config.displays["console"].index
+    shared = (
+        config.browser_task and config.displays["task"].index == config.displays["console"].index
+    )
     if shared and role in ("task", "console"):
         task_width = round(display.width * 0.65)
         if role == "task":
@@ -150,6 +156,8 @@ class Config:
     log_dir: Path = ROOT / "logs"
     status_dir: Path = ROOT / "logs" / "launcher"
     headless: bool = False
+    booth: bool = False
+    lan_ip: str | None = None
     console_input: str = "terminal"
     displays: dict[str, Display] = field(default_factory=dict)
     distance_cm: float = 60.0
@@ -158,17 +166,35 @@ class Config:
     health_timeout: float = HEALTH_TIMEOUT
 
     @property
+    def browser_task(self) -> bool:
+        return not self.booth
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        return ("bridge", "spectator") if self.booth else ROLES
+
+    @property
+    def bind_host(self) -> str:
+        if not self.booth:
+            return "127.0.0.1"
+        if self.lan_ip is None:
+            raise ValueError("Booth mode requires a local address on your own router")
+        return self.lan_ip
+
+    @property
     def bridge_status(self) -> Path:
         return self.status_dir / "bridge.json"
 
 
 def bridge_command(config: Config, generation: int) -> list[str]:
-    return [
+    command = [
         str(config.python),
         "-m",
         "bridge.server",
         "--host",
-        "127.0.0.1",
+        config.bind_host,
+        "--task-event-client",
+        "quest" if config.booth else "task-screen",
         "--port",
         str(config.port),
         "--log-dir",
@@ -180,10 +206,15 @@ def bridge_command(config: Config, generation: int) -> list[str]:
         "--console-input",
         config.console_input,
     ]
+    if config.booth and not config.headless:
+        command.append("--console-fullscreen")
+    return command
 
 
 def browser_command(config: Config, role: str, profile: Path) -> list[str]:
-    query: dict[str, str | float] = {"ws": f"ws://127.0.0.1:{config.port}/live"}
+    if role not in config.roles or role == "bridge":
+        raise ValueError(f"Browser role {role!r} is not enabled in this mode")
+    query: dict[str, str | float] = {"ws": f"ws://{config.bind_host}:{config.port}/live"}
     if role == "task":
         fraction = (
             1.0 if config.headless else (role_bounds(config, role)[2] / config.displays[role].width)
@@ -494,7 +525,7 @@ class Supervisor:
     def __init__(self, config: Config):
         self.config = config
         self.children: dict[str, ManagedChild] = {}
-        self.generations = dict.fromkeys(ROLES, 0)
+        self.generations = dict.fromkeys(config.roles, 0)
         self.restart_at: dict[str, float] = {}
         self.events: list[dict[str, Any]] = []
         self.stopping = False
@@ -527,6 +558,8 @@ class Supervisor:
             raise RuntimeError("A launcher already owns this status directory.") from None
 
     def spawn(self, role: str) -> ManagedChild:
+        if role not in self.config.roles:
+            raise ValueError(f"Role {role!r} is not enabled")
         generation = self.generations[role]
         profile = None
         if role == "bridge":
@@ -658,7 +691,7 @@ class Supervisor:
     async def step(self) -> bool:
         """One bounded supervisor poll. False is an explicit clean console shutdown."""
         now = time.monotonic()
-        for role in ROLES:
+        for role in self.config.roles:
             if role not in self.children:
                 if now >= self.restart_at.get(role, 0):
                     try:
@@ -718,10 +751,12 @@ class Supervisor:
             "pid": os.getpid(),
             "updated": time.time(),
             "headless": self.config.headless,
+            "browser_task": self.config.browser_task,
+            "booth": self.config.booth,
             "stopping": self.stopping,
             "children": children,
             "bridge": bridge,
-            "ready": len(children) == len(ROLES)
+            "ready": set(children) == set(self.config.roles)
             and all(child["ready"] and child["connected"] for child in children.values()),
             "events": self.events,
         }
@@ -746,11 +781,51 @@ class Supervisor:
             await self.close()
 
 
-def main() -> None:
+def local_lan_addresses() -> list[str]:
+    """Local RFC1918 IPv4 adapters; do not contact an internet service to discover an IP."""
+    private_ranges = tuple(
+        ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    )
+    addresses = {
+        item[4][0]
+        for item in socket.getaddrinfo(
+            socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM
+        )
+    }
+    return sorted(
+        address
+        for address in addresses
+        if any(ipaddress.ip_address(address) in net for net in private_ranges)
+    )
+
+
+def select_lan_address(requested: str | None) -> str:
+    candidates = local_lan_addresses()
+    if requested is not None:
+        if requested not in candidates:
+            raise ValueError(f"--lan-ip must be a local private IPv4 address: {candidates}")
+        return requested
+    if len(candidates) != 1:
+        raise ValueError(
+            f"Choose the adapter on your own booth router with --lan-ip; candidates: {candidates}. "
+            "Never use venue WiFi."
+        )
+    return candidates[0]
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-displays", action="store_true")
     parser.add_argument("--console-display", type=int, default=0)
-    parser.add_argument("--task-display", type=int, default=0)
+    parser.add_argument(
+        "--booth",
+        action="store_true",
+        help="Own router only: LAN + Quest input + full console, no browser task",
+    )
+    parser.add_argument("--lan-ip", help="Booth router's local IPv4 adapter; requires --booth")
+    parser.add_argument(
+        "--task-display", type=int, help="Testing mode only; default shares the console display"
+    )
     parser.add_argument("--spectator-display", type=int, default=1)
     parser.add_argument(
         "--headless", action="store_true", help="Recovery diagnostic, not booth mode"
@@ -763,11 +838,17 @@ def main() -> None:
     parser.add_argument("--status-dir", type=Path, default=ROOT / "logs" / "launcher")
     parser.add_argument("--distance-cm", type=float, default=60.0)
     parser.add_argument("--screen-width-cm", type=float, default=59.77)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.list_displays:
             print(json.dumps([asdict(display) for display in list_displays()], indent=2))
             return
+        if args.task_display is not None and args.booth:
+            raise ValueError(
+                "--task-display is testing only; booth mode never opens a browser task"
+            )
+        if args.lan_ip is not None and not args.booth:
+            raise ValueError("--lan-ip requires --booth; testing stays on localhost")
         if not args.python.is_file():
             raise ValueError(f"Python environment missing: {args.python}; nothing was installed.")
         if not 1 <= args.port <= 65535:
@@ -781,16 +862,31 @@ def main() -> None:
             log_dir=args.log_dir.resolve(),
             status_dir=args.status_dir.resolve(),
             headless=args.headless,
+            booth=args.booth,
+            lan_ip=select_lan_address(args.lan_ip) if args.booth else None,
             console_input=args.console_input,
             distance_cm=args.distance_cm,
             screen_width_cm=args.screen_width_cm,
         )
         if not config.headless:
             config.displays = display_roles(
-                list_displays(), args.console_display, args.task_display, args.spectator_display
+                list_displays(),
+                args.console_display,
+                (args.console_display if args.task_display is None else args.task_display)
+                if not args.booth
+                else None,
+                args.spectator_display,
             )
         else:
             print("HEADLESS RECOVERY DIAGNOSTIC — display placement is not tested.", flush=True)
+        if config.booth:
+            print("BOOTH MODE: own router only — NEVER venue WiFi.", flush=True)
+            print(
+                f"Headset connects to ws://{config.bind_host}:{config.port}/live (client: quest)",
+                flush=True,
+            )
+        else:
+            print("TEST MODE: localhost, browser task producer; no LAN listener.", flush=True)
         asyncio.run(Supervisor(config).run())
     except KeyboardInterrupt:
         pass

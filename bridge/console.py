@@ -203,7 +203,7 @@ class PipeKeys:
 class TerminalKeys:
     """Windows console events, including key-up: held keys cannot toggle repeatedly."""
 
-    def __init__(self):
+    def __init__(self, *, fullscreen=False):
         if os.name != "nt" or not sys.stdin.isatty() or not sys.stdout.isatty():
             raise RuntimeError("Use a Windows terminal, or --console-input pipe for diagnostics")
         from ctypes import wintypes as w
@@ -251,6 +251,13 @@ class TerminalKeys:
         if not self.kernel.SetConsoleMode(self.output, self.mode_out.value | 4):
             self.close()
             raise RuntimeError("terminal must support virtual-terminal output")
+        if fullscreen:
+            self.kernel.SetConsoleDisplayMode.argtypes = [w.HANDLE, w.DWORD, ctypes.c_void_p]
+            # Owned Console Host supports this; never toggle a user's unrelated terminal.
+            if not self.kernel.SetConsoleDisplayMode(self.output, 1, None):
+                error = ctypes.WinError(ctypes.get_last_error())
+                self.close()
+                raise error
         self.record_type, self.count_type = Record, w.DWORD
         self.held = set()
 
@@ -295,10 +302,16 @@ def write_status(path: Path, payload) -> bool:
 
 
 async def run_console(
-    bridge, *, generation=0, input_mode="terminal", status_file=None, clients=lambda: []
+    bridge,
+    *,
+    generation=0,
+    input_mode="terminal",
+    fullscreen=False,
+    status_file=None,
+    clients=lambda: [],
 ):
     console = AttendantConsole(bridge, generation=generation)
-    keys = PipeKeys() if input_mode == "pipe" else TerminalKeys()
+    keys = PipeKeys() if input_mode == "pipe" else TerminalKeys(fullscreen=fullscreen)
     terminal = input_mode == "terminal"
     last_render = 0.0
     last_status = 0.0

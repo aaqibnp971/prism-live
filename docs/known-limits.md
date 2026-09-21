@@ -581,16 +581,29 @@ auto-stop. Baseline notices use only `baseline_end.outcome` and `problems`; slop
 turn a failed gate into success. The console never reads `regulate_result` and never calculates
 or chooses a spoken close. Its reminder points to peaked-at minus left-at on the spectator trace.
 
-**Two-display booth, clarified 21 September:** the external display is the spectator; the laptop
-does everything else. A full-screen console would hide the load task. The launcher instead tiles
-the laptop 65% task / 35% terminal console, keeping the warning visible, and makes the spectator
-full screen. Task geometry uses the measured monitor width apportioned to its actual viewport,
-including Windows DPI scaling, and updates on resize. Its fullscreen button is hidden in this
-layout so it cannot cover the console. The default physical width is still the explicitly
-provisional 27-inch/59.77 cm assumption: supply the **actual laptop width** and seated viewing
-distance in the launcher options. Window tiling does not validate these physical measurements.
+**Test and VR booth modes, clarified 21 September:** the default launcher stays in local browser
+test mode: a localhost-only bridge, `task-screen` as the task-event producer, a browser task on
+65% of the laptop beside a 35% terminal console, and a full-screen external spectator. `--booth`
+switches all of these together: bind the selected local RFC1918 LAN address, accept `quest` as
+the task-event producer, open **no browser task**, make the laptop console full screen and keep
+the external spectator full screen. The participant does the task in the headset and never
+looks at the laptop. Prompt 3.2 permits only one bound task-event producer; opening a browser
+task in booth mode would compete with the headset for that slot.
 
-`python -m tools.launch` supervises the real bridge/engine and two separately owned Edge profiles.
+LAN access is enabled only by `--booth`, on the project's own router, **never venue Wi-Fi**.
+The launcher prints `ws://LAN-IP:port/live` for the headset. If more than one suitable local
+adapter is available, select the router-facing address explicitly with `--lan-ip`; a private
+address alone does not prove that it belongs to the intended router. This mode switch does not
+add network start/stop controls: the attendant button remains in-process.
+
+In browser-task testing only, geometry uses the configured physical laptop width apportioned to
+the actual viewport, including Windows DPI scaling, and updates on resize. The task's fullscreen
+button is hidden so it cannot cover the console. The 27-inch/59.77 cm default remains provisional:
+supply the actual laptop width and viewing distance for browser tests. Tiling does not validate
+those measurements, and laptop viewing geometry is not the headset's geometry.
+
+`python -m tools.launch` supervises the real bridge/engine and separate task/spectator Edge
+profiles in default test mode; `--booth` supervises the bridge/engine and spectator only.
 The console is its own Windows Console Host window; no extra dependency or service is installed.
 Read-only status files and read-only browser diagnostics monitor readiness; neither carries a
 session command. A bridge crash gives a fresh idle session id, no armed start and an explicit
@@ -605,8 +618,10 @@ cannot be promised a 30 s recovery. The existing armband/audio hardware checklis
 
 **Measured 21 September, 12:54 +0400**, by `python -m tools.check_recovery`. This run used the
 committed engine/shim, the real default audio device and real clock, synthetic RR, and two
-headless Edge pages. Each role was killed during baseline. Recovery ended only when audio was
-advancing, the console was fresh, trusted beats were arriving and both pages had reconnected.
+headless Edge pages. This is the three-role **default browser-test configuration**, not a
+measurement of the headset or `--booth` mode. Each role was killed during baseline. Recovery
+ended only when audio was advancing, the console was fresh, trusted beats were
+arriving and both pages had reconnected.
 
 | Process killed | Full software recovery | Session afterwards |
 |---|---|---|
@@ -620,26 +635,51 @@ late frames. Q then shut down the booth cleanly. Reproduction logs and JSON repo
 against the real bridge: press, cancel about 499 ms later, no start firing, then clean Q shutdown.
 Unit tests cover stop/reset, all four refusal strings, final-window cancellation, restart warning,
 signal-loss display without auto-stop, and failed gate reporting despite a slope quality of 1.0.
-The owned Console Host window was separately placed at x=1248 on the 1920-pixel laptop display,
-with width 672 and height 1038 (Windows quantizes the terminal to character cells). Ten consecutive
-placement checks stayed stable. An actual Edge task viewport at 960 CSS pixels / DPR 1.25 on a
+In the default browser-test layout, the owned Console Host window was separately placed at
+x=1248 on the 1920-pixel laptop display, with width 672 and height 1038 (Windows quantizes the
+terminal to character cells). Ten consecutive placement checks stayed stable. An actual Edge
+task viewport at 960 CSS pixels / DPR 1.25 on a
 configured 1920-pixel, 60 cm-wide monitor reported 37.5 cm; resizing to 768 reported 30.0 cm.
 Its fullscreen button stayed hidden, with no JavaScript exceptions. These are separate checks,
 not a claim that the unavailable external display was exercised.
 
-**Startup contention found, not hidden:** the first two attempts used fresh Edge profiles on the
-project's D: drive. Local page loading stalled for seconds; the combined run starved the bridge,
-and scheduler events with RR over the shim's accepted range caused `PLS_ERROR_INVALID_ARGUMENT`.
-The launcher now creates isolated profiles in the system temporary directory on C:. An isolated
-task page then loaded in 1.114 s versus 11.477 s, and the combined recovery run above passed without
-unplanned restarts. No heartbeat or scheduler algorithm was changed under this light-review task.
-This is not proof against arbitrary OS/disk stalls: recurring starvation or out-of-range accepted
-RR needs a separately authorised heavy-review timing investigation.
+For the booth-mode correction, an owned Console Host was separately checked in full-screen mode
+on the laptop: all 20 samples over 5 s reported full-screen mode and bounds `(0, 0, 1920, 1080)`;
+the launcher's placement checks remained stable after the initial two startup polls. This
+console-only check opened no audio device or LAN listener. Loopback socket tests cover `quest`
+producer admission, rejection of browser task events in Quest mode, and producer reconnection.
+They do not verify the physical external screen, router/firewall path or headset application.
 
-**Still unverified:** physical placement/fullscreen on the actual two-display booth, visibility
-from across the hall, the measured laptop viewing geometry, recovery with the real BLE source,
-and the existing wired-headphone/DAC/device-loss checks. Only one physical display was connected
-for this run. Headless timing verifies software recovery, not the missing display or armband.
+**OPEN — a multi-second bridge stall can reach audio as an out-of-range RR interval.** In the
+first two recovery attempts, fresh Edge profiles were on the project's D: drive. Local page
+loading stalled for seconds and the combined run starved the bridge. The audio interface rejected
+a scheduler event whose RR exceeded the shim's accepted range with `PLS_ERROR_INVALID_ARGUMENT`.
+This was **mitigated by faster browser startup, not fixed**: profiles now live in the system
+temporary directory on C:, reducing an isolated task-page load from 11.477 s to 1.114 s. The
+combined recovery run then passed without unplanned restarts, but neither that pass nor omitting
+the browser task in `--booth` mode resolves the stall-handling bug. Heartbeat and scheduler
+code were deliberately not changed under light review. Investigating and fixing their behaviour
+after a stall requires a separately authorised heavy-review task.
+
+Other **potential booth stall sources, not established causes of the observed failure**, include:
+
+- Synchronous log/status-file writes, slow storage, antivirus scanning, indexing or cloud sync
+  contending for disk access.
+- CPU contention from headset rendering or streaming, browsers and background updates; thermal
+  or power throttling; memory pressure and paging.
+- Windows sleep/resume or other long process descheduling.
+- A blocking Python operation, native control call or future BLE/driver call made on the live
+  loop's thread, or device/driver interrupt load and system latency delaying that thread.
+
+A slow network or delayed packet alone is not a bridge-loop stall: the loop should still tick
+while awaiting asynchronous I/O. It becomes this risk if a call blocks the loop or system
+contention prevents it running. No general multi-second-stall recovery guarantee has been proved.
+
+**Still unverified:** physical placement/fullscreen on the actual two-display VR booth, visibility
+from across the hall, headset task-producer integration/recovery, browser-test laptop viewing
+geometry, recovery with the real BLE source, and the existing wired-headphone/DAC/device-loss
+checks. Only one physical display was connected for this run. Headless timing verifies software
+recovery in the stated test configuration, not the missing display, headset or armband.
 
 ---
 

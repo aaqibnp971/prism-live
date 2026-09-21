@@ -525,11 +525,17 @@ geometry and reset/idle retention. See `web/spectator/README.md` for display def
 ## 3.6 Attendant controls and crash recovery
 
 **Implementation, 21 September:** `bridge/console.py` supplies the in-process terminal button;
-`tools/launch.py` supervises the bridge and both live browser screens. Idle press arms, countdown
+`tools/launch.py` supervises the bridge and live browser screens. Idle press arms, countdown
 press cancels, running press stops through the 3 s reset. No control HTTP/WebSocket is added.
-The confirmed booth has two displays: the laptop tiles task and console, while the external
-spectator is full screen. See `docs/launcher.md` for the command and configuration, and
-`docs/known-limits.md` for measured recovery and outstanding hardware/display verification.
+Default test mode stays localhost-only, opens the browser task, binds `task-screen` as the sole
+task-event producer and tiles task/console on the laptop. `--booth` switches together to a selected
+local RFC1918 LAN address, the `quest` producer, no browser task, a full-screen laptop console and
+a full-screen external spectator. The participant's task is then in the headset; no browser can
+occupy prompt 3.2's single producer slot. LAN mode is only for the project's own router, never
+venue Wi-Fi; the launcher prints the headset's `ws://LAN-IP:port/live` URL. See `docs/launcher.md`
+for configuration, including `--lan-ip` when adapter selection is ambiguous, and
+`docs/known-limits.md` for the default browser-test recovery measurements, the open
+bridge-stall/out-of-range-RR bug, and outstanding booth hardware/display verification.
 
 > Single-button start, stop and reset for the attendant.
 >

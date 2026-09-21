@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -57,6 +58,10 @@ def test_commands_have_no_network_control_or_standalone_mode(config):
     assert command[:3] == ["python.exe", "-m", "bridge.server"]
     assert command[command.index("--restart-generation") + 1] == "4"
     assert command[command.index("--console-input") + 1] == "pipe"
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--task-event-client") + 1] == "task-screen"
+    assert "--console-fullscreen" not in command
+    assert config.roles == ("bridge", "task", "spectator")
     browser = launch.browser_command(config, "task", Path("private-profile"))
     assert "--headless=new" in browser
     parsed = urllib.parse.urlsplit(browser[-1])
@@ -65,6 +70,114 @@ def test_commands_have_no_network_control_or_standalone_mode(config):
     assert query["ws"] == ["ws://127.0.0.1:8787/live"]
     assert "standalone" not in query
     assert "--one-session" not in command
+
+
+def test_booth_switches_layout_network_and_producer_together(config):
+    config.booth = True
+    config.lan_ip = "192.168.8.20"
+    config.headless = False
+    config.console_input = "terminal"
+    config.displays = launch.display_roles(displays(), 0, None, 1)
+    assert config.roles == ("bridge", "spectator")
+    assert not config.browser_task
+    assert "task" not in config.displays
+    assert launch.role_bounds(config, "console") == (0, 0, 1920, 1080)
+    assert launch.role_bounds(config, "spectator") == (-1920, 0, 1920, 1080)
+    for generation in (0, 1):
+        command = launch.bridge_command(config, generation)
+        assert command[command.index("--host") + 1] == "192.168.8.20"
+        assert command[command.index("--task-event-client") + 1] == "quest"
+        assert "--console-fullscreen" in command
+    command = launch.browser_command(config, "spectator", Path("spectator-private"))
+    assert "--kiosk" in command
+    url = command[command.index("--kiosk") + 1]
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    assert query["ws"] == ["ws://192.168.8.20:8787/live"]
+    with pytest.raises(ValueError, match="not enabled"):
+        launch.browser_command(config, "task", Path("must-not-open"))
+    with pytest.raises(ValueError, match="not enabled"):
+        launch.Supervisor(config).spawn("task")
+    config.headless = True
+    assert "--console-fullscreen" not in launch.bridge_command(config, 0)
+
+
+def test_lan_discovery_keeps_only_local_private_ipv4(monkeypatch):
+    addresses = [
+        "127.0.0.1",
+        "169.254.1.2",
+        "8.8.8.8",
+        "0.0.0.0",
+        "192.168.8.20",
+        "192.168.8.20",
+        "10.1.2.3",
+        "172.16.2.3",
+        "172.32.2.3",
+    ]
+
+    def local_addresses(host, port, family, kind):
+        assert family == launch.socket.AF_INET
+        assert kind == launch.socket.SOCK_STREAM
+        return [(family, kind, 6, "", (address, 0)) for address in addresses]
+
+    monkeypatch.setattr(launch.socket, "getaddrinfo", local_addresses)
+    assert launch.local_lan_addresses() == ["10.1.2.3", "172.16.2.3", "192.168.8.20"]
+
+
+def test_lan_adapter_selection_requires_unambiguous_local_address(monkeypatch):
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["192.168.8.20"])
+    assert launch.select_lan_address(None) == "192.168.8.20"
+    assert launch.select_lan_address("192.168.8.20") == "192.168.8.20"
+    with pytest.raises(ValueError, match="local private"):
+        launch.select_lan_address("0.0.0.0")
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: [])
+    with pytest.raises(ValueError, match="own booth router"):
+        launch.select_lan_address(None)
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["10.0.0.2", "192.168.8.20"])
+    with pytest.raises(ValueError, match="--lan-ip"):
+        launch.select_lan_address(None)
+    assert launch.select_lan_address("192.168.8.20") == "192.168.8.20"
+
+
+@pytest.mark.parametrize("booth", [False, True])
+def test_cli_mode_is_explicit_and_prints_the_headset_address(booth, monkeypatch, capsys):
+    settings = []
+
+    class FakeSupervisor:
+        def __init__(self, config):
+            settings.append(config)
+
+        async def run(self):
+            pass
+
+    def local_addresses():
+        assert booth, "Default mode must not discover or bind any LAN adapter"
+        return ["192.168.8.20"]
+
+    monkeypatch.setattr(launch, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launch, "local_lan_addresses", local_addresses)
+    monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
+    monkeypatch.setattr(launch, "list_displays", displays)
+    launch.main(["--python", sys.executable] + (["--booth"] if booth else []))
+    config = settings[0]
+    assert config.booth is booth
+    assert config.browser_task is not booth
+    output = capsys.readouterr().out
+    if booth:
+        assert config.bind_host == "192.168.8.20"
+        assert "ws://192.168.8.20:8787/live" in output
+        assert "NEVER venue WiFi" in output
+        assert set(config.displays) == {"console", "spectator"}
+    else:
+        assert config.bind_host == "127.0.0.1"
+        assert "no LAN listener" in output
+        assert set(config.displays) == {"console", "task", "spectator"}
+
+
+@pytest.mark.parametrize("args", [["--lan-ip", "192.168.8.20"], ["--booth", "--task-display", "0"]])
+def test_cli_rejects_mixed_mode_flags(args):
+    with pytest.raises(SystemExit) as error:
+        launch.main(args)
+    assert error.value.code == 2
 
 
 def test_tiled_task_uses_app_mode_and_scaled_physical_width(config):
@@ -331,6 +444,44 @@ def test_snapshot_requires_all_three_healthy_connected_processes(config):
     sup.children["task"].connected = False
     assert not sup.snapshot()["ready"]
     assert json.loads(sup.status_path.read_text())["headless"] is True
+
+
+def test_booth_supervises_only_bridge_and_spectator_including_after_restart(config, monkeypatch):
+    async def check():
+        config.booth = True
+        config.lan_ip = "192.168.8.20"
+        sup = supervisor(config)
+        started = []
+
+        def spawn(role):
+            started.append(role)
+            return add_child(sup, role)
+
+        async def healthy(child, now):
+            child.ready = child.connected = True
+            child.last_healthy = now
+
+        monkeypatch.setattr(sup, "spawn", spawn)
+        monkeypatch.setattr(sup, "_health", healthy)
+        assert await sup.step()
+        assert started == ["bridge", "spectator"]
+        snapshot = sup.snapshot()
+        assert snapshot["booth"] and not snapshot["browser_task"]
+        assert snapshot["ready"]  # No task page or connected Quest required for process readiness.
+        spectator = sup.children["spectator"]
+        sup.children["bridge"].process.exit_code = 1
+        assert await sup.step()
+        assert not sup.snapshot()["ready"]
+        sup.restart_at["bridge"] = 0
+        assert await sup.step()
+        assert started == ["bridge", "spectator", "bridge"]
+        assert sup.children["spectator"] is spectator
+        assert sup.generations == {"bridge": 1, "spectator": 0}
+        assert sup.snapshot()["ready"]
+        spectator.connected = False
+        assert not sup.snapshot()["ready"]
+
+    asyncio.run(check())
 
 
 def test_duplicate_launcher_directory_is_locked(config):

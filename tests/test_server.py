@@ -65,6 +65,26 @@ async def closed_with(ws):
     return ws.close_code, ws.close_reason
 
 
+def test_server_defaults_to_loopback_and_browser_input(tmp_path, monkeypatch):
+    server = live.LiveServer(SessionLog(tmp_path))
+    assert server.host == "127.0.0.1"
+    assert server.task_event_client == "task-screen"
+    parsed = []
+    original_parse = live.argparse.ArgumentParser.parse_args
+
+    def parse(parser, *args, **kwargs):
+        result = original_parse(parser, *args, **kwargs)
+        parsed.append(result)
+        return result
+
+    # Inspect CLI configuration without opening audio or starting a listener.
+    monkeypatch.setattr(live.argparse.ArgumentParser, "parse_args", parse)
+    monkeypatch.setattr(live.asyncio, "run", lambda coroutine: coroutine.close())
+    assert live.main([]) == 0
+    assert parsed[0].host == "127.0.0.1"
+    assert parsed[0].task_event_client == "task-screen"
+
+
 def test_hello_then_a_ping_gets_a_pong(tmp_path):
     async def scenario(server, url):
         async with connect(url) as ws:
@@ -265,13 +285,14 @@ def test_only_the_configured_client_kind_can_send_task_events(tmp_path):
     assert received == []
 
 
-def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path):
+@pytest.mark.parametrize("producer", ["task-screen", "quest"])
+def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path, producer):
     received = []
 
     async def scenario(server, url):
         first, second = await connect(url), await connect(url)
         try:
-            hello = encode(dict(HELLO, client="task-screen"))
+            hello = encode(dict(HELLO, client=producer))
             await first.send(hello)
             await second.send(hello)
             await first.send(encode(task_event(server.log.session)))
@@ -279,7 +300,7 @@ def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path):
                 if server.task_event_producer is not None:
                     break
                 await asyncio.sleep(0.01)
-            assert server.task_event_producer.label == "c1/task-screen"
+            assert server.task_event_producer.label == f"c1/{producer}"
 
             await second.send(encode(task_event(server.log.session)))
             code, reason = await closed_with(second)
@@ -295,7 +316,7 @@ def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path):
         assert server.task_event_producer is None
 
         async with connect(url) as replacement:
-            await replacement.send(encode(dict(HELLO, client="task-screen")))
+            await replacement.send(encode(dict(HELLO, client=producer)))
             await replacement.send(encode(task_event(server.log.session)))
             for _ in range(50):
                 if len(received) == 2:
@@ -306,10 +327,38 @@ def test_one_task_producer_at_a_time_and_a_reconnect_can_take_over(tmp_path):
         received.append(client.label)
         return True
 
-    lines = with_server(tmp_path, scenario, on_task_event=receive)
-    assert received == ["c1/task-screen", "c3/task-screen"]
+    lines = with_server(tmp_path, scenario, on_task_event=receive, task_event_client=producer)
+    assert received == [f"c1/{producer}", f"c3/{producer}"]
     assert sum(r.get("event") == "task_event_producer_bound" for r in lines) == 2
     assert sum(r.get("event") == "task_event_producer_released" for r in lines) == 2
+
+
+@pytest.mark.parametrize("producer,rejected", [("quest", "task-screen"), ("task-screen", "quest")])
+def test_wrong_mode_client_cannot_claim_producer_before_the_right_one(tmp_path, producer, rejected):
+    received = []
+
+    async def scenario(server, url):
+        async with connect(url) as wrong:
+            await wrong.send(encode(dict(HELLO, client=rejected)))
+            await wrong.send(encode(task_event(server.log.session)))
+            code, reason = await closed_with(wrong)
+            assert code == 1008 and producer in reason
+            assert server.task_event_producer is None
+        async with connect(url) as right:
+            await right.send(encode(dict(HELLO, client=producer)))
+            await right.send(encode(task_event(server.log.session)))
+            for _ in range(50):
+                if received:
+                    break
+                await asyncio.sleep(0.01)
+            assert server.task_event_producer.kind == producer
+
+    def receive(msg, client, arrival):
+        received.append(client.kind)
+        return True
+
+    with_server(tmp_path, scenario, on_task_event=receive, task_event_client=producer)
+    assert received == [producer]
 
 
 def test_a_task_handler_failure_visibly_disconnects_the_screen(tmp_path):
