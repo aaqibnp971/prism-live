@@ -150,7 +150,15 @@ That is not a compromise from lack of time. Restraint reads as premium here, and
 
 ### The seven numbers
 
-Everything you draw is controlled by exactly seven values. You will be given ten reference frames showing what the world looks like at specific combinations, with these numbers written beside each.
+Everything you draw is controlled by exactly seven values. **The ten reference frames now exist
+at `docs/design/field-frames.html`**, with exact values beside each. This is a Claude Design bundle:
+extract the component from the last JSON-escaped script block, never run the bundle.
+
+**The working reference for the Unity scene is `web/shared/`.** Port `field_mapping.js` exactly
+for state → seven values, `field_pulse.js` for beat scheduling/envelope, and the appearance and
+linear-light rails of `field_renderer.js`. Both browser screens use `field_view.js` to connect
+those pieces. `docs/field-reference.md` records the formulas, cross-dissolve policy, safety limits,
+and all ten side-by-side comparisons. There is no React or browser build step.
 
 | Token | Min | Max | What it is |
 |---|---|---|---|
@@ -158,13 +166,18 @@ Everything you draw is controlled by exactly seven values. You will be given ten
 | Light intensity | 0.35 | 1.10 | Multiplier on the single diffuse source |
 | Hue | 18° | 216° | HSV hue |
 | Saturation | 0.08 | 0.36 | HSV saturation |
-| Horizon position | 0.38 | 0.62 | Normalised vertical position. **0.50 = eye level** |
+| Horizon position | 0.38 | 0.62 | **Measured from the top:** 0.50 = eye level; larger values lower the horizon and expose more sky. Light stays at (0.50, 0.40). Current segment horizon ≥ 0.44; retuning above the light (y < 0.40) would put it underground |
 | Pulse amplitude | 0.00 | 0.22 | Peak-to-peak luminance modulation, as a fraction of base field luminance |
 | Field motion rate | 0.004 | 0.045 | Normalised units per second of gradient and fog drift |
 
 ### What drives them, per segment
 
-`arousal`, `cognitive_load` and `confidence` arrive in the `state` message. `heartbeat` comes from `beat` messages.
+`arousal`, `cognitive_load`, `confidence` and **host-computed `authority`** arrive in the `state`
+message. `heartbeat` comes from scheduled `beat` messages. Load/regulate use
+`effective = 0.5 + (psv - 0.5) × authority`, once; do not multiply by a second load ceiling or
+compute authority from confidence. The ranges below are endpoints, not permission to force a
+low-authority reading to an extreme. In regulate high arousal uses the bright 46° end and low
+arousal the dim 24° end. Baseline alone reads confidence directly for its learning animation.
 
 **Baseline** (45 s, then held to 56 s while the laptop waits for a heart rate figure)
 - **baseline confidence**, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
@@ -229,7 +242,13 @@ This is because the audio travels down a wire and arrives instantly, while your 
 - It is **never applied as a full-field flash**. It modulates the fog and the diffuse light source only
 - **90 ms rise time**
 
-At the top of the range, 95 bpm is about 1.6 Hz. These limits keep it well under any photosensitivity threshold. This is a safety constraint, not a style choice. If anyone retunes the pulse mapping later, these stay.
+**22 September correction:** 95 bpm is only an authored endpoint, not the highest possible rate.
+The shared reference tests 45–180 bpm (180 is 3 Hz), clamps amplitude above 95, and additionally
+limits absolute linear-light luminance change to 0.09. Rise is 90 ms, fall 180 ms; envelopes never
+add. These software bounds replace the old unsupported assertion of being below *any*
+photosensitivity threshold. They are not headset or medical safety certification. Preserve the
+rails in Unity, test its actual rendered output, and read the ambient-field limits in
+`docs/known-limits.md` before making any safety claim.
 
 ## 11. The attention task
 
@@ -396,7 +415,7 @@ Chase these. You cannot start some of them without.
 
 | Thing | For |
 |---|---|
-| **The ten reference frames plus their seven token values** | You cannot build the field without them. This is the biggest dependency |
+| **The ten reference frames plus their seven token values — supplied** | `docs/design/field-frames.html`; extract the component, do not run the bundle. `web/shared/` is the working reference for the Unity scene; mapping and comparisons in `docs/field-reference.md` |
 | `docs/message-contract-v1.md` | Comes with this document |
 | `tools/fake_sender.py` | Your development input |
 | The Quest 3S | Obviously |

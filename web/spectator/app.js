@@ -5,12 +5,20 @@
 
   const Spectator = globalThis.PrismSpectator;
   const Clock = globalThis.PrismClockSync;
+  const Field = globalThis.PrismFieldView;
   if (!Spectator) throw new Error("spectator model did not load");
   if (!Clock) throw new Error("clock synchroniser did not load");
+  if (!Field) throw new Error("shared field did not load");
 
   const model = new Spectator.SpectatorModel();
   const params = new URLSearchParams(globalThis.location.search);
   const elements = collectElements();
+  const fieldView = new Field.FieldView(required("field-canvas"), {
+    onError(error) {
+      required("field-error").hidden = false;
+      console.error("FIELD UNAVAILABLE", error);
+    },
+  });
   const scheduledBeats = new Set();
   const stageSegments = ["baseline", "load", "regulate", "resolve"];
   let pendingBeats = [];
@@ -108,6 +116,7 @@
           return;
         }
         lastStateAt = performance.now();
+        fieldView.onState(message, lastStateAt);
         hasState = true;
         feedFrozen = false;
         failedOnce = false;
@@ -170,8 +179,11 @@
   }
 
   function scheduleBeat(connection, message) {
-    const delay = clockSync.toLocal(message.t_play) - performance.now();
+    const localPlay = clockSync.toLocal(message.t_play);
+    const receivedAt = performance.now();
+    const delay = localPlay - receivedAt;
     if (delay < 0) return; // The contract says a late beat is dropped, never caught up.
+    if (!feedFrozen) fieldView.onBeat(message, localPlay, receivedAt);
     const timer = globalThis.setTimeout(() => {
       scheduledBeats.delete(timer);
       const link = Spectator.linkState(
@@ -232,6 +244,7 @@
   }
 
   function clearScheduledBeats() {
+    fieldView.freeze();
     for (const timer of scheduledBeats) globalThis.clearTimeout(timer);
     scheduledBeats.clear();
   }

@@ -534,7 +534,8 @@ on the booth network that normal scheduling jitter does not create false disconn
 **Visual port, 21 September:** v3's uncertainty hatching is a display convention: its half-width is
 `0.45 × (1 − confidence)` around the host reading, clipped to 0–1. It is not a calibrated statistical
 interval and cannot add confidence or authority. Unknown readings show no reading fill; valence
-always has zero confidence and authority. The field remains a 3.4 placeholder; the 3.5 reveal uses
+always has zero confidence and authority. The field's original 3.4 placeholder is now replaced
+by the shared renderer (ambient-field section below); the 3.5 reveal uses
 the same local IBM Plex fonts, independent of internet access. The browser
 regression check covers trace/card clipping, including a low endpoint of 34 BPM, and loss of state
 messages while clock replies continue. Booth-distance readability still needs an on-site check.
@@ -682,6 +683,60 @@ checks. Only one physical display was connected for this run. Headless timing ve
 recovery in the stated test configuration, not the missing display, headset or armband.
 
 ---
+
+## The shared ambient field (prompt 3.4, 22 September)
+
+**Reference and mapping.** The ten frames exist at `docs/design/field-frames.html`. Only the
+component from the last JSON-escaped script is extracted; the design bundle is never launched.
+`web/shared/field_mapping.js` is the portable state-to-seven-values mapping; the renderer is
+separate. Both browser surfaces use it. Load/regulate use `0.5 + (psv - 0.5) × state.authority`
+once; the load ceiling is already in that authority. Baseline confidence excludes valence and
+uses the script's 0.393 divisor, not `baseline_quality` or a timer. Resolve keeps the observed
+regulate-entry offsets and scales them by the host's remaining authority ratios. A client
+joining in resolve has no entry history and uses its fixed palette, not invented past values.
+All exact formulas, reference comparisons and reproduction commands: `docs/field-reference.md`.
+
+**Horizon / underground-light risk.** Positions are measured from the top. Larger y means a
+lower horizon and more sky. The diffuse source centre is always **x 0.50, y 0.40**. Current
+segment mappings have horizon y ≥ 0.44, so the centre stays above ground. Retuning the horizon
+**above y 0.40 on screen (numerically below 0.40)** would put the source underground; y = 0.40
+puts it on the horizon. The global token minimum is 0.38, so the global clamp does not prevent
+this: recheck the geometry if ranges change. Never move the source to conceal such a retune.
+
+**The old photosensitivity claim does not establish safety at 180 bpm.** The script's claim
+about 95 bpm being below *any* threshold was not validated. At 180 bpm, the visual cadence is
+3 Hz, not approximately 1.6 Hz. The implementation clamps amplitude above the authored 95-bpm
+endpoint, accepts scheduled non-rejected beats only, never adds overlapping envelopes, uses
+a 90 ms raised-cosine rise and 180 ms fall, and suppresses rates beyond the tested range or
+more than three planned onsets in a rolling second. It never creates replacement beats.
+
+The renderer additionally enforces, **per actual 8-bit output pixel**, a positive linear-sRGB
+luminance change no greater than the token amplitude (hard-capped at 0.22) times the unpulsed
+base-gradient luminance, and no greater than **0.09 absolute**. Using the darker base gradient
+is stricter than using the complete unpulsed field. Only local fog/striation and diffuse-light
+layers brighten; the base gradient, full-field ambient haze, task objects, reticle and labels
+are untouched. Fog/light masks leave an unchanged part of the field; there is no full-field
+brightness multiplier. The same caps survive palette cross-dissolves and quantization.
+
+This is informed by the [W3C general-flash definition](https://www.w3.org/WAI/WCAG22/Understanding/three-flashes-or-below-threshold),
+which considers changes of at least 0.10 in relative luminance and the number/area of flashes.
+The extra 0.09 cap leaves a digital margin below that general-flash amplitude criterion;
+the ratio-only 0.22 rail would not itself prove this for arbitrary bright pixels. These tests
+**do not certify photosensitivity safety**, red-flash compliance of an entire experience, or
+the optical output of a headset. They do not cover simultaneous task/other-UI changes, display
+brightness/HDR, headset optics, motion relative to the eye, or individual susceptibility.
+Hardware/display-specific assessment is still required; make no medical safety claim.
+
+**Timing and portability.** Tested scheduling covers every integer rate 45–180 bpm; late
+arrival beats and first-render onsets missed by more than 45 ms are dropped, not replayed.
+The 90 ms rise describes the continuous envelope; a 60/90 Hz display samples it in frames,
+and 8-bit output adds quantization. This is not millisecond DAC/display alignment evidence.
+Cross-dissolve target weights follow host segment elapsed across ten seconds, with up to
+250 ms presentation-only easing to each newly reported weight, never beyond it. Drift is
+cosmetic animation; it does not advance segment state. A lost/stale link freezes all field
+pixels and clears queued beats, with the existing visible marker. Renderer unavailability is
+shown as FIELD UNAVAILABLE rather than an invented scene. Unity must port the mapping and
+limits, not just the pictures; Quest 90 fps and optical output remain unverified.
 
 ## The PSV, for Week B and for validation
 

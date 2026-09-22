@@ -43,7 +43,7 @@ MAY MOVE bar reads the host's authority directly. Valence has no reading or auth
 fill and each segment's progress use host elapsed/nominal time; strip widths are layout proportions,
 not a four-minute deadline. The timer shows host `t_session` without a fixed total.
 
-The field is deliberately a placeholder for 3.4. The 3.5 reveal ports v3's three large-number cards,
+The field mirror uses the shared 3.4 renderer (below). The 3.5 reveal ports v3's three large-number cards,
 photograph heading and expanded trace, with the live rules below. Dimension titles are slightly
 smaller than v3 to fit second-person labels and NOT READABLE; compact numeric confidence labels,
 signal status and live-link/fullscreen controls are retained from the live screen.
@@ -89,3 +89,27 @@ id does not overwrite them; the next baseline clears all of them. A stopped/fail
 not present a completed result. A screen opened late or disconnected mid-session cannot backfill:
 it marks PARTIAL TRACE, uses only observed readings and shows a dash for missing first/load/resolve
 readings or N. Opening after baseline cannot supply SAT DOWN AT. Reloading in idle remains cold.
+
+## Ambient field mirror (3.4)
+
+THE SAME NUMBERS, DRAWN HERE now shows the field from the reference frames in
+`docs/design/field-frames.html`. It is not a headset video feed. Both browser pages use exactly
+`web/shared/field_mapping.js`, `field_pulse.js`, `field_renderer.js` and `field_view.js`.
+Mapping supplies the seven tokens from host state; drawing knows nothing about segment decisions
+or physiology. Baseline clears with confidence, and all four active segments are represented.
+
+Two separate palettes cross-dissolve over ten seconds of host-reported segment time. Local
+animation adds fog drift and scheduled heartbeat envelopes only; it never advances host progress.
+Drawing eases each received palette-weight update over 250 ms, never beyond the verified host
+target, so a ten-second transition can finish at most 250 ms after the host reports its endpoint.
+The fixed light centre is x=0.50, y=0.40 with top-origin horizon coordinates. Pulse affects localized
+fog/light only, subject to the renderer's luminance clamp and the tested 90 ms envelope rise.
+
+Beats are enqueued at their clock-synchronised play time, separately from the existing trace timer.
+Rejected/late beats do not flash, and a disconnect freezes the exact image while clearing the queue.
+No extrapolated or simulated field runs offline. Idle/reset clear the hidden field state; the
+3.5 trace-hold panel and its cold-idle behaviour remain unchanged.
+
+WebGL initialization failure or context loss shows FIELD UNAVAILABLE inside the field panel,
+without breaking the live numbers/trace. Reload the display after restoring graphics. There is
+no unlabelled substitute scene, and the warning is independent of the live-link marker.

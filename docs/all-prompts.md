@@ -483,11 +483,12 @@ tests run through pytest; operating notes are in `web/spectator/README.md`.
 the layout, type, palette, uncertainty/authority bars and baseline learning fill. The live plain-JS
 architecture and tests remain; no framework, build step or simulation mode was imported. Fonts are
 local. Header overlap and trace overflow are fixed, with numerical and real-browser bounds tests.
-The field remains a placeholder for 3.4; the v3 reveal is implemented separately in 3.5 below.
+The field was left as a placeholder at that stage; prompt 3.4 now replaces it with the shared
+renderer. The v3 reveal is implemented separately in 3.5 below.
 
-## 3.4 Ambient field for regulate and resolve
+## 3.4 Ambient field for all four segments
 
-> Build the ambient visual field in `web/task/` for the regulate and resolve segments, using the token sheet in docs/experience-script.md section 4.
+> Build the ambient visual field for baseline, load, regulate and resolve, using the token sheet in docs/experience-script.md section 4 and the ten frames at `docs/design/field-frames.html`. One shared plain-JS renderer in `web/shared/`, used by both `web/task/` and the spectator's field mirror. Extract the reference component; never run the design bundle.
 >
 > Seven tokens: fog density, light intensity, hue, saturation, horizon position, pulse amplitude, field motion rate. Driven by the state message and the beat message.
 >
@@ -496,6 +497,16 @@ The field remains a placeholder for 3.4; the v3 reveal is implemented separately
 > Between segments, cross-dissolve over 10 s. Never sweep hue between segments.
 >
 > This becomes the specification for the Unity scene later, so keep the token application logic separate from the rendering.
+
+**Implemented 22 September.** `field_mapping.js` is the state-to-seven-token reference,
+`field_pulse.js` schedules the 90 ms visual heartbeat, `field_renderer.js` draws and clamps actual
+linear-light luminance, and `field_view.js` is the shared browser wiring. Coordinates are
+top-origin, light fixed at (0.50, 0.40). Baseline clears from confidence, load/regulate consume
+host authority, and resolve uses host remaining time and authority taper. The ten-second
+host-driven cross-dissolve mixes complete frames, never sweeps hue. Heartbeat scheduling is
+tested at every integer rate 45–180 bpm; actual rendered pixel safety and all ten exact endpoints
+are compared in an installed browser. The old 95-bpm safety assurance is not carried forward.
+See `docs/field-reference.md`, `docs/known-limits.md`, and VR handoff §§9, 10 and 22.
 
 ## 3.5 Trace reveal
 

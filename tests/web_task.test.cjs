@@ -29,11 +29,14 @@ function taskShell(search, width, scale = 1) {
   }
   const context = {
     PrismLoadTask: Task, URLSearchParams, Map, console,
+    PrismFieldView: { FieldView: class {}, STATE_STALE_MS: 2500 },
+    PrismClockSync: { ClockSync: class {} }, PrismFieldPulse: {},
     document: { getElementById: element, documentElement: {} },
     location: { search, protocol: "file:", hostname: "" },
     devicePixelRatio: scale,
     addEventListener(name, handler) { listeners.set(name, handler); },
     requestAnimationFrame() {},
+    setInterval() {},
     getComputedStyle() { return { getPropertyValue() { return "58px"; } }; },
     WebSocket: class { addEventListener() {} },
   };

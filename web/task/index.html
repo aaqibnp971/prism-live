@@ -9,6 +9,8 @@
   </head>
   <body>
     <main id="field" aria-label="Prism Live load task">
+      <canvas id="ambient-field" aria-label="Live ambient field from host state"></canvas>
+      <p id="field-error" class="field-error" role="alert" hidden>FIELD UNAVAILABLE — GRAPHICS FAILED. RELOAD THIS DISPLAY.</p>
       <header class="status-bar" aria-live="polite">
         <div class="link-state">
           <span id="link-dot" class="link-dot"></span>
@@ -45,6 +47,7 @@
 
       <aside id="debug-panel" class="debug-panel">
         <div class="debug-title">TASK GEOMETRY</div>
+        <div id="field-mode-label">HOST-DRIVEN FIELD • SCHEDULED HEARTBEATS</div>
         <div id="geometry-label"></div>
         <div id="fov-label"></div>
         <div id="speed-label"></div>
@@ -56,6 +59,11 @@
       </aside>
     </main>
 
+    <script src="../shared/clock_sync_core.js"></script>
+    <script src="../shared/field_mapping.js"></script>
+    <script src="../shared/field_pulse.js"></script>
+    <script src="../shared/field_renderer.js"></script>
+    <script src="../shared/field_view.js"></script>
     <script src="task.js"></script>
     <script src="app.js"></script>
   </body>

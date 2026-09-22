@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.6**
+# **Prism Live: Experience Script v1.7**
 
 &nbsp;
 
@@ -259,6 +259,11 @@ Four variants, one spine. Only Beat 1 changes.
 ## 4\. Frame and token sheet
 
 The Claude Design deliverable. Endpoint frames Dev B interpolates between — not storyboards.
+**Available 22 September:** `docs/design/field-frames.html`. It is a bundled design: extract the
+component from the last JSON-escaped script block, do not run the bundle. `web/shared/` is the
+working plain-JS reference: `field_mapping.js` maps host state to seven tokens,
+`field_pulse.js` schedules the visual heartbeat, and `field_renderer.js` draws them. Both browser
+surfaces use it. See `docs/field-reference.md` for the exact Unity-port mapping and acceptance.
 
 ### Frames needed
 
@@ -283,7 +288,7 @@ The Claude Design deliverable. Endpoint frames Dev B interpolates between — no
 | Light intensity | **0.35** | **1.10** | multiplier on the single diffuse source |
 | Hue range | **18°** | **216°** | HSV hue. See interpolation rule below. |
 | Saturation | **0.08** | **0.36** | HSV saturation |
-| Horizon position | **0.38** | **0.62** | normalised vertical field position; **0.50 \= eye level** |
+| Horizon position | **0.38** | **0.62** | normalised vertical position **measured from the top of the view**; **0.50 \= eye level**. Larger values lower the horizon and show more sky: resolve's 0.44 → 0.58 is the field opening. The light centre is fixed at **x 0.50, y 0.40** in every state. Current segment mappings keep the horizon at or below y 0.44 (numerically ≥ 0.44), above-ground light; the global token minimum alone does not guarantee that. |
 | Pulse amplitude | **0.00** | **0.22** | peak-to-peak luminance modulation as a fraction of base field luminance |
 | Field motion rate | **0.004** | **0.045** | normalised units·s⁻¹ of gradient/fog drift |
 
@@ -293,7 +298,7 @@ The Claude Design deliverable. Endpoint frames Dev B interpolates between — no
 
 &nbsp;
 
-**Flash and modulation rail (hard, applies to every frame and every driven axis).** Peak-to-peak luminance modulation from the per-beat layer never exceeds **0.22** of base field luminance, and is never applied as a full-field flash — it modulates the fog and the diffuse source only, with a 90 ms rise. At the top of the design range (95 bpm ≈ 1.6 Hz) this stays well under any photosensitivity threshold, and it must stay there if the pulse mapping is ever retuned. This rail is not a style choice.
+**Flash and modulation rail (hard, applies to every frame and every driven axis).** Peak-to-peak luminance modulation from the per-beat layer never exceeds **0.22** of base field luminance, and is never applied as a full-field flash — it modulates the local fog and the diffuse source only, with a 90 ms rise. The base gradient and ambient full-field haze never pulse. **Correction, 22 September:** the old assertion of being below *any* photosensitivity threshold at 95 bpm was not a safety validation and does not extend to a stressed visitor at 180 bpm (3 Hz). The browser reference tests 45–180 bpm, clamps pulse amplitude above the authored 95 bpm endpoint, and additionally caps absolute linear-light luminance change at 0.09. Those are software bounds, not a claim of safety for a person or headset. See `docs/known-limits.md`, ambient-field section. These rails are not style choices.
 
 &nbsp;
 
@@ -313,7 +318,7 @@ You can hand this to the devs when all of the following are true.
 2. ~~Every audio and visual field has numbers or ranges~~ — **done.**  
 3. ~~Both success thresholds are stated as a measurable change~~ — **done, §2 LOAD and §2 REGULATE.**  
 4. **The timeout branch is written** (§2 REGULATE) **and someone has read the "did not move" close out loud** — *outstanding, Ridhwan \+ Mariah.*  
-5. **All ten frames exist in Figma with the token sheet beside them** — *outstanding, Week 1 task 1.13.*  
+5. **All ten frames exist with their token values** — **done, 22 September**, supplied as `docs/design/field-frames.html`, not a Figma dependency. Shared-renderer comparisons: `docs/field-reference.md`.
 6. **Every spoken line is inside the marketing claims tier** — *outstanding, Week 3 task 3.10. Nothing in §2 or §3 asserts an outcome; every line describes what the system does or reports. Needs the formal pass anyway.*
 
 &nbsp;
@@ -371,6 +376,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.4 | 14 Sep 2026 | §0: the nominal is 4:11 from baseline start; the hard cap counts from the attendant's press, which arms a countdown of up to 11 s; the worst case from the press, 4:52, is over the cap and open. §2 BASELINE: entry is when the start button fires. §2 REGULATE: a timeout no longer picks close B. §2 RESOLVE: the trace is held through idle until the next baseline (prompt 3.5), so the attendant's "about twenty seconds" line is marked for a rewrite. §3: N is peaked at minus left at on the trace screen, never `drop_bpm`, and alone picks the close; the machine gives no verdict; both closes are marked for a rewrite, with the two measured mismatches. |
 | 1.5 | 14 Sep 2026 | §0: the hard cap counts from when start fires, not from the press, correcting 1.4. The console's countdown is not part of the experience, so it does not count against the cap. The worst case is 56 + 75 + 105 + 45 = 281 s, 4:41, inside the cap, and nothing is cut. |
 | 1.6 | 21 Sep 2026 | §3: peaked at is the load-only maximum, excluding baseline settling and later spikes. Sat down at remains the first reading; left at updates through resolve and freezes at session end. N subtracts the same displayed numbers, never `drop_bpm`; the screen gives no verdict. |
+| 1.7 | 22 Sep 2026 | §4: ten frames now supplied; shared browser renderer and portable mapping. Horizon coordinates are top-origin, fixed light at (0.50, 0.40), resolve opens the sky. Replaced the unsupported 95-bpm photosensitivity assurance with measured software rails and explicit 45–180-bpm/hardware limits. §5 records the supplied frame deliverable. |
 
 &nbsp;
 

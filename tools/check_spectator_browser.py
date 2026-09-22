@@ -219,6 +219,33 @@ BOUNDS = r"""(() => {
   };
 })()"""
 
+
+FIELD_COMPOSITE = r"""async png => {
+  const field = document.getElementById('field-canvas');
+  const rect = field.getBoundingClientRect();
+  const gl = field.getContext('webgl');
+  const buffer = new Uint8Array(field.width * field.height * 4);
+  gl.readPixels(0, 0, field.width, field.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+  let black = 0;
+  for (let i = 0; i < buffer.length; i += 4) {
+    if (buffer[i] === 0 && buffer[i + 1] === 0 && buffer[i + 2] === 0) black++;
+  }
+  const image = new Image(); image.src = 'data:image/png;base64,' + png;
+  await image.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width; canvas.height = image.height;
+  const context = canvas.getContext('2d', {willReadFrequently:true});
+  context.drawImage(image, 0, 0);
+  // Both positions are unobscured by dashboard cards. Checking only the WebGL buffer missed
+  // black compositor tiles caused by Edge's --disable-gpu headless capture path.
+  const samples = [[.2, .1], [.85, .9]].map(([x,y]) => {
+    const at = [Math.floor(rect.left + rect.width*x), Math.floor(rect.top + rect.height*y)];
+    return {at, rgb:[...context.getImageData(...at,1,1).data].slice(0,3)};
+  });
+  return {framebuffer_black_pixels:black, samples,
+    field_available:document.getElementById('field-error').hidden && !field.hidden};
+}"""
+
 REVEAL = r"""(() => {
   const get = id => document.getElementById(id), rect = node => node.getBoundingClientRect();
   const panel = document.querySelector('.reveal-panel'), svg = get('held-trace-svg');
@@ -343,7 +370,8 @@ async def check(browser, output=None, reference=None):
                 [
                     browser,
                     "--headless=new",
-                    "--disable-gpu",
+                    # Keep the browser's normal compositor. Disabling GPU produced black
+                    # 512-pixel tiles in screenshots despite an entirely valid WebGL buffer.
                     "--no-first-run",
                     "--disable-background-networking",
                     "--disable-extensions",
@@ -391,8 +419,21 @@ async def check(browser, output=None, reference=None):
                     await cdp.evaluate("document.fonts.ready.then(()=>true)")
                     await feed.trace()
                     report["running"] = await cdp.evaluate(BOUNDS)
+                    field_shot = await cdp.call(
+                        "Page.captureScreenshot", format="png", captureBeyondViewport=False
+                    )
+                    report["field"] = await cdp.evaluate(
+                        f"({FIELD_COMPOSITE})({json.dumps(field_shot['data'])})"
+                    )
+                    assert report["field"]["field_available"], report["field"]
+                    assert report["field"]["framebuffer_black_pixels"] == 0, report["field"]
+                    assert all(min(sample["rgb"]) > 32 for sample in report["field"]["samples"]), (
+                        report["field"]
+                    )
                     if output:
-                        await cdp.screenshot(output / "new-screen-1920x1080.png")
+                        (output / "new-screen-1920x1080.png").write_bytes(
+                            base64.b64decode(field_shot["data"])
+                        )
                     for key in (
                         "plotInsideCard",
                         "pathInsidePlot",

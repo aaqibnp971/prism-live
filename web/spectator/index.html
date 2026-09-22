@@ -30,9 +30,10 @@
       </header>
       <main>
         <section id="active-dashboard" hidden aria-label="Your live session">
-          <section id="field-mirror" class="field-panel" aria-label="Field placeholder">
+          <section id="field-mirror" class="field-panel" aria-label="Live ambient field from host state">
+            <canvas id="field-canvas" aria-label="Your field"></canvas>
+            <p id="field-error" class="field-error" role="alert" hidden>FIELD UNAVAILABLE<br><small>Graphics failed. Reload this display.</small></p>
             <h2>THE SAME NUMBERS, DRAWN HERE</h2>
-            <div class="field-placeholder"><span>YOUR FIELD</span><p>Field view coming next.</p></div>
           </section>
           <section class="heart-card" aria-labelledby="heart-title">
             <h2 id="heart-title"><span class="heart-dot" aria-hidden="true"></span>YOUR HEART, NOW</h2>
@@ -141,6 +142,11 @@
         <span id="header-session">WAITING FOR DATA</span><button id="fullscreen-button" type="button">FULL SCREEN</button>
       </footer>
     </div>
-    <script src="../shared/clock_sync_core.js"></script><script src="model.js"></script><script src="app.js"></script>
+    <script src="../shared/clock_sync_core.js"></script>
+    <script src="../shared/field_mapping.js"></script>
+    <script src="../shared/field_pulse.js"></script>
+    <script src="../shared/field_renderer.js"></script>
+    <script src="../shared/field_view.js"></script>
+    <script src="model.js"></script><script src="app.js"></script>
   </body>
 </html>

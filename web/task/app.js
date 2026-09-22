@@ -1,5 +1,5 @@
 /*
- * Browser shell for prompt 3.1.
+ * Browser shell for prompts 3.1 / 3.4.
  *
  * The ramp was authored for eye control, but Quest 3S has no eye tracking. Pointer and later
  * head-reticle control use these provisional values until Week E. All timing and difficulty live
@@ -10,7 +10,11 @@
   "use strict";
 
   const Task = globalThis.PrismLoadTask;
+  const Field = globalThis.PrismFieldView;
+  const Clock = globalThis.PrismClockSync;
+  const Pulse = globalThis.PrismFieldPulse;
   if (!Task) throw new Error("task.js did not load");
+  if (!Field || !Clock || !Pulse) throw new Error("shared field and clock dependencies did not load");
 
   const params = new URLSearchParams(globalThis.location.search);
   const standalone = params.has("standalone") && params.get("standalone") !== "0";
@@ -22,6 +26,12 @@
   const monitorWidthPx = positiveParameter("monitor_width_px", 0);
 
   const field = requiredElement("field");
+  const fieldView = new Field.FieldView(requiredElement("ambient-field"), {
+    onError(error) {
+      requiredElement("field-error").hidden = false;
+      console.error("FIELD UNAVAILABLE", error);
+    },
+  });
   const targetLayer = requiredElement("target-layer");
   const reticle = requiredElement("reticle");
   const instruction = requiredElement("instruction");
@@ -51,6 +61,12 @@
   let lastSegment = "idle";
   let linkConnected = false;
   let feedbackTimer = null;
+  let clockSync = null;
+  let pingTimer = null;
+  let pendingBeats = [];
+  let lastStateAt = null;
+  let feedFrozen = true;
+  let blockedConnection = null;
 
   const task = new Task.LoadTask({ emit: deliverTaskEvent });
   const stateGate = new Task.StateGate(task);
@@ -72,16 +88,22 @@
     if (standalone && event.key.toLowerCase() === "r") startStandalone();
   });
   globalThis.addEventListener("resize", updateMotionLimit);
+  globalThis.addEventListener("beforeunload", () => {
+    globalThis.clearInterval(pingTimer);
+    fieldView.destroy();
+  });
 
   if (standalone) {
     debugRestartButton.hidden = false;
     setLinkState("connected", "STANDALONE • EVENTS → CONSOLE");
+    requiredElement("field-mode-label").textContent = "FIXED LOAD TEST FIELD • NO HEARTBEATS";
     hideConnectionOverlay();
     startStandalone();
   } else {
     setLinkState("connecting", "CONNECTING");
     showWaitingOverlay();
     connect();
+    globalThis.setInterval(checkStateFreshness, 200);
   }
 
   updateMotionLimit();
@@ -109,6 +131,8 @@
     reticle.style.setProperty("--dwell", `${snapshot.dwellProgress}turn`);
 
     instruction.dataset.running = String(snapshot.active && snapshot.elapsedMs > 4_000);
+    instruction.hidden = !snapshot.active && !snapshot.paused;
+    timerLabel.hidden = !standalone && lastSegment !== "load";
     timerLabel.textContent = ((Task.LOAD_DURATION_MS - snapshot.elapsedMs) / 1000).toFixed(1);
     segmentLabel.textContent = standalone
       ? snapshot.complete
@@ -222,7 +246,9 @@
     if (!standalone) return;
     completeOverlay.hidden = true;
     lastSegment = "load";
-    task.start({ session: Task.STANDALONE_SESSION, elapsedMs: 0, nowMs: performance.now() });
+    const now = performance.now();
+    fieldView.setStandalone(Field.STANDALONE_TOKENS, now);
+    task.start({ session: Task.STANDALONE_SESSION, elapsedMs: 0, nowMs: now });
     lastSnapshot = null;
     lastTargets = [];
     console.info("Prism load task: standalone 75 s run started", {
@@ -237,44 +263,115 @@
     setLinkState("connecting", "CONNECTING");
     const connection = new WebSocket(socketUrl());
     socket = connection;
+    blockedConnection = null;
+    clockSync = new Clock.ClockSync();
+    pendingBeats = [];
     connection.addEventListener("open", () => {
       if (socket !== connection) return;
       linkConnected = true;
+      lastStateAt = performance.now(); // First-state deadline, not a generated host state.
       connection.send(
         JSON.stringify({ type: "hello", v: Task.VERSION, client: "task-screen", build: Task.BUILD }),
       );
-      setLinkState("connected", "BRIDGE CONNECTED");
-      if (!task.active) showWaitingOverlay();
+      setLinkState("connecting", "WAITING FOR HOST STATE");
+      sendPing(connection);
+      pingTimer = globalThis.setInterval(() => sendPing(connection), Clock.PING_INTERVAL_MS);
     });
     connection.addEventListener("message", (event) => {
-      if (socket !== connection || typeof event.data !== "string") return;
+      if (socket !== connection || blockedConnection === connection || typeof event.data !== "string") return;
       let message;
       try {
         message = JSON.parse(event.data);
       } catch (error) {
         console.error("Bridge sent invalid JSON", error);
+        freezeFeed();
         connection.close();
         return;
       }
-      if (message.type !== "state") return;
+      const now = performance.now();
+      if (message.type === "clock") {
+        if (!Field.validPong(message)) {
+          freezeFeed();
+          connection.close();
+          return;
+        }
+        clockSync.onPong(message, now);
+        if (clockSync.ready) {
+          const queued = pendingBeats;
+          pendingBeats = [];
+          for (const beat of queued) queueBeat(beat, now);
+        }
+        return;
+      }
+      if (message.type === "beat") {
+        if (!Pulse.validBeat(message)) {
+          freezeFeed();
+          connection.close();
+          return;
+        }
+        if (message.quality !== "rejected") queueBeat(message, now);
+        return;
+      }
+      if (message.type !== "state" || !fieldView.onState(message, now)) {
+        freezeFeed();
+        connection.close();
+        return;
+      }
+      lastStateAt = now;
+      feedFrozen = false;
+      setLinkState("connected", "BRIDGE CONNECTED");
       lastSegment = message.segment;
-      const inLoad = stateGate.apply(message, performance.now());
-      if (inLoad) hideConnectionOverlay();
+      const inLoad = stateGate.apply(message, now);
+      if (inLoad || ["baseline", "regulate", "resolve"].includes(message.segment)) hideConnectionOverlay();
       else showWaitingOverlay();
     });
     connection.addEventListener("close", () => {
       if (socket !== connection) return;
       socket = null;
       linkConnected = false;
-      stateGate.disconnect(performance.now());
-      setLinkState("lost", "CONNECTION LOST");
-      showLostOverlay();
+      globalThis.clearInterval(pingTimer);
+      pingTimer = null;
+      clockSync = null;
+      freezeFeed();
       globalThis.clearTimeout(reconnectTimer);
       reconnectTimer = globalThis.setTimeout(connect, 1_000);
     });
     connection.addEventListener("error", () => {
       connection.close();
     });
+  }
+
+  function sendPing(connection) {
+    if (socket === connection && connection.readyState === WebSocket.OPEN) {
+      connection.send(JSON.stringify(clockSync.ping(performance.now())));
+    }
+  }
+
+  function queueBeat(message, now) {
+    if (feedFrozen) return;
+    if (!clockSync.ready) {
+      pendingBeats.push(message);
+      if (pendingBeats.length > 64) pendingBeats.shift();
+      return;
+    }
+    fieldView.onBeat(message, clockSync.toLocal(message.t_play), now);
+  }
+
+  function freezeFeed() {
+    blockedConnection = socket;
+    feedFrozen = true;
+    pendingBeats = [];
+    fieldView.freeze();
+    stateGate.disconnect(performance.now());
+    setLinkState("lost", "CONNECTION LOST");
+    showLostOverlay();
+  }
+
+  function checkStateFreshness() {
+    if (!linkConnected || lastStateAt === null) return;
+    if (performance.now() - lastStateAt <= Field.STATE_STALE_MS) return;
+    freezeFeed();
+    socket?.close();
   }
 
   function socketUrl() {
@@ -289,14 +386,14 @@
     if (!linkConnected && !standalone) return;
     connectionOverlay.hidden = false;
     connectionOverlay.dataset.lost = "false";
-    overlayTitle.textContent = "WAITING FOR LOAD";
-    overlayDetail.textContent = "The task starts only when the host enters LOAD.";
+    overlayTitle.textContent = lastSegment === "reset" ? "SESSION RESETTING" : "WAITING FOR SESSION";
+    overlayDetail.textContent = "The field follows the host. The task appears only in LOAD.";
   }
 
   function showLostOverlay() {
     connectionOverlay.hidden = false;
     connectionOverlay.dataset.lost = "true";
-    overlayTitle.textContent = "CONNECTION LOST • TASK PAUSED";
+    overlayTitle.textContent = "CONNECTION LOST • DISPLAY FROZEN";
     overlayDetail.textContent = "The last host state is frozen. Reconnecting…";
   }
 

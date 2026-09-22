@@ -37,11 +37,11 @@ output, strong, .time-heading { font-variant-numeric: tabular-nums; }
 #segment-timing { font-size: 15px; color: var(--quiet); white-space: nowrap; }
 #progress-note { color: var(--accent); }
 
-.field-panel { position: absolute; top: 176px; bottom: 208px; left: 0; right: 492px; background: #140e0b; }
+.field-panel { position: absolute; top: 176px; bottom: 208px; left: 0; right: 492px; overflow: hidden; background: #140e0b; }
+.field-panel canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.field-error { position: absolute; top: 30%; left: 8%; right: 8%; padding: 24px; border: 3px solid #ff786e; background: #170706; color: #ff786e; text-align: center; font: 30px var(--mono); }
+.field-error small { font-size: 20px; }
 .field-panel h2 { position: absolute; top: 32px; right: 0; background: var(--panel); border: 2px solid var(--line); padding: 14px 22px; font: 24px var(--mono); letter-spacing: .12em; }
-.field-placeholder { position: absolute; inset: 32% 0 auto 32%; text-align: center; color: var(--quiet); }
-.field-placeholder span { font: 24px var(--mono); letter-spacing: .2em; }
-.field-placeholder p { margin-top: 14px; font-size: 22px; }
 .heart-card { position: absolute; left: 0; bottom: 208px; width: 640px; padding: 30px 40px 24px; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border-top: 2px solid var(--line); border-right: 2px solid var(--line); }
 .heart-card h2 { display: flex; align-items: center; gap: 16px; font: 26px var(--mono); letter-spacing: .2em; color: var(--muted); }
 .heart-dot { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); }
