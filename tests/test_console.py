@@ -58,6 +58,27 @@ class StubBridge:
         return True
 
 
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("connecting", "NO PPI YET"),
+        ("waiting_for_ppi", "WAITING FOR PPI"),
+        ("flowing", "does not confirm the armband is worn"),
+        ("stale", "DATA NOT FLOWING"),
+        ("disconnected", "MQTT DISCONNECTED"),
+    ],
+)
+def test_mqtt_console_labels_warmup_and_flow_without_inferring_wear(status, expected):
+    bridge = StubBridge()
+    bridge.packet_source = SimpleNamespace(status=status)
+    view = AttendantConsole(bridge).snapshot()
+    text = "\n".join(screen_lines(view, columns=160))
+    assert expected in text
+    assert "BUFFERED PLAYBACK" in text
+    assert "SYNTHETIC" not in text
+    assert view["action"] == "ARM START"  # host still decides any refusal at firing
+
+
 def test_one_button_arms_cancels_then_rearms_starts_stops_and_waits():
     async def scenario():
         bridge = StubBridge()

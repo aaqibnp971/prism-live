@@ -1,11 +1,12 @@
-"""Imitates what a Polar Verity Sense sends over Bluetooth, so the pipeline can be built
-before the armband arrives.
+"""Synthetic sensor input: legacy one-second HRM, or measured phone PPI bursts.
 
 The device does not send one message per heartbeat. It notifies about once a second, and
 each notification carries the RR intervals for the beats that completed since the last
 one: usually one, sometimes two, sometimes none. RR intervals are in units of 1/1024 s.
-Nothing here converts them. The parse side does (bridge/hrm.py), so the conversion is
-exercised end to end.
+Nothing here converts the legacy RR units. The parse side does (bridge/hrm.py).
+This was the pre-hardware assumption, not what our Verity Sense actually sends.
+``--ppi-bursts`` reproduces the observed five-second phone route with typed millisecond
+PPI, error and blocker metadata; production uses MQTT rather than Windows BLE.
 
 Run from the repo root:  python -m tools.synthetic_rr --help
 """
@@ -20,9 +21,11 @@ import sys
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 
+from bridge.clock import t_engine_ms
 from bridge.hrm import encode_hrm, parse_hrm, rr_ms_to_raw
+from bridge.packets import PpiPacket, PpiSample
 
 NOTIFY_INTERVAL_S = 1.0
 NOTIFY_JITTER_S = 0.08
@@ -248,7 +251,7 @@ def _lose_contact(
 @dataclass(frozen=True)
 class Notification:
     t_s: float  # when the notification leaves the device
-    payload: bytes  # the characteristic value, exactly as a BLE client receives it
+    payload: bytes | PpiPacket
 
 
 def notifications(
@@ -297,12 +300,61 @@ def generate(
     return apply_packet_faults(notes, faults)
 
 
+# Empirical burst-onset envelope from the 23 September probe (milliseconds). This
+# repeating stress pattern includes its observed maximum; the last-message offset
+# and the production source's 250 ms coalescing wait are represented separately.
+PPI_BURST_GAPS_MS = (5017.178, 4968.0, 5076.0, 5164.284, 4713.702, 5243.869)
+
+
+def generate_ppi(
+    profile: Profile = DEFAULT_PROFILE, faults: Sequence[Fault] = (), seed: int = 1,
+) -> Iterator[Notification]:
+    """Measured-interval bundles, not regularised or encoded as fictional BLE RR.
+
+    PPI has millisecond units; diagnostics deliberately claim positive HR/contact
+    even during contact_lost, reproducing why those fields cannot prove wear.
+    Lost bursts remove their intervals, never carry them into a later packet.
+    """
+    beats = iter(apply_beat_faults(
+        true_beats(profile, random.Random(f"{seed}:beats")),
+        faults, random.Random(f"{seed}:faults"),
+    ))
+    beat = next(beats, None)
+    onset = 0.0
+    index = 0
+    dropped: set[int] = set()
+    while beat is not None:
+        onset += PPI_BURST_GAPS_MS[index % len(PPI_BURST_GAPS_MS)] / 1000
+        index += 1
+        samples = []
+        while beat is not None and beat.t_s <= onset:
+            blocked = any(
+                f.kind == "artefact_burst" and f.at_s <= beat.t_s < f.at_s + f.seconds
+                for f in faults
+            )
+            samples.append(PpiSample(round(beat.rr_ms), 100.0 if blocked else 1.0,
+                                     blocked, True, round(60_000 / beat.rr_ms)))
+            beat = next(beats, None)
+        drop = False
+        for k, fault in enumerate(faults):
+            if fault.kind == "disconnect" and fault.at_s <= onset < fault.at_s + fault.seconds:
+                drop = True
+            if fault.kind == "dropped_packet" and k not in dropped and onset >= fault.at_s:
+                dropped.add(k)
+                drop = True
+        if not drop and samples:
+            # Two messages ~83 ms apart, then the source's quiet-window flush.
+            arrival = onset * 1000 + 83.0
+            yield Notification((arrival + 250.0) / 1000,
+                               PpiPacket(tuple(samples), "synthetic-ppi", arrival))
+
+
 class SyntheticPacketSource:
     """A real-time async HRM packet source for :mod:`bridge.live`.
 
-    ``bridge.ble`` implements this same one-method interface in prompt 2.8: async iteration
-    yields each raw Heart Rate Measurement characteristic value exactly once.  The live bridge
-    does not know which source it was given.
+    Like ``bridge.mqtt_source``, async iteration yields each packet exactly once. PPI mode
+    yields typed batches, not fabricated BLE bytes, and keeps their scheduled receipt times
+    even if the consumer stalls.
 
     The default repeats because a physical armband does not stop after the four-minute profile.
     ``repeat=False`` is useful for silence and shutdown tests.
@@ -315,28 +367,38 @@ class SyntheticPacketSource:
         seed: int = 1,
         *,
         repeat: bool = True,
+        ppi_bursts: bool = False,
     ) -> None:
         self.profile = profile
         self.faults = tuple(faults)
         self.seed = seed
         self.repeat = repeat
+        self.ppi_bursts = ppi_bursts
 
-    def __aiter__(self) -> AsyncIterator[bytes]:
+    def __aiter__(self) -> AsyncIterator[bytes | PpiPacket]:
         return self._packets()
 
-    async def _packets(self) -> AsyncIterator[bytes]:
+    async def _packets(self) -> AsyncIterator[bytes | PpiPacket]:
         loop = asyncio.get_running_loop()
         origin = loop.time()
+        engine_origin = t_engine_ms()
         offset_s = 0.0
         cycle = 0
         while True:
             last_s = 0.0
-            for note in generate(self.profile, self.faults, self.seed + cycle):
+            generator = generate_ppi if self.ppi_bursts else generate
+            for note in generator(self.profile, self.faults, self.seed + cycle):
                 last_s = note.t_s
                 delay = origin + offset_s + note.t_s - loop.time()
                 if delay > 0.0:
                     await asyncio.sleep(delay)
-                yield note.payload
+                if isinstance(note.payload, PpiPacket):
+                    yield replace(note.payload,
+                                  arrived_ms=engine_origin + offset_s * 1000
+                                  + note.payload.arrived_ms,
+                                  source_id=f"synthetic-ppi-{cycle}")
+                else:
+                    yield note.payload
             if not self.repeat:
                 return
             # A final notification can fall just beyond profile.duration_s while it flushes a
@@ -361,6 +423,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
+        "--ppi-bursts", action="store_true", help="captured five-second PPI cadence"
+    )
+    parser.add_argument(
         "--fault",
         action="append",
         default=[],
@@ -377,11 +442,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     profile = Profile.from_spec(args.profile)
     faults = [Fault.from_spec(spec) for spec in args.fault]
     start = time.monotonic()
-    for note in generate(profile, faults, args.seed):
+    generator = generate_ppi if args.ppi_bursts else generate
+    for note in generator(profile, faults, args.seed):
         if args.realtime:
             delay = start + note.t_s - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
+        if isinstance(note.payload, PpiPacket):
+            print(json.dumps({"t_ms": round(note.t_s * 1000), **asdict(note.payload)}),
+                  flush=args.realtime)
+            continue
         packet = parse_hrm(note.payload)
         line = {
             "t_ms": round(note.t_s * 1000),

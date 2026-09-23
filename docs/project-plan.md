@@ -1,6 +1,6 @@
-# **Prism Live: Project Plan v1.3**
+# **Prism Live: Project Plan v1.4**
 
-**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 13 September 2026
+**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 23 September 2026
 
 ---
 
@@ -49,7 +49,7 @@ So we do two things.
 
 **We make them go up before we bring them down.** The task raises their heart rate on purpose. What they feel afterwards is a swing, not just a quiet room.
 
-**We let them hear their own heartbeat.** Their pulse drives a low tone in the sound and a matching pulse in the visuals, in real time. They hear it fast at the start. They hear it slow by the end. Nothing to take on faith, no claim to make, no instrument needed. The medium is the evidence.
+**We let them hear their measured heartbeat, played back after a delay.** Accepted beat intervals from the armband drive a low tone, with a matching visual pulse where the visual safety limits permit it. The phone sends those intervals in batches, and the laptop buffers them before playback: this is delayed playback of measured beats, not an instantaneous mirror of the heart and not a predicted rhythm. Its irregularity and any measured changes in rate are retained; a rise or fall is not promised. The surrounding sound is composed during the session. The screen and attendant explicitly disclose the delay.
 
 That second layer is the difference between "nice ambient music" and "that thing was reading me."
 
@@ -320,5 +320,6 @@ Transparent overdraw is the number one Quest performance killer, so heavy partic
 * v1.1, 11 September 2026: §4 and §6 replace eye control with reticle control, since the Quest 3S has no eye tracking. §7 adds the change log budget items, committed total \~1,738 to \~2,698 AED. §10 renames the gaze task to the reticle task. §11 and §13 are marked superseded by the message contract and the solo build plan.
 * v1.2, 13 September 2026: §8 fits the armband before the pitch, right after the exclusion questions and the consent line, and states the settling time before and through the baseline.
 * v1.3, 13 September 2026: §8 seats the visitor at the greet, so the pitch happens sitting down. That is the change that buys settling time.
+* v1.4, 23 September 2026: §5 replaces the real-time heartbeat claim with delayed playback of measured intervals from the phone's batched PPI stream; audio and eligible visual pulses share the scheduled playback time.
 
 &nbsp;

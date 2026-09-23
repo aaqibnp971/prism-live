@@ -1,5 +1,6 @@
 """The beat scheduler, driven offline by the synthetic armband."""
 
+import math
 import statistics
 from dataclasses import dataclass
 
@@ -241,3 +242,56 @@ def test_a_packet_result_carries_the_contact_bit_as_sent():
     assert scheduler.on_packet(1000, encode_hrm(70, [700])).contact is True
     assert scheduler.on_packet(2000, encode_hrm(70, [700], contact_detected=False)).contact is False
     assert scheduler.on_packet(3000, encode_hrm(70, [700], contact_supported=False)).contact is None
+
+
+@pytest.mark.parametrize("stall_ms", [2000, 5000, 10000])
+@pytest.mark.parametrize("packets_first", [False, True])
+@pytest.mark.parametrize("rr_ms", [300, 800, 2000])
+def test_stall_skips_beats_without_turning_the_silent_gap_into_an_rr(
+    stall_ms, packets_first, rr_ms
+):
+    payload = encode_hrm(round(60_000 / rr_ms), [math.ceil(rr_ms * 1024 / 1000)])
+    interval = parse_hrm(payload).rr_ms[0]
+    scheduler = BeatScheduler()
+    before = []
+    for now in range(1000, 20_000, 20):
+        if now % 1000 == 0:
+            scheduler.on_packet(now, payload)
+        before.extend(scheduler.tick(now))
+    assert before
+    last_sent = scheduler._last_sent_t_play
+    resume = 20_000 + stall_ms
+    after = []
+    if not packets_first:
+        after.extend(scheduler.tick(resume))
+    scheduler.on_packet(resume, payload)
+    after.extend(scheduler.tick(resume))
+    for now in range(resume + 20, resume + 4000, 20):
+        if (now - resume) % 1000 == 0:
+            scheduler.on_packet(now, payload)
+        after.extend(scheduler.tick(now))
+    assert after
+    assert after[0].t_play - last_sent > interval
+    assert after[0].rr_ms == pytest.approx(interval)
+    assert all(250 <= beat.rr_ms <= 2080 for beat in after)
+    assert all(beat.t_play - beat.t_emitted >= 300 for beat in after)
+    assert all(beat.hr_bpm == pytest.approx(60_000 / beat.rr_ms) for beat in after)
+    assert min(spacings(before[-1:] + after)) >= 250
+    assert all(abs(beat.phase_step_ms) <= 0.04 * beat.interval_ms for beat in after)
+    assert scheduler.stats.skipped > 0 or scheduler.stats.stops > 0
+
+
+def test_skips_do_not_claim_that_a_beat_was_published():
+    scheduler = BeatScheduler()
+    packet = encode_hrm(75, [819])
+    for now in range(1000, 6000, 20):
+        if now % 1000 == 0:
+            scheduler.on_packet(now, packet)
+        scheduler.tick(now)
+    last_sent = scheduler._last_sent_t_play
+    scheduler.on_packet(8000, packet)
+    # Wake far enough ahead of the next lattice position that this tick only skips.
+    now = scheduler._play_next + 2 * scheduler.interval_ms - scheduler.t.lead_ms + 1
+    assert scheduler.tick(now) == []
+    assert scheduler.stats.skipped > 0
+    assert scheduler._last_sent_t_play == last_sent

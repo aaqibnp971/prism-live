@@ -305,13 +305,12 @@
     elements.baselineLearningFill.style.width = `${progress.fraction * 100}%`;
     elements.railNote.textContent = view.segment === "baseline"
       ? "Learning your baseline. The hatch shows uncertainty in each reading."
-      : "Your pulse and task inputs. Under each: how far it may move your world.";
+      : "Your measured pulse and task inputs. Under each: how far it may move your world.";
 
     const readings = view.readings;
     elements.heartBpm.textContent = bpm(readings.heartBpm);
     elements.restingBpm.textContent = bpm(readings.restingBpm);
     elements.signalQuality.textContent = `${Math.round(readings.acceptedFraction * 100)}% ACCEPTED`;
-    elements.contactState.textContent = readings.contact ? "CONTACT" : "CHECK CONTACT";
 
     for (const dimension of readings.dimensions) {
       const value = elements.dimensions[dimension.key];
@@ -498,7 +497,6 @@
       connectionBanner: required("connection-banner"),
       connectionDetail: required("connection-detail"),
       connectionTitle: required("connection-title"),
-      contactState: required("contact-state"),
       dimensions,
       authorityHistory,
       fullscreenButton: required("fullscreen-button"),

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -157,7 +158,10 @@ def test_cli_mode_is_explicit_and_prints_the_headset_address(booth, monkeypatch,
     monkeypatch.setattr(launch, "local_lan_addresses", local_addresses)
     monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
     monkeypatch.setattr(launch, "list_displays", displays)
-    launch.main(["--python", sys.executable] + (["--booth"] if booth else []))
+    launch.main(
+        ["--python", sys.executable]
+        + (["--booth", "--packet-source", "synthetic"] if booth else [])
+    )
     config = settings[0]
     assert config.booth is booth
     assert config.browser_task is not booth
@@ -178,6 +182,143 @@ def test_cli_rejects_mixed_mode_flags(args):
     with pytest.raises(SystemExit) as error:
         launch.main(args)
     assert error.value.code == 2
+
+
+def test_booth_mqtt_command_keeps_phone_stream_independent_of_session(config):
+    config.booth = True
+    config.packet_source = "mqtt"
+    config.lan_ip = "192.168.1.201"
+    config.mqtt_phone_ip = "192.168.1.135"
+    command = launch.bridge_command(config, 2)
+    for flag, value in {
+        "--packet-source": "mqtt",
+        "--mqtt-bind": "192.168.1.201",
+        "--mqtt-phone-ip": "192.168.1.135",
+        "--mqtt-port": "1883",
+        "--mqtt-broker-port": "1884",
+        "--mqtt-topic-prefix": "psl/prism-probe",
+        "--mqtt-client-id": "verity-phone",
+        "--mqtt-device-id": "1967873D",
+    }.items():
+        assert command[command.index(flag) + 1] == value
+    assert "--one-session" not in command
+
+
+@pytest.mark.parametrize(
+    "extra", [[], ["--lan-ip", "192.168.1.201"], ["--mqtt-phone-ip", "192.168.1.135"]]
+)
+def test_booth_mqtt_requires_both_explicit_fixed_addresses(extra):
+    with pytest.raises(SystemExit) as error:
+        launch.main(["--booth", *extra])
+    assert error.value.code == 2
+
+
+def test_booth_defaults_mqtt_with_explicit_addresses(monkeypatch):
+    settings = []
+
+    class FakeSupervisor:
+        def __init__(self, config):
+            settings.append(config)
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr(launch, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["192.168.1.201"])
+    monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
+    launch.main(
+        [
+            "--python",
+            sys.executable,
+            "--headless",
+            "--booth",
+            "--lan-ip",
+            "192.168.1.201",
+            "--mqtt-phone-ip",
+            "192.168.1.135",
+        ]
+    )
+    assert settings[0].packet_source == "mqtt"
+
+
+@pytest.mark.parametrize("fail_open", [False, True])
+def test_supervisor_owns_firewall_and_cleans_up_on_startup_failure(config, monkeypatch, fail_open):
+    events = []
+
+    class Firewall:
+        name = "owned-test-rule"
+        scope = None
+
+        def __init__(self, local_ip, phone_ip, python, *, port):
+            assert (local_ip, phone_ip, port) == ("192.168.1.201", "192.168.1.135", 1883)
+
+        def open(self):
+            events.append("open")
+            if fail_open:
+                raise RuntimeError("firewall unavailable")
+
+        def close(self):
+            events.append("close")
+
+    async def check():
+        config.booth = True
+        config.packet_source = "mqtt"
+        config.lan_ip = "192.168.1.201"
+        config.mqtt_phone_ip = "192.168.1.135"
+        sup = launch.Supervisor(config)
+
+        async def fail_step():
+            events.append("step")
+            raise RuntimeError("startup failed")
+
+        monkeypatch.setattr(sup, "step", fail_step)
+        with pytest.raises(RuntimeError):
+            await sup.run()
+        assert sup._lock_file is None
+
+    monkeypatch.setattr(launch, "MqttFirewall", Firewall)
+    asyncio.run(check())
+    assert events == (["open", "close"] if fail_open else ["open", "step", "close"])
+
+
+def test_cancelled_firewall_setup_waits_for_os_command_before_cleanup(config, monkeypatch):
+    began, finish = threading.Event(), threading.Event()
+    events = []
+
+    class Firewall:
+        name = "owned-test-rule"
+        scope = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def open(self):
+            began.set()
+            assert finish.wait(3), "test did not release the simulated OS operation"
+            events.append("created")
+
+        def close(self):
+            events.append("removed")
+
+    async def check():
+        config.booth, config.packet_source = True, "mqtt"
+        config.lan_ip, config.mqtt_phone_ip = "192.168.1.201", "192.168.1.135"
+        sup = launch.Supervisor(config)
+        run = asyncio.create_task(sup.run())
+        try:
+            while not began.is_set():
+                await asyncio.sleep(0.001)
+            run.cancel()
+            await asyncio.sleep(0.01)
+            assert not events
+        finally:
+            finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        assert events == ["created", "removed"]
+
+    monkeypatch.setattr(launch, "MqttFirewall", Firewall)
+    asyncio.run(check())
 
 
 def test_tiled_task_uses_app_mode_and_scaled_physical_width(config):
@@ -535,3 +676,54 @@ def test_no_network_session_controls_in_launcher_source():
     assert "session.stop(" not in source
     assert '"Input.dispatch' not in source
     assert "--standalone" not in source
+
+
+@pytest.mark.parametrize("stall_seconds", [2, 5, 10])
+def test_bridge_stall_watchdog_includes_cached_status_freshness(config, monkeypatch, stall_seconds):
+    """Freeze status, not the supervisor. Its existing policy has two successive grace windows."""
+
+    async def check():
+        sup = supervisor(config)
+        child = add_child(sup, "bridge")
+        now = 1000.0
+        child.last_healthy = now
+        child.audio_changed = now
+        child.last_audio_frames = 100
+        child.was_ready = True
+        launch.write_json(
+            config.bridge_status,
+            dict(
+                pid=child.process.pid,
+                generation=0,
+                ready=True,
+                updated=now,
+                audio_frames=100,
+            ),
+        )
+        would_restart_at = None
+        for quarter in range(1, stall_seconds * 4 + 1):
+            now = 1000.0 + quarter / 4
+            monkeypatch.setattr(launch.time, "time", lambda current=now: current)
+            await sup._health(child, now)
+            # Exactly the restart predicate in Supervisor.step after _health returns.
+            if now - child.last_healthy > config.health_timeout:
+                would_restart_at = now - 1000.0
+                break
+        if stall_seconds == 10:
+            assert would_restart_at == 10.0
+        else:
+            assert would_restart_at is None
+            launch.write_json(
+                config.bridge_status,
+                dict(
+                    pid=child.process.pid,
+                    generation=0,
+                    ready=True,
+                    updated=now,
+                    audio_frames=200,
+                ),
+            )
+            await sup._health(child, now)
+            assert child.ready
+
+    asyncio.run(check())

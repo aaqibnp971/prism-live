@@ -46,6 +46,7 @@ def test_spectator_page_contains_only_live_honest_labels() -> None:
         "THE SAME NUMBERS, DRAWN HERE",
         "NOT READABLE",
         "LIVE FEED LOST • DISPLAY FROZEN",
+        "YOUR MEASURED BEATS · DELAYED PLAYBACK",
     ):
         assert required in combined
 
@@ -53,6 +54,11 @@ def test_spectator_page_contains_only_live_honest_labels() -> None:
         "NO SIGNAL",
         "LIVE FROM THE HEADSET",
         "GUIDING HER DOWN",
+        "ARMBAND CONTACT",
+        "CHECK CONTACT",
+        "contact-state",
+        "real time",
+        "real-time",
         "simulation",
         "standalone",
     ):
@@ -62,3 +68,7 @@ def test_spectator_page_contains_only_live_honest_labels() -> None:
     assert "new WebSocket" in app
     assert "STATE_STALE_MS" not in app  # the tested model owns the timeout
     assert "Math.sin" not in combined
+    # This is persistent copy, outside each hideable session/reveal/idle panel.
+    footer = html.split('<footer class="system-footer">', 1)[1].split("</footer>", 1)[0]
+    assert 'id="playback-disclosure"' in footer
+    assert "hidden" not in footer

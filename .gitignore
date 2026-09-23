@@ -67,9 +67,33 @@ dmypy.json
 vendor/prism-core/
 
 # --- Logs and session captures --------------------------------------------
-# The host writes per-session logs here. Never committed.
+# Physiology is LOCAL ONLY, including derived reports and listening renders.
+# These rules apply at every depth, including booth session logs.
+private-data/
+captures/
+capture/
+recordings/
+recording/
+session-logs/
+session_logs/
+sessions/
+*-capture-*/
+*-recording-*/
+polar-mqtt-*/
+verity-probe-*/
 logs/
 *.log
+*.jsonl
+raw.json
+*.edf
+*.bdf
+*.fit
+*.tcx
+# Only this deterministic, generated synthetic golden fixture is publishable.
+!tools/fixtures/synthetic-clean.jsonl
+tools/fixtures/*
+!tools/fixtures/README.md
+!tools/fixtures/synthetic-clean.jsonl
 
 # --- Local configuration and secrets --------------------------------------
 .env

@@ -2,8 +2,8 @@
 
 One asyncio event loop owns the packet source, beat scheduler, PSV model, session state machine,
 engine controls and WebSocket publication.  None of those objects is called from another thread.
-The default packet source is :class:`tools.synthetic_rr.SyntheticPacketSource`; prompt 2.8 swaps
-that one construction line for ``BlePacketSource`` without changing this loop.
+Testing defaults to :class:`tools.synthetic_rr.SyntheticPacketSource`; booth mode uses
+``MqttSource`` and typed optical PPI batches. Neither source changes ownership or feed ordering.
 
 ``Session`` remains the owner of state messages.  Its publish callback fans each state out to the
 three engine controllers and then to ``LiveServer.publish``.  Beat events from both packet and
@@ -24,10 +24,12 @@ from typing import Protocol
 from bridge.beat_scheduler import INTERPOLATED, OK, BeatEvent, BeatScheduler
 from bridge.clock import t_engine_ms
 from bridge.contract import MIN_LEAD_MS, validate
-from bridge.engine import PLS_BEAT_INTERPOLATED, PLS_BEAT_OK
+from bridge.engine import PLS_BEAT_INTERPOLATED, PLS_BEAT_OK, ShimError
 from bridge.engine_feed import HeartbeatLevel, PsvFeed, SessionGain
 from bridge.logging import SessionLog
+from bridge.packets import PpiPacket
 from bridge.phase import SAMPLE_RATE, PhaseTracker, StartAlignment
+from bridge.ppi_scheduler import PpiBeatScheduler
 from bridge.psv import PsvModel
 from bridge.session import Session, Timings
 
@@ -41,9 +43,9 @@ START_SPIN_AHEAD_S = 0.050
 
 
 class PacketSource(Protocol):
-    """The whole live/synthetic boundary: each raw HRM packet, once, in arrival order."""
+    """Raw legacy HRM or measured PPI, once, in arrival order."""
 
-    def __aiter__(self) -> AsyncIterator[bytes]: ...
+    def __aiter__(self) -> AsyncIterator[bytes | PpiPacket]: ...
 
 
 class BeatSink(Protocol):
@@ -148,12 +150,15 @@ class LiveLoop:
         self.log = log
         self.clock = clock
         self.tick_ms = float(tick_ms)
-        self.scheduler = scheduler or BeatScheduler()
-        self.model = model or PsvModel()
+        self.scheduler = scheduler or (
+            PpiBeatScheduler() if getattr(packet_source, "ppi_bursts", False) else BeatScheduler()
+        )
+        self.model = model or PsvModel(tuning=self.scheduler.t)
         self.psv_feed = psv_feed
         self.session_gain = session_gain
         self.heartbeat = heartbeat
         self.beat_sink = beat_sink
+        self.audio_beats_dropped = 0
         self.phase = phase
         production_timings = Timings(hold_ms=11_000, hold_to_end=True)
         self.session = Session(
@@ -323,10 +328,12 @@ class LiveLoop:
 
     async def _packet_loop(self) -> None:
         async for payload in self.packet_source:
-            if not isinstance(payload, bytes | bytearray | memoryview):
-                raise TypeError("a packet source must yield raw bytes")
+            if not isinstance(payload, bytes | bytearray | memoryview | PpiPacket):
+                raise TypeError("a packet source must yield raw HRM bytes or measured PpiPacket")
             now = self.clock()
-            result = self.scheduler.on_packet(now, bytes(payload))
+            result = self.scheduler.on_packet(
+                now, payload if isinstance(payload, PpiPacket) else bytes(payload)
+            )
             self.model.on_packet(now, result)
             for event in result.events:
                 self._publish_beat(event)
@@ -374,6 +381,9 @@ class LiveLoop:
         return self.publish(msg)
 
     def _publish_beat(self, event: BeatEvent) -> None:
+        if self.scheduler.t.measured_ppi and self.session.segment in ("idle", "reset"):
+            # Nothing is prequeued in muted clients/audio that can wake in the next visitor.
+            return
         msg = self.session.beat_message(event)
         validate(msg, "out")
         measurement = self._measurement
@@ -383,7 +393,28 @@ class LiveLoop:
         if sent is False or msg["quality"] == "rejected" or self.beat_sink is None:
             return
         quality = {OK: PLS_BEAT_OK, INTERPOLATED: PLS_BEAT_INTERPOLATED}[msg["quality"]]
-        self.beat_sink.push_beat(float(msg["t_play"]), float(msg["rr_ms"]), quality)
+        try:
+            self.beat_sink.push_beat(float(msg["t_play"]), float(msg["rr_ms"]), quality)
+        except ShimError as error:
+            # These two pls_push_beat results guarantee that NOTHING was queued. Drop just this
+            # event, visibly in the host log; retrying it later would violate t_play. A bad
+            # lifecycle/device or an unrelated error is still fatal, never swallowed here.
+            if error.call != "pls_push_beat" or error.name not in (
+                "PLS_ERROR_INVALID_ARGUMENT",
+                "PLS_ERROR_QUEUE_FULL",
+            ):
+                raise
+            self.audio_beats_dropped += 1
+            self.log.event(
+                "heartbeat_beat_dropped",
+                t_engine=self.clock(),
+                reason=error.name,
+                beat_seq=msg["seq"],
+                t_play=msg["t_play"],
+                rr_ms=msg["rr_ms"],
+                quality=msg["quality"],
+                dropped=self.audio_beats_dropped,
+            )
 
     def _start_now(self, now: float, alignment: object | None) -> str | None:
         target = getattr(alignment, "fire_frame", None)
@@ -407,6 +438,8 @@ class LiveLoop:
             )
             raise LiveLoopError("T_engine passed to Session.start is outside the link's range")
         if refusal is None:
+            if isinstance(self.scheduler, PpiBeatScheduler):
+                self.scheduler.begin_session(now)
             self._measurement = candidate
         return refusal
 

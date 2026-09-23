@@ -67,6 +67,22 @@ test("segment progress comes directly from host elapsed and nominal fields", () 
   });
 });
 
+test("contact flags and positive HR never create a spectator wear indicator", () => {
+  const views = [];
+  for (const contact of [false, true]) {
+    const model = new Spectator.SpectatorModel();
+    assert.equal(model.onState(state("load", {
+      hrBpm: 82,
+      signal: { contact, rr_accepted_pct: 0.94, baseline_quality: 0.81 },
+    })), true);
+    views.push(model.view());
+    for (const key of ["contact", "skinContactStatus", "wearing", "worn"]) {
+      assert.equal(Object.hasOwn(model.view().readings, key), false);
+    }
+  }
+  assert.deepEqual(views[0], views[1]);
+});
+
 test("valence is explicitly unreadable with exact zero confidence and authority", () => {
   const model = new Spectator.SpectatorModel();
   const message = state("load");

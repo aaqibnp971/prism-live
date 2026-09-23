@@ -31,7 +31,7 @@ It is shown at exhibitions and university stalls. It is **not a product**. No ap
 ## Architecture
 
 ```
-Polar Verity Sense  --BLE-->  bridge (Python)
+Polar Verity Sense --BLE--> Android Polar Sensor Logger --local MQTT--> bridge (Python)
                                   |
                        beat scheduler, HRV, baseline,
                        PSV + confidence, authority,
@@ -92,7 +92,7 @@ Four values, 0.0 to 1.0, each with its own confidence: `arousal`, `valence`, `co
 Python first. C++ only in `native/`, because the audio callback cannot be Python (hard rule 4).
 
 ```
-bridge/     Python. BLE, beat scheduler, HRV, PSV, authority,
+bridge/     Python. MQTT PPI input, beat scheduler, HRV, PSV, authority,
             state machine, WebSocket server, logging.
             Calls the engine C ABI and the audio shim via ctypes.
 native/     C++. The audio shim: owns the device, calls prism_render,
@@ -107,7 +107,8 @@ vendor/     lib/libprism_core.dll, the engine built from acbfd50, committed
 assets/     The four audio stems.
 docs/       Contract, script, sound brief, build plan.
 unity/      Stretch goal. Does not exist until the audio half is done.
-logs/       gitignored.
+logs/       gitignored, including all booth session logs and status recordings.
+private-data/ gitignored. Physiological captures, analyses and listening renders; never commit.
 ```
 
 ---
@@ -126,7 +127,11 @@ logs/       gitignored.
 ## Testing
 
 - Everything is built against `tools/fake_sender` first. No armband required for most of the project.
-- One recorded real session lives in `tools/fixtures/` and is the canonical input for tests.
+- Only synthetic data belongs in `tools/fixtures/` and canonical tests. Tests must run without
+  a person's recording. Real HR/PPI captures, booth session logs, derived analyses, screenshots
+  with real readings and listening renders are private: keep them under gitignored
+  `private-data/physiology/` or `logs/`, never commit or force-add them. Changing filenames or
+  stripping identity does not turn physiological measurements into synthetic data.
 - The beat scheduler has unit tests covering: dropped packet, doubled beat, missed beat, artefact burst, and reconnect mid-session.
 
 ### Review budget
@@ -163,5 +168,5 @@ Closed:
 
 Still open. Do not guess at these. Flag them.
 
-5. Does the Verity Sense set the **RR-present flag** in its Heart Rate Measurement packets in our configuration? Needs the armband, prompt 1.0. The same run answers two more: does it report **sensor contact** at all, and does it keep sending RR intervals while contact reads false? `bridge/psv.py` reads a sensor that reports no contact as in contact, and keeps intervals sent without contact out of heart rate and HRV.
+5. **Sensor route resolved 23 September:** Windows direct BLE is not viable for this unit/setup. Android Polar Sensor Logger sends PPI on MQTT `/ecg` (despite the topic name); `/hr` carries no RR. PPI uses blocker/error rejection, never HR or skin-contact as wear evidence. Accepted measured intervals play with a 12 s reconstructed-time buffer; they are not predicted or described as physiological real-time playback. The phone streams between visitors. See `docs/known-limits.md` and `docs/launcher.md` for measured delays, baseline timing, fixed-address private-router setup and startup warm-up. The ectopic threshold remains 12, pending its separate heavy-reviewed task.
 6. **Body-derived or designed-pose PSV?** Under body-derived values the script's regulate comes out inverted (`docs/engine-findings.md`). Decided by listening in Week B, prompt 2.5.

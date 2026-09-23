@@ -130,6 +130,7 @@ output, strong, .time-heading { font-variant-numeric: tabular-nums; }
 .reveal-authority article output { color: var(--authority); }
 .reveal-authority .unknown-chip { align-self: flex-start; }
 .system-footer { position: absolute; bottom: 10px; right: 20px; display: flex; align-items: center; gap: 15px; font: 11px var(--mono); color: var(--quiet); }
+#playback-disclosure { color: var(--muted); font-size: 16px; white-space: nowrap; }
 .system-footer button { background: var(--panel); color: var(--muted); border: 1px solid var(--line); padding: 5px 8px; cursor: pointer; }
 .system-footer button:focus-visible { outline: 2px solid var(--accent); }
 #link-badge { display: flex; align-items: center; gap: 6px; }

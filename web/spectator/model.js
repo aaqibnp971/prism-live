@@ -167,7 +167,8 @@
         readings: Object.freeze({
           heartBpm: state.hr_bpm,
           restingBpm: state.hr_base,
-          contact: state.signal.contact,
+          // The contract retains signal.contact, but it cannot establish that a PPI sensor is
+          // being worn. Never expose it as a spectator wear/contact indicator.
           acceptedFraction: state.signal.rr_accepted_pct,
           baselineQuality: state.signal.baseline_quality,
           dimensions: dimensionViews(state),
@@ -271,7 +272,7 @@
           value: key === "valence" ? 0.5 : state.psv[key],
           confidence: key === "valence" ? 0 : state.confidence[key],
           authority: key === "valence" ? 0 : state.authority[key],
-          status: key === "valence" ? "NOT READABLE" : "LIVE READING",
+          status: key === "valence" ? "NOT READABLE" : "RECENT READING",
         }),
       ),
     );

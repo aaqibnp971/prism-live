@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.8**
+# **Prism Live: Experience Script v1.9**
 
 &nbsp;
 
@@ -28,6 +28,22 @@ Two rules this document was written under:
 | **Loudness you tune at** | **Flat reference monitoring only** — open-back studio headphones or nearfields. Author and balance there, then *verify* on the XM5 with ANC on. **Never tune on the XM5**: its bass shelf flatters the per-beat layer, and anything balanced on it will be written too quiet in the sub and will vanish on reference. Attendant sets headphone volume once at setup, marks it on the laptop, and never adjusts it per person. |
 | Frame rate target | 90 fps |
 | Claims tier | Marketing. Describe what the system does, never what it achieves. |
+
+**Heartbeat timing, 23 September 2026.** The heartbeat layer plays measured optical beat intervals
+after a delay. The phone sends PPI in batches and the laptop buffers accepted beats before
+scheduled playback; neither the low tone nor its matching visual pulse represents a heartbeat
+occurring at that instant. Preserve the measured rhythm rather than substitute predicted beats.
+The spectator footer discloses delayed playback throughout, and the attendant explains it before
+the session. The surrounding sound is composed during the session; do not describe the whole
+experience as unrecorded, instantaneous or as a real-time mirror of the person's heart. Measured
+timing and remaining limitations are in `docs/known-limits.md`.
+
+The current buffer is 12 s on the reconstructed timeline, not a measurement of physical
+acquisition latency. Recording-specific timing results remain in private local reports. A new baseline excludes
+all pre-start measurements, including late batches: its first roughly 12 s have no heartbeat
+layer while this visitor's buffer fills. The bed and field continue. The ending is not extended
+to play the remaining delayed tail. This prevents a short stop/reset from replaying another
+visitor's beats; it does not move the phone's separate ~24 s startup into the session.
 
 &nbsp;
 
@@ -129,12 +145,12 @@ Timings inside a segment are written as offsets from that segment's own start (t
 | Per-beat layer | **Active.** This is where they first hear themselves. **Amplitude:** −18 → −13 dBFS peak, ramped up across the first 12 s so the first beat is not a surprise. **Frequency band:** 44 Hz fundamental, energy confined 36–62 Hz, roll-off 24 dB/oct above 120 Hz. Envelope 8 ms attack, decay min(220 ms, 0.55 × current RR interval) so beats never overlap. |
 | **Visual base frame** | Baseline base. **Driven axes:** baseline\_confidence (0.0 → 1.0) → **fog density 0.38 → 0.26**, **light intensity 0.45 → 0.62**, **horizon position 0.44 → 0.50**. baseline\_confidence is the mean confidence of arousal, cognitive\_load and readiness, divided by **0.393** and capped at 1.0. Valence is left out because its confidence is 0.0 by design, so a mean over four could never pass 0.75. 0.393 is the most the three reach during baseline, and a settled person usually reaches it by t=45 s; at slow heart rates, around 48 bpm, it tops out near 0.94 of the travel. The climb is slow for the first 20 s and fastest from 25 to 40 s: about 0.25 at t=20 s, 0.56 at 30 s, 0.95 at 40 s (docs/vr-handoff.md §9 has the full curve). The world resolves as the system learns them — the in-headset counterpart of the confidence bars climbing on the spectator screen. Hue fixed **208°**, saturation fixed **0.12**, field motion rate fixed **0.008**. heartbeat → **pulse amplitude 0.06 → 0.10**. |
 | Person does | Sits, looks around. Nothing asked of them. |
-| **Person is told** | *(attendant, before the headset goes on)* — **"Sit however you're comfortable. For the first minute you don't have to do anything at all. Just look around. It's learning what your normal looks like, so normal is exactly what we want."** *(No in-headset text.)* |
+| **Person is told** | *(attendant, before the headset goes on)* — **"Sit however you're comfortable. The low heartbeat is your measured rhythm played back after a delay, not the beat happening this instant. For the first minute you don't have to do anything at all. Just look around. It's learning what your normal looks like, so normal is exactly what we want."** *(No in-headset text.)* |
 | Spectator foreground | Confidence bars climbing from zero as the baseline fills. |
 
 &nbsp;
 
-The narrative job of this segment is that the crowd watches confidence build in real time. That is the most legible thing on the screen all session and it happens in the first 45 s.
+The narrative job of this segment is that the crowd watches confidence build as measured batches arrive. That is the most legible thing on the screen all session and it happens during baseline; it does not imply instantaneous physiological readings.
 
 &nbsp;
 
@@ -226,14 +242,22 @@ Four variants, one spine. Only Beat 1 changes.
 
 |  | It moved | It did not move |
 | :---- | :---- | :---- |
-| **Investor** | "Your rate came down about **\[N\]** beats from where the task put it. Nobody scripted that — the system read the change while it was happening and kept adjusting to it. What's on the screen is the record, not a rendering of one." | "Your trace is close to flat, and the system said so. It never claimed a change it couldn't measure — you can see the confidence on that dimension stayed where it was. That's the behaviour we build for. In a car or a classroom, a system that overstates what it's reading is worse than no system at all." |
-| **Student** | "That line's your heart rate. It went up when the task got hard, and it came back down after. The sound you were hearing was following that line the whole time — it isn't a playlist, there's no recording of it anywhere." | "Your line's pretty flat, which happens plenty. That's the honest result and the system reported it — it didn't get much purchase on you today and it didn't pretend otherwise. The interesting part is that it knew." |
+| **Investor** | "Your rate came down about **\[N\]** beats from where the task put it. Nobody scripted that — the system read each batch as it arrived and adjusted to the measurements. The heartbeat played those measured intervals after a delay. What's on the screen is the record, not an invented curve." | "Your trace is close to flat, and the system said so. It never claimed a change it couldn't measure — you can see the confidence on that dimension stayed where it was. That's the behaviour we build for. In a car or a classroom, a system that overstates what it's reading is worse than no system at all." |
+| **Student** | "That line's your heart rate. It went up when the task got hard, and it came back down after. The low heartbeat replayed your measured intervals after a delay; the surrounding sound was composed during your session, not a playlist." | "Your line's pretty flat, which happens plenty. That's the honest result and the system reported it — it didn't get much purchase on you today and it didn't pretend otherwise. The interesting part is that it knew." |
 
 &nbsp;
 
 **\[N\]** is the visible fall on the trace screen: **peaked at minus left at** (prompt 3.5), read live. It is never the session's `drop_bpm`, which is HR\_load minus the lowest 20 s window, a different number. **The close follows N alone.** 3 bpm or more takes the "It moved" close (close A). Under 3 bpm takes the "It did not move" close (close B), whatever the threshold logic decided and whether regulate timed out. The state machine produces no verdict; the attendant reads N off the screen.
 
 **Definition, 21 September:** **Peaked at is the highest heart rate during the load segment only, not the whole session.** A person may sit down elevated from the exhibition floor and settle through baseline; that settling is not a response to the task. Close A says "from where the task put it", so only load contributes to its peak. **Sat down at stays the first reading**, honestly showing that settling. **Left at is the latest plotted resolve reading**, updating until the session ends and then held with the trace through reset and idle. The screen uses non-rejected scheduled beats, classified against host segment boundaries, for all three numbers. It displays one decimal place and subtracts those same displayed peak and endpoint numbers for N; a negative N stays negative. Missing readings show a dash, never an invented zero. No on-screen verdict or choice of close is produced.
+
+**Delayed-playback caveat, 23 September:** the existing screen classifies those beats by `t_play`,
+so "during load" currently means the **load playback window**, not an exact measurement window.
+The peak caption makes this explicit. Buffered PPI can cross a segment edge before it plays; the
+MQTT samples and frozen beat contract contain no per-beat acquisition timestamp. Do not infer that
+a boundary-adjacent plotted beat was measured in that same segment, subtract a guessed delay in
+the client, or describe the trace as instantaneous. The load-only peak and visible N rule are
+unchanged; exact acquisition-segment attribution is a limitation, not a new on-screen decision.
 
 **Both closes need a rewrite. Not rewritten yet (14 September).** Measured on synthetic sessions in the design critique of 13 September, against the closes as they were chosen until 14 September, by the threshold logic with close B on a timeout:
 
@@ -242,7 +266,7 @@ Four variants, one spine. Only Beat 1 changes.
 
 ### Beat 2 — name what the system did. 20 s, one version, same for everyone.
 
-> "What you heard was composed while you sat there, not played back. The engine reads your state as four numbers — how activated you are, which way it's leaning, how much you're carrying, what you can take on — and every one of those numbers carries its own confidence. It's only allowed to push a number as hard as it's confident about it. That's why the second bar sat at zero the whole time you were in the chair: it couldn't read that one, so it left it alone. Same four numbers drive sound, haptics and interface — this room only had the sound."
+> "The surrounding sound was composed while you sat there, not a pre-recorded mix. The low heartbeat played your measured intervals after a delay. The engine reads your state as four numbers — how activated you are, which way it's leaning, how much you're carrying, what you can take on — and every one of those numbers carries its own confidence. It's only allowed to push a number as hard as it's confident about it. That's why the second bar sat at zero the whole time you were in the chair: it couldn't read that one, so it left it alone. Same four numbers drive sound, haptics and interface — this room only had the sound."
 
 ### Beat 3 — the handoff. 10 s, one version.
 
@@ -384,6 +408,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.6 | 21 Sep 2026 | §3: peaked at is the load-only maximum, excluding baseline settling and later spikes. Sat down at remains the first reading; left at updates through resolve and freezes at session end. N subtracts the same displayed numbers, never `drop_bpm`; the screen gives no verdict. |
 | 1.7 | 22 Sep 2026 | §4: ten frames now supplied; shared browser renderer and portable mapping. Horizon coordinates are top-origin, fixed light at (0.50, 0.40), resolve opens the sky. Replaced the unsupported 95-bpm photosensitivity assurance with measured software rails and explicit 45–180-bpm/hardware limits. §5 records the supplied frame deliverable. |
 | 1.8 | 22 Sep 2026 | §4: visual-only amplitude taper from full authored amplitude at 95 bpm to zero at 120 bpm, including resolve and conservative per-beat cadence checks between state updates. No divided-rate substitute. Audio keeps every eligible scheduled beat; its primacy is why visuals give way. Retained mandatory 45–180-bpm pulse tests and whole-experience/headset safety limitations. |
+| 1.9 | 23 Sep 2026 | §0 and spoken introduction/close distinguish delayed playback of measured heartbeat intervals from the surrounding composed sound. No instantaneous-heartbeat or whole-experience "not played back" claim; spectator disclosure remains visible. |
 
 &nbsp;
 

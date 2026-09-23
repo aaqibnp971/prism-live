@@ -54,9 +54,9 @@ Everything after this week depends on one thing working, so build only that thin
 | A.6 | **Listen to A.5 for five minutes wearing the armband.** Walk up a flight of stairs. Sit down. Does it feel like your heartbeat, or like a stuttering metronome? | If it feels wrong, nothing later fixes it |
 | A.7 | **§6.5, fade to silence** in `prism_device_stop` | A few hours. Do it while you are in the core |
 | A.8 | **§6.1, cadence config:** `cadence_ms = 2000`, `check_interval_ms = 50`, `significant_delta = 0.05` | Ten minutes |
-| A.9 | **Record one clean JSONL session** and keep it forever as the fake sender's input | Everything else gets built against this |
+| A.9 | **Record one clean synthetic JSONL session** as the fake sender's committed input; real recordings remain private and gitignored | Everything else gets built against the synthetic stream |
 
-**Gate, end of Week A:** wearing the armband, you hear a click on every beat, in real time, and it feels like your pulse.
+**Gate, end of Week A (timing corrected 23 September):** wearing the armband, you hear the accepted measured beat intervals as a delayed click track, preserving the measured rhythm rather than predicting it. The phone's batched PPI needs buffering; this is not a click simultaneous with the physical beat. Listen for continuity and honest irregularity, with the measured delay disclosed.
 
 If A.5 and A.6 are not done by Monday 15 September, stop and re-scope the whole showing.
 

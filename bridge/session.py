@@ -24,10 +24,12 @@ The regulate threshold (experience script §2): regulated when any 20 s window h
 or below HR_load - max(5 bpm, 0.5 x rise), where rise = HR_load - HR_base.
 
 - HR_load is the mean over load's last 30 s, from the beats hr_base comes from
-  (PsvModel.heart_rate). It is taken SETTLE_MS into regulate, once the beats of load's last second
-  have arrived, and only when they cover at least 22.5 s of the 30.
+  (PsvModel.heart_rate). It is taken after the model's source-specific settlement interval
+  (legacy 2 s, PPI 10.2 s), and only when beats cover at least 22.5 s of the 30.
 - A window lies wholly inside regulate, ends on a WINDOW_STEP_MS grid, and counts only when its
   beats cover at least 15 s of the 20. Each window is judged once, at the first tick past its end.
+  PPI windows additionally wait for packet settlement. Their decision can start resolve only at
+  or after that decision, not retroactively at the earlier window end; the 105 s cap still wins.
 - Regulated stays true once met.
 
 Load activation and regulate's RMSSD return are recorded in the log, never gating. An RMSSD part
@@ -183,6 +185,7 @@ class _Regulate:
         self.load_known = False
         self.windows = 0  # judged so far
         self.first_met: float | None = None
+        self.first_met_decided_ms: float | None = None  # PPI: don't backdate a late decision
         self.lowest: float | None = None
 
     @property
@@ -195,12 +198,18 @@ class _Regulate:
         if self.no_threshold is not None:
             return self.start + t.regulate_ms
         if self.first_met is not None:
+            if self.first_met_decided_ms is not None:
+                return min(
+                    self.start + t.regulate_ms + t.extension_ms,
+                    max(self.start + t.regulate_ms, self.first_met_decided_ms),
+                )
             return self.start + max(t.regulate_ms, self.first_met)
         return self.start + t.regulate_ms + t.extension_ms
 
     def take_hr_load(self, model: PsvModel, now: float, *, force: bool = False) -> bool:
-        """Once, SETTLE_MS in (or when forced). True the call it happens."""
-        if self.load_known or (now < self.start + SETTLE_MS and not force):
+        """Once the model's packet-settlement interval has passed (or when forced)."""
+        settle = getattr(model, "measurement_settle_ms", SETTLE_MS)
+        if self.load_known or (now < self.start + settle and not force):
             return False
         self.load_known = True
         window = model.heart_rate(self.start - TAIL_MS, self.start)
@@ -222,8 +231,11 @@ class _Regulate:
         """Judge every window ending by now and inside regulate as far as its end is known.
         Returns the end of the first to meet the threshold, if one did in this call."""
         met = None
+        ppi = getattr(model, "measured_ppi", False)
+        settled_through = now - model.measurement_settle_ms if ppi else now
+        hard_end = self.start + self.timings.regulate_ms + self.timings.extension_ms
         while (end := self.start + WINDOW_MS + self.windows * WINDOW_STEP_MS) <= min(
-            now, self.cap()
+            settled_through, self.cap()
         ):
             self.windows += 1
             window = model.heart_rate(end - WINDOW_MS, end)
@@ -231,8 +243,10 @@ class _Regulate:
                 continue
             self.lowest = window.bpm if self.lowest is None else min(self.lowest, window.bpm)
             meets = self.threshold is not None and window.bpm <= self.threshold
-            if meets and self.first_met is None:
+            if meets and self.first_met is None and (not ppi or now <= hard_end):
                 self.first_met = met = end - self.start
+                if ppi:
+                    self.first_met_decided_ms = now
         return met
 
     def result(self, outcome: str, end_ms: float) -> RegulateResult:
@@ -301,7 +315,7 @@ class Session:
 
     @property
     def signal_lost(self) -> bool:
-        """No accepted beat for SIGNAL_LOST_MS, as of the latest tick."""
+        """No accepted beat for the model's source-specific limit, as of the latest tick."""
         return self._signal_lost is not False
 
     @property
@@ -417,8 +431,12 @@ class Session:
         if now < cap:
             return None
         # Judged as it stood at the end of the hold, whenever this tick came.
-        if model.close_baseline(cap) is BaselinePhase.FAILED:
+        phase = model.close_baseline(cap)
+        if phase is BaselinePhase.FAILED:
             return "reset", cap, "gate_failed"
+        if phase is BaselinePhase.READY:
+            # PPI can have a complete accepted-data gate/HR while guarded HRV is still pending.
+            return "load", cap, "baseline_ready"
         model.mark_baseline_degraded()
         return "load", cap, "baseline_degraded"
 
@@ -431,12 +449,12 @@ class Session:
         if r.no_threshold is not None:
             return "resolve", nominal_end, "no_threshold"
         if r.first_met is not None:
-            return "resolve", r.start + max(t.regulate_ms, r.first_met), "regulated"
+            return "resolve", r.cap(), "regulated"
         if now >= nominal_end + t.extension_ms:
             return "resolve", nominal_end + t.extension_ms, "timeout"
         if self._lost(now):
             last = self._model.last_trusted_beat_ms
-            lost_at = nominal_end if last is None else last + SIGNAL_LOST_MS
+            lost_at = nominal_end if last is None else last + self._model.signal_lost_ms
             return "resolve", min(now, max(nominal_end, lost_at)), "unjudged"
         return None
 
@@ -486,6 +504,9 @@ class Session:
                 accepted_intervals=baseline.accepted_intervals,
                 problems=list(baseline.problems),
             )
+            if self._model.measured_ppi:
+                fields["hrv_complete"] = baseline.hrv_complete
+                fields["reported_past_end_ms"] = self._model.baseline_reported_ms
         outcome = {"gate_failed": "failed", "baseline_degraded": "degraded", "stopped": "stopped"}
         fields["outcome"] = outcome.get(reason, "ready")
         if reason == "baseline_ready":
@@ -597,6 +618,8 @@ class Session:
         base = self._baseline
         if base is None:
             return None, "no baseline: it was degraded"
+        if not base.hrv_complete:
+            return None, "baseline HRV classification was incomplete at the hold cap"
         if base.rmssd_base_ms is None or base.rmssd_base_differences < RMSSD_MIN_DIFFERENCES:
             return None, (
                 f"rmssd_base from {base.rmssd_base_differences} clean differences, "
@@ -678,7 +701,7 @@ class Session:
 
     def _lost(self, now: float) -> bool:
         last = self._model.last_trusted_beat_ms
-        return last is None or last <= now - SIGNAL_LOST_MS
+        return last is None or last <= now - self._model.signal_lost_ms
 
     def _clock(self, now_ms: float) -> float | None:
         now = _time(now_ms)

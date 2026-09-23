@@ -28,6 +28,13 @@ first state), the last verified view freezes under a full-width red `LIVE FEED L
 no verified view yet, the banner says `LIVE FEED UNAVAILABLE`. Reconnection happens once per second;
 the banner leaves only after a valid host state arrives.
 
+The persistent footer says `YOUR MEASURED BEATS · DELAYED PLAYBACK`, including during the trace
+reveal and idle. The feed is connected while the heartbeat and trace play scheduled, buffered
+measurements; `LIVE FEED` describes that connection, not zero physiological latency. No contact or
+wear indicator is displayed: the phone probe found positive skin-contact flags and nonzero heart
+rate while the armband was off. The existing `signal.contact` field is still validated as part of
+the frozen contract, but is not mapped into a reading or a wear claim.
+
 ## Visual design
 
 The layout, amber palette, hierarchy and two-bar reading/authority treatment come from the component
@@ -76,6 +83,12 @@ at or below 20,000. The local clock never starts it; the 2 s host cadence bounds
 The trace retains all session beats, not a rolling 1,024-point tail. Only scheduled, non-rejected
 beats supply its values; 2 s state HR messages do not add samples or replace extrema. Host boundary
 times classify beats by `t_play`, including a boundary message arriving after a beat was plotted.
+With buffered PPI this is the delayed **playback** segment, not an exact acquisition segment.
+The peak's caption says `YOUR LOAD SEGMENT · PLAYBACK TIME`; a measured beat near a segment edge
+can play in the next segment. The frozen beat contract carries no acquisition timestamp, and the
+phone's MQTT samples do not provide one either. The load-only peak and N calculations are not
+silently redefined or adjusted by a guessed delay; exact measurement-segment attribution remains
+unavailable to this client.
 The history rail records the maximum observed host authority on each dimension. Its label describes
 history, not current idle authority; valence remains NOT READABLE with exactly zero confidence and
 authority. No authority or confidence is inferred by this page.

@@ -2,7 +2,7 @@
 
 Space/Enter is ONE button: arm -> cancel; running -> stop; reset -> wait.
 No HTTP, WebSocket, callback from another thread, or session-control server exists here.
-The terminal fills its assigned pane; a two-display booth tiles it beside the task on the laptop.
+The booth terminal fills the laptop; the participant's task runs in the headset.
 The pipe input is only for repeatable process-recovery tests, never a browser control path.
 """
 
@@ -112,6 +112,13 @@ class AttendantConsole:
         )
         # This is the host's live Schedule, not a browser guessing adaptive segment durations.
         ends = schedule.ends_at_latest_ms
+        source = getattr(self.bridge, "packet_source", None)
+        source_status = getattr(source, "status", "synthetic")
+        source_label = (
+            "SYNTHETIC INPUT - NO ARMBAND"
+            if source_status == "synthetic"
+            else "POLAR SENSOR LOGGER / MQTT / MEASURED PPI, BUFFERED PLAYBACK"
+        )
         return {
             "state": state,
             "action": action,
@@ -122,7 +129,8 @@ class AttendantConsole:
             "notice": self.notice,
             "restart_notice": RESTART_NOTICE if self.restart_pending else "",
             "baseline_notice": getattr(self.bridge.log, "baseline_notice", ""),
-            "source": "SYNTHETIC INPUT - NO ARMBAND",
+            "source": source_label,
+            "source_status": source_status,
             "psv_source": getattr(self.bridge.psv_feed, "source", "body"),
         }
 
@@ -139,11 +147,22 @@ def screen_lines(view, columns=80):
     """Plain, testable content. No regulate_result access, verdict, or inferred close."""
     width = max(20, columns - 2)
     lines = ["PRISM / ATTENDANT", view["source"], ""]
+    status = view.get("source_status", "synthetic")
+    if status != "synthetic":
+        data_notice = {
+            "connecting": "CONNECTING TO LOCAL MQTT BROKER - NO PPI YET",
+            "waiting_for_ppi": "WAITING FOR PPI - phone warm-up is about 25 s; keep PPI running",
+            "flowing": "PPI PACKETS FLOWING - this does not confirm the armband is worn",
+            "stale": "PPI DATA NOT FLOWING - check phone, stream and router",
+            "disconnected": "MQTT DISCONNECTED - NO NEW PPI",
+            "closed": "MQTT SOURCE CLOSED - NO NEW PPI",
+        }.get(status, "MQTT DATA STATUS UNKNOWN - check phone and stream")
+        lines += [data_notice, ""]
     if view["signal_lost"]:
         lines += ["  ".join(_LETTER[c][row] for c in "LOST") for row in range(5)]
         lines += ["SIGNAL LOST / NO ACCEPTED BEAT", "No automatic stop. Check the armband.", ""]
     else:
-        lines += ["SIGNAL PRESENT", ""]
+        lines += ["ACCEPTED BEATS PRESENT - NOT A WEAR CHECK", ""]
     if view["restart_notice"]:
         lines += [view["restart_notice"], ""]
     lines += [f"STATE: {view['state']}", f"NEXT PRESS: {view['action']}"]
@@ -366,7 +385,10 @@ async def run_console(
                             "console_state": view["state"],
                             "console_text": text,
                             "audio_frames": frames,
-                            "source": "synthetic",
+                            "source": "synthetic"
+                            if view["source_status"] == "synthetic"
+                            else "mqtt",
+                            "source_status": view["source_status"],
                             "clients": clients(),
                         },
                     )

@@ -20,6 +20,9 @@ When real beats stop coming, the lattice keeps going on the last known interval 
 period, marking those beats ``interpolated``. After that it stops, rather than invent a
 heartbeat.
 
+A missed played slot is skipped, never replayed. It still closes a lattice interval: the next
+event's RR describes one interval, not the silence since the last event that was published.
+
 Nothing here knows about wall clocks, threads or sockets. Call ``on_packet`` when a
 notification arrives and ``tick`` often (every 20 to 50 ms), and act on what they return.
 """
@@ -60,6 +63,22 @@ class Tuning:
     max_consecutive_rejects: int = 8  # then the window itself is stale: start it over
     plausible_ms: tuple[float, float] = (300.0, 2000.0)  # 200 down to 30 bpm
     min_spacing_ms: float = 250.0  # two played beats are never closer than this
+    measured_ppi: bool = False
+    packet_settle_ms: float = 2000.0  # wait for a segment's last measurement packet
+
+    @classmethod
+    def ppi(cls) -> Tuning:
+        """Captured phone cadence, not the legacy one-second HRM lattice."""
+        return cls(
+            buffer_ms=12 * 1000.0,  # seconds of PPI buffering, unrelated to authority's taper
+            anchor_lag_ms=2000.0,
+            max_lag_ms=4000.0,
+            link_timeout_ms=6200.0,
+            interpolate_after_ms=5750.0,
+            grace_ms=6200.0,
+            measured_ppi=True,
+            packet_settle_ms=10_200.0,
+        )
 
 
 @dataclass(frozen=True)
@@ -143,7 +162,7 @@ class BeatScheduler:
         )
         # The played timeline.
         self._play_next: float | None = None  # t_play of the next beat; None while stopped
-        self._last_t_play: float | None = None
+        self._last_t_play: float | None = None  # preceding lattice beat, including a skipped one
         self._phase_error = 0.0  # where the lattice should be minus where it is
         self._last_sent_t_play: float | None = None  # survives a stop, unlike _last_t_play
         self._seq = 0
@@ -276,6 +295,11 @@ class BeatScheduler:
             return []
         while self._play_next < now + t.lead_ms:
             # Too late to schedule. Leave the beat out and keep the phase.
+            # Its time still passed: the next RR closes ONE lattice interval, not the whole
+            # silence since the last emitted beat. Otherwise a bridge stall invents a very slow
+            # heart rate and can send an out-of-range RR to the audio shim. Do not advance
+            # _last_sent_t_play: that separately protects already-published beats on restart.
+            self._last_t_play = self._play_next
             self._play_next += self._interval
             self.stats.skipped += 1
         events = []

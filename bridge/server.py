@@ -349,7 +349,7 @@ class LiveServer:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the live bridge, synthetic armband, audio engine and WebSocket link."
+        description="Run the bridge with synthetic or phone MQTT input, audio and WebSocket link."
     )
     parser.add_argument("--host", default="127.0.0.1", help="default: localhost only")
     parser.add_argument("--port", type=int, default=PORT)
@@ -357,6 +357,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scene", default="assets/scenes.json")
     parser.add_argument("--profile", default=DEFAULT_PROFILE_SPEC)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--packet-source", choices=("synthetic", "mqtt"), default="synthetic")
+    parser.add_argument("--ppi-bursts", action="store_true", help="synthetic captured PPI cadence")
+    parser.add_argument("--mqtt-bind")
+    parser.add_argument("--mqtt-phone-ip")
+    parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument("--mqtt-broker-port", type=int, default=1884)
+    parser.add_argument("--mqtt-topic-prefix", default="psl/prism-probe")
+    parser.add_argument("--mqtt-client-id", default="verity-phone")
+    parser.add_argument("--mqtt-device-id", default="1967873D")
     parser.add_argument(
         "--task-event-client",
         choices=("task-screen", "quest"),
@@ -379,9 +388,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--one-session",
         action="store_true",
-        help="start when the synthetic signal is ready, print live timing metrics, then exit",
+        help="start when the selected signal is ready, print live timing metrics, then exit",
     )
     args = parser.parse_args(argv)
+    if args.packet_source == "mqtt" and (not args.mqtt_bind or not args.mqtt_phone_ip):
+        parser.error("MQTT requires explicit --mqtt-bind and --mqtt-phone-ip fixed LAN addresses")
 
     async def run() -> None:
         log = ConsoleLog(args.log_dir)
@@ -393,9 +404,23 @@ def main(argv: list[str] | None = None) -> int:
         gain = SessionGain(host.shim, log)
         heartbeat = HeartbeatLevel(host.shim, log)
 
-        # Prompt 2.8 changes this one construction line to BlePacketSource(...).  Both sources
-        # asynchronously yield each raw HRM characteristic value once.
-        packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed)
+        broker = None
+        if args.packet_source == "mqtt":
+            from bridge.mqtt_broker import MqttBroker
+            from bridge.mqtt_source import MqttConfig, MqttSource
+            from bridge.ppi_scheduler import PpiBeatScheduler
+
+            broker = MqttBroker(args.mqtt_bind, args.mqtt_phone_ip,
+                                port=args.mqtt_port, broker_port=args.mqtt_broker_port)
+            packet_source = MqttSource(MqttConfig(
+                broker_port=args.mqtt_broker_port, topic_prefix=args.mqtt_topic_prefix,
+                client_id=args.mqtt_client_id, device_id=args.mqtt_device_id,
+            ), clock=t_engine_ms)
+            scheduler = PpiBeatScheduler()
+        else:
+            packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed,
+                                                  ppi_bursts=args.ppi_bursts)
+            scheduler = None
 
         server = LiveServer(
             log, host=args.host, port=args.port, task_event_client=args.task_event_client
@@ -409,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
             heartbeat=heartbeat,
             beat_sink=host.shim,
             phase=phase,
+            scheduler=scheduler,
         )
 
         def task_event(msg: dict, client: Client, arrival_ms: float) -> bool:
@@ -420,6 +446,10 @@ def main(argv: list[str] | None = None) -> int:
         runtime: asyncio.Task | None = None
         control: asyncio.Task | None = None
         try:
+            if broker is not None:
+                await broker.start_local()
+                await packet_source.start()
+                await broker.open_lan()
             host.start(gain, heartbeat)
             started = True
             async with server:
@@ -457,16 +487,30 @@ def main(argv: list[str] | None = None) -> int:
                 *(task for task in (control, runtime) if task is not None),
                 return_exceptions=True,
             )
-            try:
-                if started:
-                    await host.stop(gain, heartbeat)
-            finally:
-                host.close()
-                log.close()
+            await _shutdown_runtime(host, gain, heartbeat, log, packet_source, broker, started)
 
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run())
     return 0
+
+
+async def _shutdown_runtime(host, gain, heartbeat, log, source, broker, started):
+    """Fade/close audio before transport teardown, even if a broker cleanup fails or stalls."""
+    try:
+        try:
+            if started:
+                await host.stop(gain, heartbeat)
+        finally:
+            host.close()
+    finally:
+        try:
+            if broker is not None:
+                try:
+                    await source.close()
+                finally:
+                    await broker.close()
+        finally:
+            log.close()
 
 
 async def _one_session(bridge: LiveLoop) -> None:

@@ -4,6 +4,15 @@
 **From:** Ridhwan
 **Date:** 24 September 2026
 
+**Phone-route update, 23 September:** the host now receives optical PPI through Android
+Polar Sensor Logger and local MQTT. Beat `t_play` is delayed playback, not acquisition time;
+keep Unity audio/visual alignment on it and never reconstruct a supposedly current beat.
+The 12 s reconstructed buffer means a new baseline has roughly 12 s without heartbeat
+playback while post-start measurements fill it. No pre-session beats may be carried into
+the new visitor. `signal.contact` is deprecated as wear evidence; neither it nor HR indicates
+wear on this device. There is no Unity contact indicator. PPI signal-loss/measurement-settlement
+is host-side 10.2 s; clients still follow state, never implement their own segment decisions.
+
 You do not need to know anything about VR, Unity, or this project to start. This document assumes none of it.
 
 ---
@@ -12,7 +21,7 @@ You do not need to know anything about VR, Unity, or this project to start. This
 
 ## 1. The company and the thing it makes
 
-R13 Labs builds the **Prism Engine**. It reads a person's state and composes sound in response to it, in real time. Not a playlist, not a recording. The sound is generated while you sit there, and it changes because you changed.
+R13 Labs builds the **Prism Engine**. It reads a person's measured state and composes sound in response to it during the session. The surrounding mix is not a pre-recorded programme. The separate heartbeat layer is delayed playback of measured intervals, as described below; do not present it as an instantaneous mirror of the body.
 
 Investors and universities find this hard to believe from a description. That is the problem this project solves.
 
@@ -20,7 +29,7 @@ Investors and universities find this hard to believe from a description. That is
 
 A **four-minute seated experience**. One person at a time.
 
-They put on a heart rate armband and a VR headset, sit in a chair, and the system reads their pulse and composes sound and visuals from it. Throughout, they hear their **own heartbeat** as a low thump, in real time. Fast at the start. Slow by the end.
+They put on a heart rate armband and a VR headset, sit in a chair, and the system reads their pulse and composes sound and visuals from it. They hear **their measured beat intervals played back after a delay** as a low thump. The Android phone supplies batched PPI, and the laptop buffers accepted beats rather than predict a replacement rhythm. Any measured speeding or slowing is retained; neither a rate change nor instantaneous playback is promised. Preserve this delay disclosure in participant-facing Unity copy too.
 
 At the end they see a line: their heart rate across the whole four minutes.
 
@@ -241,7 +250,12 @@ Every `beat` message carries `t_play`, a **time in the future**.
 You do not flash when the message arrives. An eligible visual pulse is **scheduled** for
 `t_play`, converted into your local clock using the offset from the `clock` exchange.
 
-This is because the audio travels down a wire and arrives instantly, while your message crosses WiFi and does not. If you flash on arrival, the thump and the flash land at different moments, and the whole point is that they are the same event.
+The low tone and visual pulse are both scheduled playback of an earlier measured interval. The
+phone's batched measurements, the scheduler buffer, the audio device and WiFi all introduce
+timing constraints; wired audio is not instantaneous. Shared `t_play` keeps audio and eligible
+visual pulses aligned to each other, not to the heartbeat currently happening in the body.
+Flashing on message arrival would break that alignment. Keep the same delayed-playback disclosure
+as the spectator screen; a connected feed does not mean zero physiological latency.
 
 ### The safety rail, which is not negotiable
 
@@ -397,7 +411,7 @@ You will be given **`fake_sender`**, a small program that replays a recorded ses
 
 Build everything against that. You do not need the armband, the laptop, the Prism Engine, or Ridhwan's code. The two halves meet once, near the end.
 
-**The recorded session's heart is synthetic.** Since prompt 2.4 every value in it is real output of the laptop side: beats, segments, `psv`, `confidence` and `authority`. The heart it reads is a generated one, though, with no breathing and no real person behind it. Build against the stream's shape and timing: the segment sequence, the 2-second state cadence, beats scheduled ahead at `t_play`, and baseline and regulate both running past their nominal lengths. Do not tune anything to its numbers. A session recorded from the armband will follow.
+**The recorded session's heart is synthetic.** Since prompt 2.4 every value in it is real output of the laptop side: beats, segments, `psv`, `confidence` and `authority`. The heart it reads is a generated one, though, with no breathing and no real person behind it. Build against the stream's shape and timing: the segment sequence, the 2-second state cadence, beats scheduled ahead at `t_play`, and baseline and regulate both running past their nominal lengths. Do not tune anything to its numbers. Armband recordings remain local in gitignored private storage, never committed or required by the test suite.
 
 ## 17. Threading, which will catch you
 

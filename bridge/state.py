@@ -85,7 +85,7 @@ class StateStream:
             "hr_bpm": None if estimate.hr_bpm is None else round(estimate.hr_bpm, 1),
             "hr_base": None if degraded or before_baseline_ended else _positive(hr_base_bpm),
             "signal": {
-                "contact": signal.contact is not False,
+                "contact": signal.contact is True,  # unknown is not evidence of wear (v1.7)
                 "rr_accepted_pct": round(signal.accepted_fraction or 0.0, 3),
                 "baseline_quality": 0.0
                 if degraded

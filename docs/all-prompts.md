@@ -104,7 +104,7 @@ Put the armband on properly, sit still, and run it.
 
 **The rest of armband day.** Once 1.0 has answered, and before anything depends on constants tuned on the synthetic armband:
 
-1. **Record a real seated session.** About five minutes with the armband on the upper arm: settling, a task that raises heart rate, and recovery. Save every raw notification with its arrival time, not only the contract messages, so the scheduler, the HRV cleaner and the PSV can be re-run on it. It becomes the real fixture in `tools/fixtures/`. The same run answers the contact questions in CLAUDE.md open question 5.
+1. **Record a real seated session privately.** About five minutes with the armband on the upper arm: settling, a task that raises heart rate, and recovery. Save every raw notification with its arrival time, not only the contract messages, so the scheduler, the HRV cleaner and the PSV can be re-run on it locally. Store it under gitignored `private-data/physiology/captures/`, never `tools/fixtures/` or Git. Keep derived reports and listening renders private too; canonical fixtures/tests remain synthetic. The same run answers the contact questions in CLAUDE.md open question 5.
 2. **Retune the ectopic threshold on it.** `ECTOPIC_QUARTILE_DEVIATIONS` in `bridge/hrv.py` is 12, tuned on synthetic variability that is random from beat to beat, where real variability follows the breath (docs/known-limits.md). Check the firing rate on clean stretches of the recording, and the detection of misplaced beats, at 5.2 and at 12. A clean recording has no known misplaced beats, so for detection inject some into it, or use an annotated public dataset with real ectopic beats. Set the threshold from those, then re-measure everything measured with 12: the leak and threshold tables in docs/known-limits.md, the rmssd_base error table behind the 20-difference rule, and the baseline confidence curve in docs/vr-handoff.md §9. Until then, treat 12 and every number measured with it as provisional.
 
 ## 1.1 Python scaffold and synthetic heart rate
@@ -335,7 +335,16 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 >
 > Tests, offline through the shim with the PSV log of a fixture session: pulse is silent for the whole of baseline and opens within one block of the aligned boundary at load t=0; pulse is gone within 1.5 s of its first boundary after the regulate PSV; air never sounds while pulse is closed; a jittering input inside the hysteresis band never flips a gate; loop phase is continuous from the first block to the last, checked by cross-correlating the bed in the output against the stem file at the end of the session.
 
-## 2.8 BLE bridge
+## 2.8 Phone MQTT PPI source (replaces the BLE bridge)
+
+**Replaced 23 September 2026.** `bridge/mqtt_source.py` consumes Polar Sensor Logger PPI
+on `/ecg`, preserves error/blocker fields and disregards HR/contact as wear evidence.
+`bridge/ppi_scheduler.py` plays accepted measured intervals, not predicted lattice beats,
+with a 12 s reconstructed-time buffer. `tools/synthetic_rr.py --ppi-bursts` exercises the
+five-second capture cadence. Baseline keeps its 11 s hold; PPI's signal-loss and measurement
+settlement limits are 10.2 s. Runbook, measured arrival-to-audio latency, offline classification
+delay and limitations: `docs/launcher.md`, `docs/known-limits.md`. The HRV ectopic threshold
+was not retuned. The historical BLE brief below is superseded, not an outstanding build task.
 
 **Needs the armband in your hands.**
 
@@ -362,6 +371,11 @@ Tests cannot answer this. Only you can. If it feels wrong, come back and tell me
 real armband replaces one construction line. During a complete session on the real clock, measure
 actual tick interval (median, p95, max) against 20 to 100 ms and beat lead at publish (median, p95,
 min) against the 300 ms floor. Record the results in `docs/known-limits.md`.
+
+**Updated 23 September:** testing still defaults to synthetic; booth mode defaults to MQTT
+PPI. The shared asynchronous packet interface accepts raw legacy HRM or typed `PpiPacket`
+without inventing contact bits or converting PPI into fictional BLE RR packets. Ordering
+remains scheduler first, model second. The old `bridge/ble.py` reference is superseded by 2.8.
 
 > Build the live loop in the bridge: one asyncio loop on `T_engine`, the one thread `Session` is used from. It owns five things.
 >

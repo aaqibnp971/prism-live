@@ -5,6 +5,222 @@ each names who has to handle it.
 
 ---
 
+## Production phone PPI route: delayed measured playback (23 September 2026)
+
+This replaces prompt 2.8, **not** the separate ectopic-threshold retuning task. Optical PPI
+from Android Polar Sensor Logger arrives on `psl/prism-probe/ecg` despite that suffix;
+`/hr` is diagnostic only and carries no RR. The phone streams before, during and between
+visitors. Its observed roughly 24 s startup is outside the session, followed by the source's
+one-burst probation (~5 s) to reject startup backlog. The console distinguishes waiting,
+flowing, stale and disconnected. Flowing or accepted data **does not establish wear**.
+
+**Quality policy.** Reject `blockerBit=true`, and reject `errorEstimate > 0.10 * ppi`
+(both milliseconds), before the existing 300–2000 ms plausibility and 20% median tests.
+The relative uncertainty cutoff is a provisional local rule, half the existing median
+tolerance; it is not a Polar accuracy guarantee. Real-person comparisons of candidate rules
+are retained only in the gitignored private reports, not in this repository. This was not a
+retune of HRV's **12.0** ectopic threshold, which is unchanged and still needs its own heavy review.
+Neither reported HR nor `skinContactStatus` decides acceptance, confidence or wear. The
+spectator contact display is removed; contract v1.7 retains the boolean only as a deprecated
+diagnostic and sends false when contact is unreliable/unknown. The attendant must physically
+check the armband. Polar itself cautions that optical PPI is intended for complete rest and
+that Verity Sense contact flags are unreliable:
+[Polar PPI documentation](https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/PPIData.md).
+
+**Timing policy.** `PpiBeatScheduler` queues each accepted measured interval once, with its
+original `rr_ms`; no prediction/interpolation replaces missing or rejected beats. Rejections
+still advance reconstructed time. Normal phase correction is limited to 4% of the smallest
+interval at each burst boundary. An actual gap or impossible reconstructed lag marks a
+discontinuity; it does not stretch RR. Late/stale/overlapping events are counted and skipped,
+not played immediately. Queues are bounded. The legacy one-second synthetic HRM lattice
+remains for existing tests only; booth MQTT and `--ppi-bursts` use the measured path.
+
+The reconstructed playback buffer is **12,000 ms**, with an initial newest-beat lag guess of
+**2,000 ms** and an allowable 20–4,000 ms reconstruction-lag envelope. A full plausible
+interval of anchor headroom avoids future-dated beats when heart/packet phase changes. An
+initial 500 ms anchor caused re-anchors and lost accepted playback slots in ordinary 60 bpm
+synthetic input; the conservative anchor eliminated those in the tested cadence. The buffer
+allows for batched intervals, the 250 ms aggregation wait and ≥300 ms publication lead.
+It is **not a guarantee against arbitrarily late packets, multi-second bridge stalls or a
+different future phone cadence**.
+
+The app supplies publication timestamps, not per-sample acquisition timestamps. Absolute
+physiological latency is therefore unknown; reconstruction is an estimate. Capture-derived
+playback measurements and listening renders remain local under `private-data/physiology/`.
+Offline scheduled onsets are **not a measured real DAC latency**. Warm-up, real output
+device position and the existing armband-day audio checks remain hardware work. Start the
+phone and let data flow before admitting a visitor. Do not describe the heartbeat as “in real
+time”: the plan, spoken introduction/closes, task and spectator now disclose delayed playback.
+The load-only peak on the trace is classified by **playback segment**, not exact acquisition
+segment; the frozen beat message has no acquisition timestamp. Its caption and script say so.
+
+**Rechecking one-second assumptions.** `tools/check_ppi_timing.py` tests 84 offline cases:
+45, 48, 60, 68, 95, 120 and 180 bpm; three seeds; four baseline/burst phases. The deterministic
+cadence includes 5.244 s worst onset spacing, ~83 ms fragmentation and 250 ms coalescing.
+`logs/ppi-timing-measurements.json` is regenerable, not a hardware measurement.
+
+| Reconstructed timing | Median | p95 | Maximum |
+|---|---:|---:|---:|
+| Raw baseline gate + HR evidence after capture closes | 5.184 s | 5.860 s | 5.860 s |
+| Baseline snapshot finalization after capture closes | 10.260 s | 11.000 s | 11.000 s |
+| Accepted-beat age immediately before a new burst | 7.250 s | 7.686 s | 8.026 s |
+| Guarded HRV classification delay | 8.790 s | 12.490 s | 14.758 s |
+
+All 84 normal cases exceeded the old 6.2 s signal-loss boundary, so **PPI signal loss is now
+10.2 s after the last accepted reconstructed beat** (legacy HRM remains 6.2 s). Minimum
+measured normal margin is 2.174 s. This necessarily delays real loss detection; packet status
+separately becomes stale at 6.2 s without new PPI. Silence-confidence starts falling after
+5.75 s and reaches zero at 6.2 s without a packet. Neither buffered audio nor raw `/hr`
+keeps confidence alive. Already accepted buffered beats drain before silence, without invented
+replacements; an attendant stop still takes the existing 3 s fade/reset.
+
+Baseline still captures 45 s, then holds to the 56 s aligned boundary: **no cap extension**.
+Its gate and `hr_base` depend on accepted, non-bootstrap reports, not the slower HRV guard.
+Classification is still awaited when it fits. At the 11 s cap a passing gate yields `hr_base`
+even if HRV is incomplete; baseline RMSSD/spread are then unavailable, explicitly flagged,
+and never filled in retrospectively. 58/84 snapshots had complete HRV; 26 froze HR-only.
+Regulate's load-reference and judgement windows now wait **10.2 s** for PPI settlement,
+rather than taking a partial window after 2 s/immediately. Decisions occur when known, never
+backdate a segment change, and the 105 s regulate ceiling / 281 s session ceiling remain.
+
+**Real-signal baseline qualification remains open.** The synthetic timing sweep proves cadence
+handling, not that a visitor's optical recording passes the unchanged baseline gate. Re-seat
+and make a new quiet capture before claiming booth readiness; diagnose each rejection before
+considering a separate threshold change. Neither the 35 s accepted-coverage requirement nor
+the HRV ectopic threshold has been relaxed. Per-person baseline results, filter counts and
+comparisons belong only in `private-data/physiology/reports/`.
+
+**Listening and off-arm honesty.** `tools/render_ppi_capture.py` can render an explicitly
+selected local capture. Raw recordings belong in `private-data/physiology/captures/`, and
+listening renders and their timing/provenance reports belong under the same gitignored private
+root. Mono 48 kHz PCM16 clicks retain leading waiting time and delayed tails; no normalization
+conceals missing intervals. Receipt while unworn is not proof of sample acquisition time, and
+the available quality fields cannot guarantee off-arm silence. These sounds must not be called
+a real heartbeat while unworn. Optical signal quality and movement during the task remain
+unresolved. No real recording is a required or committed test fixture; regression inputs are
+synthetic, including burst and signal-quality scenarios.
+
+**Visitor boundary:** start fences out measurements reconstructed before the new baseline,
+including late-arriving batches. It clears the queued previous visitor's beats and displayed
+HR/HRV/acceptance evidence while retaining separate transport freshness for the start gate.
+No PPI beat is prequeued into muted audio/clients during idle/reset. This prevents a quick stop
+(3 s reset) and restart from relabelling a 12 s backlog as the next person's heart. Consequently
+a new baseline's heartbeat is silent for roughly its first 12 s while this visitor's buffer
+fills; the surrounding field/bed and baseline capture continue normally. The final delayed tail
+is not extended past the scripted ending. These are explicit consequences of truthful delayed
+playback, not a new warm-up in the phone or a change to the session cap.
+
+**Review:** one heavy-review round of three agents, followed by regression self-checks only.
+Fixed malformed numeric PPI crashing ingestion, invalid rejected-message timestamps, synthetic
+stall timestamps being refreshed, cross-visitor backlog/readings, stale HRV influence after a
+cap-time snapshot rollback, and transport cleanup delaying/bypassing audio shutdown. The last
+fix closes audio before awaiting broker cleanup. No second review round was run.
+
+Implementation verification included the local MQTT broker integration, browser checks,
+stale-confidence and gate regressions. Capture-dependent tests are replaced with synthetic
+inputs during the privacy cleanup; no private recording is required to run the suite.
+The MQTT extra is installed in the project venv; aMQTT's dependency resolves
+`websockets` to 15.0.1, with no broken requirements. No engine/native library was changed.
+
+**Networking and cleanup.** Booth mode uses only our private travel router, fixed DHCP
+reservations for laptop and phone, exact identity/topic checks and a memory-only loopback
+broker behind a phone-IP allowlisted LAN relay. The launcher owns one narrowly scoped
+Windows firewall rule and removes it on normal shutdown/startup failure. An OS kill/power
+failure cannot run cleanup; the printed exact rule name enables manual removal. Unencrypted
+MQTT is not safe on venue/public Wi-Fi. See `docs/launcher.md`. No real firewall rule or
+phone streaming was changed while implementing this production path; loopback integration
+and mocked lifecycle checks do not replace the final booth hardware check.
+
+## Verity Sense 3.0.16: direct Bluetooth on this Windows laptop is not viable
+
+**Deployment decision, 23 September 2026:** direct laptop Bluetooth is **not viable
+for this project's current Windows setup with Verity Sense firmware 3.0.16**. Stop
+using it as the planned sensor route. Android Polar Sensor Logger (Jukka Happonen,
+using Polar's official SDK) forwarding over our local network to an MQTT broker on
+the laptop was subsequently measured below. The production MQTT route now replaces prompt 2.8.
+
+Evidence, separating observations from reports:
+
+- Our four direct-BLE captures connected and enumerated GATT services, but received
+  **zero HR/PPI notifications** and disconnected after 18.489–19.460 s. A sensor
+  restart did not help; HR notification configuration read back enabled. The
+  PPI-first diagnostic stalled before sending the PPI start command. Captures and
+  the detailed report are local under `private-data/physiology/captures/`. Therefore
+  these attempts do **not** establish RR absence or any PPI timing.
+- The user reports steady HR on an iPhone for a full minute, and HR showing in
+  Polar Sensor Logger on Android. This confirms a working mobile HR route; it
+  does not yet validate PPI or the MQTT path. The unit's software-revision GATT
+  characteristic is `3.0.16`; its separate firmware-revision characteristic reads
+  `0.1.5` (do not confuse that with the reported product firmware version).
+- [Polar SDK issue #827](https://github.com/polarofficial/polar-ble-sdk/issues/827)
+  reports Windows 11 HR freezing/disconnecting with 3.0.16 while iOS works.
+  [Polar's maintainer response](https://github.com/polarofficial/polar-ble-sdk/issues/827#issuecomment-4590889202)
+  explicitly says Windows is not supported.
+- [A second, firsthand Zwift report](https://forums.zwift.com/t/polar-verity-sense-connects-on-windows-11-but-sends-no-heart-rate-data-in-zwift-firmware-3-0-16/670113)
+  matches zero notifications and a 19–20 s disconnect on 3.0.16. Its later
+  [update](https://forums.zwift.com/t/polar-verity-sense-connects-on-windows-11-but-sends-no-heart-rate-data-in-zwift-firmware-3-0-16/670113/15)
+  reports a Windows-first pairing workaround. This is corroboration of a Windows
+  interoperability problem and our deployment decision, **not** proof that every
+  Windows installation fails or that firmware alone is the established cause.
+
+Polar Sensor Logger itself is an unofficial app, despite using the official SDK.
+Its [author's listing](https://play.google.com/store/apps/details?id=com.j_ware.polarsensorlogger)
+documents MQTT and Verity Sense PPI. Its nanoseconds/since-2000 timestamp FAQ does
+not establish the units or origin of every MQTT field: preserve the raw integers
+and inspect the actual payload before interpreting them. Arrival regularity alone
+cannot establish physical-beat latency or validate the scheduler's 300 ms lead.
+
+### Android/MQTT probe: original transport finding (production replacement above)
+
+Measured 23 September 2026; raw capture, reproducible analysis and full report are private:
+`private-data/physiology/captures/`. The temporary broker
+was local-only/phone-IP restricted and was stopped after the test. No bridge or
+project dependency changes. These are measurements of one short LAN run, not a
+booth-network worst-case guarantee.
+
+- **Both HR and PPI reach MQTT.** HR topic is `psl/prism-probe/hr`;
+  PPI unexpectedly uses **`psl/prism-probe/ecg`**, with a
+  `ppi` JSON array, not ECG. HR messages contain no RR intervals. Every PPI sample
+  has `hr` (bpm), `ppi` (ms), `errorEstimate` (ms), `blockerBit` and
+  `skinContactStatus`. No contact-supported flag or per-beat/device timestamp
+  survives this app's MQTT output.
+- **MQTT `timeStamp` matches Unix milliseconds**, not nanoseconds since 2000.
+  Phone/laptop clocks were not calibrated; an apparent timestamp offset is not
+  one-way network latency or beat age. Preserve original fields.
+- **PPI arrives in five-second bursts:** onset interval median **5017.178 ms**,
+  p95 **5164.284 ms**, max **5243.869 ms**. Multiple messages may form one burst;
+  consumers must aggregate them without assuming a fixed number of beat intervals.
+  HR messages arrive about once a second, often repeating the estimated value.
+- **The original one-second scheduler was not a drop-in for this pattern.** It assumed a
+  1000 ms buffer, 1200 ms maximum newest-beat reporting lag, 1500 ms packet-gap
+  threshold, interpolation after 2500 ms without accepted intervals and a 5000 ms
+  grace period. PPI inter-message gaps can exceed 5000 ms. HR-only arrivals might
+  keep a link timer alive but do not refresh accepted beats. Its 300 ms emission
+  lead remains a guard achieved by skipping late slots; it is not one-for-one
+  playback of every physical beat. The reviewed production replacement above supplies
+  the larger buffer and quality/timestamp adapter.
+- **Startup is only approximately located.** The actual PPI SDK start timestamp
+  is unavailable; MQTT connection time and human confirmation are not the SDK
+  start acknowledgement. Do not present a connection-relative proxy as precise
+  validation of Polar's approximately 25 s warm-up.
+- **Off-arm validity is unresolved.** Neither contact flags, reported HR nor the
+  available PPI quality fields establish that the sensor is worn. Arrival while
+  unworn is not proof of acquisition while unworn; delayed batches/held estimates
+  cannot be separated without acquisition times.
+  Neither nonzero HR nor contact/blocker flags alone establish actual wear.
+- The connection survived removal/replacement. Transport recovery does not
+  validate signal quality, HRV or the existing baseline tuning. Per-person
+  readings, quality statistics and wear-window analyses remain private.
+
+**Remaining work:** fresh hardware signal-quality diagnosis and booth qualification.
+Anything changing heartbeat timing, HRV or quality semantics gets heavy
+review under CLAUDE.md. Do not treat the optical PPI stream as standard ECG RR or
+overwrite the synthetic golden fixture with it. The older 1.2 s reporting-lag
+statements below describe the synthetic/standard-HR assumptions, not this measured
+Android/PPI route.
+
+---
+
 ## The beat scheduler's accepted intervals, for HRV
 
 **Handled by:** `bridge/hrv.py` (`IntervalCleaner`), since prompt 2.1. All four limits are handled.
@@ -174,7 +390,7 @@ afterwards.
 beat, so large alternating differences are far more common than in real sinus rhythm. In a real
 heart, breathing moves successive intervals smoothly. That is very likely why the published 5.2,
 chosen on real recordings, fires on most synthetic runs. **Check 12 against real data before
-relying on it**: first the recorded real session in `tools/fixtures/` once it exists, and ideally an
+relying on it**: first a private recorded session under `private-data/physiology/captures/`, and ideally an
 annotated public dataset with real ectopic beats. At 5.2 and at 12, check the firing rate on clean
 stretches and the detection of beats known to be misplaced. On real data 12 may prove too
 permissive, and something nearer 5.2 right.
@@ -281,7 +497,7 @@ real sessions say otherwise.
 - **Each regulate window is judged once, at the first tick past its end**, on a 500 ms grid. The
   beats of its last second have mostly not arrived by then, so a clean window covers about 18 of
   its 20 s when judged. A beat arriving later never changes a verdict.
-- **An extension ends "unjudged" 6.2 s after the last accepted beat**: the scheduler's 5 s grace
+- **Legacy HRM: an extension ends "unjudged" 6.2 s after the last accepted beat**: the scheduler's 5 s grace
   plus its 1.2 s reporting lag. A signal lost mid-regulate and back by 75 s still extends.
 - **Start is refused when no accepted beat has come in the last 6.2 s.**
 
@@ -576,7 +792,7 @@ disarms during the pulse-aligned countdown, and stops a running session through 
 does not start a session clock. Press, planned wait, cancellation and firing are logged. The
 final alignment wait now yields to local input instead of blocking cancellation in its last 50 ms.
 
-Signal loss uses `Session.signal_lost`, unchanged at 6.2 s after the last accepted beat, with a
+Signal loss uses `Session.signal_lost`: 6.2 s for legacy HRM, now 10.2 s for phone PPI, with a
 red background over the whole console and large LOST lettering. It never triggers a console
 auto-stop. Baseline notices use only `baseline_end.outcome` and `problems`; slope quality cannot
 turn a failed gate into success. The console never reads `regulate_result` and never calculates
@@ -651,16 +867,48 @@ console-only check opened no audio device or LAN listener. Loopback socket tests
 producer admission, rejection of browser task events in Quest mode, and producer reconnection.
 They do not verify the physical external screen, router/firewall path or headset application.
 
-**OPEN — a multi-second bridge stall can reach audio as an out-of-range RR interval.** In the
+**Fixed in software, 22 September — a bridge stall manufactured an out-of-range played RR.** In the
 first two recovery attempts, fresh Edge profiles were on the project's D: drive. Local page
 loading stalled for seconds and the combined run starved the bridge. The audio interface rejected
 a scheduler event whose RR exceeded the shim's accepted range with `PLS_ERROR_INVALID_ARGUMENT`.
 This was **mitigated by faster browser startup, not fixed**: profiles now live in the system
 temporary directory on C:, reducing an isolated task-page load from 11.477 s to 1.114 s. The
-combined recovery run then passed without unplanned restarts, but neither that pass nor omitting
-the browser task in `--booth` mode resolves the stall-handling bug. Heartbeat and scheduler
-code were deliberately not changed under light review. Investigating and fixing their behaviour
-after a stall requires a separately authorised heavy-review task.
+combined recovery run then passed without unplanned restarts. Heartbeat and scheduler code were
+deliberately not changed under that light review; the faster startup was not a repair.
+
+The authorised heavy-review investigation on 22 September reproduced the fault deliberately:
+the scheduler skipped missed lattice positions but computed the next RR from the last *emitted*
+position. A multi-second scheduling gap consequently became an `ok` beat with a false low heart
+rate, and an RR above 2500 ms made `pls_push_beat` raise through the live loop. The scheduler now
+advances the interval predecessor when skipping without pretending the skipped beats were sent.
+`LiveLoop` also counts/logs an individual native invalid-argument or full-queue beat refusal and
+drops it without retrying; unrelated audio/lifecycle failures still propagate. Physiologically
+`rejected` beats remain publish/log-only and never enter the shim. No native/engine/DLL change was needed.
+
+An additional resolve-ending fault is fixed: if a stall spans the final fade and recovery's state
+callback runs before its control tick, a completed resolve must not begin a new three-second
+heartbeat fade in reset. The level controller preserves the expired deadline and sends silence.
+Both callback orders are tested against the real shim, including exact digital silence while
+new voice events are queued.
+
+All twelve real-clock injections (2, 5 and 10 s in each running segment) completed across three
+production-length sessions using continuous native offline rendering, with no bridge exceptions,
+native beat refusals or render errors. Future voice starts resumed 306–784 ms after unfreeze
+(10 ms counter-observation resolution, **not DAC timing**). The synthetic source, fixed anchor
+and bypassed supervisor are explicit test limits. Baseline's real-clock stall was at 46 s during
+hold: the 10 s case degraded baseline while its late classification was pending, and delayed the
+musical pulse gate to its next loop boundary. Separate accelerated full-session tests inject
+mid-capture as well. Methods, before/after evidence, exact results and commands are in
+[`stall-investigation.md`](stall-investigation.md).
+
+**Still open: avoiding stalls, and preserving the experience through one.** Native music and
+already-issued ramps continue under their last controls, but queued heartbeats finish and then
+the heartbeat is absent until the bridge can schedule fresh beats. Missed controls cannot be
+applied retrospectively. A native-only refused beat can still have a published visual event;
+the frozen link has no cancellation message. The launcher is a separate boundary: its cached
+status freshness plus health timeout can restart a bridge near 10 s of staleness, depending on
+poll order. That force-kill bypasses the graceful audio fade and requires a new visitor session.
+The watchdog policy has not been changed; direct-loop recovery is not a booth-resumption promise.
 
 Other **potential booth stall sources, not established causes of the observed failure**, include:
 

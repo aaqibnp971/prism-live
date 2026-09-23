@@ -24,7 +24,7 @@ The participant does the task in the headset and never looks at the laptop. On t
 **own router, never venue Wi-Fi**, use:
 
 ```powershell
-.venv\Scripts\python.exe -m tools.launch --booth
+.venv\Scripts\python.exe -m tools.launch --booth --lan-ip 192.168.1.201 --mqtt-phone-ip 192.168.1.135
 ```
 
 `--booth` switches the whole configuration together:
@@ -32,6 +32,7 @@ The participant does the task in the headset and never looks at the laptop. On t
 | Setting | Default test mode | `--booth` |
 |---|---|---|
 | Bridge listener | Localhost (`127.0.0.1`) | Selected local RFC1918 LAN IPv4 address |
+| Heartbeat packet source | Synthetic, explicitly labelled | Android Polar Sensor Logger MQTT PPI |
 | Task-event producer | `task-screen` | `quest` |
 | Browser task | Open | Not opened |
 | Laptop | Tiled task and console | Full-screen attendant console |
@@ -41,11 +42,12 @@ Only one task-event producer can bind under prompt 3.2. The launcher therefore n
 browser task in booth mode: the headset owns that input. The attendant's start/cancel/stop button
 still runs in-process; enabling LAN data does not add network controls.
 
-The launcher chooses the LAN address automatically only when exactly one suitable local address
-exists. With multiple adapters, select the IPv4 address belonging to the project's router:
+MQTT requires both addresses explicitly; reserve them on the travel router before the booth.
+The addresses above are the 23 September probe's laptop and phone, not universal defaults.
+For a layout/recovery check without a phone, select synthetic input explicitly:
 
 ```powershell
-.venv\Scripts\python.exe -m tools.launch --booth --lan-ip 192.168.50.20
+.venv\Scripts\python.exe -m tools.launch --booth --packet-source synthetic --lan-ip 192.168.50.20
 ```
 
 Replace that example address with the laptop's actual address. `--lan-ip` must name a local
@@ -53,7 +55,89 @@ RFC1918 address and is rejected without `--booth`; the launcher does not bind ev
 A private address is not evidence of a trusted router: verify the network yourself, and never
 select venue Wi-Fi. The launcher prints the headset URL, for example
 `ws://192.168.50.20:8787/live`, and the expected client identity, `quest`. Use the printed address,
-not `localhost`, on the headset. LAN mode does not configure the router or Windows firewall.
+not `localhost`, on the headset. The launcher never configures the router. MQTT mode owns the
+narrow temporary firewall exception below; it does not add a WebSocket/Quest firewall exception.
+If a Quest connection needs an allowance, scope that separately to the own-router adapter and
+Quest address, rather than accepting Windows' broad "allow Python" prompt.
+
+## Phone and router runbook (replacement for direct laptop BLE / prompt 2.8)
+
+The travel router **must reserve fixed DHCP addresses for both laptop and Android phone**.
+Use the phone's per-network stable MAC when configuring its reservation; verify the addresses
+after reconnecting. If either address changes, stop the launcher and correct the reservations
+and command. Do not widen the allowed source to a subnet. Do not port-forward either MQTT port.
+
+Prepare the optional production MQTT dependencies using the project's `mqtt` extra in the
+project environment (`python -m pip install -e ".[mqtt]"`); this is an operator setup step, not
+an automatic installation by the launcher. Run MQTT booth mode from **Administrator PowerShell**
+so it can create and remove its temporary firewall rule. Ordinary localhost synthetic tests do
+not need elevation or MQTT dependencies.
+
+The MQTT extra was installed into this project's `.venv` during implementation on 23 September.
+It pins aMQTT 0.11.3 and Paho 2.1.0; aMQTT resolves the shared `websockets` dependency to
+15.0.1. Run `python -m pip check` after preparing another machine. This installation does not
+create a service or permanent listener/firewall exception.
+
+On Android, keep Polar Sensor Logger connected to the Verity Sense. Use these settings for the
+addresses and defaults in the command above:
+
+| App setting | Value |
+|---|---|
+| MQTT broker address | `192.168.1.201` (no URL scheme) |
+| MQTT port | `1883` |
+| Topic | `prism-probe` (the app publishes below `psl/prism-probe`) |
+| Client ID | `verity-phone` |
+| Credentials / TLS | Blank / off; own trusted router only |
+| Selected streams | HR and PPI |
+| SDK mode | **Off**; Verity Sense HR/PPI are unavailable in SDK mode |
+
+The default expected sensor ID is `1967873D`, our captured unit. `--mqtt-topic-prefix`,
+`--mqtt-client-id` and `--mqtt-device-id` let the operator select a different documented setup;
+they must match the app and payload identity. The PPI MQTT topic ends in **`/ecg`**, despite
+carrying optical PPI, not ECG. No direct Windows BLE connection is attempted.
+
+Start PPI when the phone connects and **leave it streaming between visitors**. The laptop does
+not send a phone start/stop command at session boundaries. Allow approximately 25 seconds for
+the initial PPI warm-up plus a further advancing burst (about five seconds) for freshness probation;
+the console says `WAITING FOR PPI` until that check completes and makes a
+stalled/disconnected feed visible. Flowing packets are not proof the sensor is worn: neither HR
+nor skin-contact flags are trusted for that decision. The host still refuses session start
+without accepted data. The heartbeat is measured but played through a several-second buffer,
+not an instantaneous pulse monitor.
+
+### Narrow firewall ownership
+
+Before starting bridge/browser processes, the launcher creates a uniquely named
+`PrismPolarMqtt-<id>` inbound rule for **TCP only, the exact phone source IP, the exact laptop
+destination IP and MQTT port, the selected interface, its current Windows profile, and this
+Python process image**. A Windows virtual environment's executable redirects to its base Python;
+the launcher resolves the actual image first so the program-scoped rule matches the listener.
+The rule can be scoped to a trusted router labelled Public by Windows;
+this does not make venue Wi-Fi acceptable. It never changes the network category or disables
+the firewall. An independent relay also rejects every source IP except the phone's.
+
+The memory-only MQTT broker binds `127.0.0.1:1884`; only its relay binds the selected LAN IP on
+1883. The source subscribes before LAN ingress opens. There is no persistent broker service,
+external broker or cloud forwarding. These ports are configurable with `--mqtt-port` and
+`--mqtt-broker-port`; the LAN, loopback and WebSocket ports must differ.
+
+The launcher removes **only its own rule** on Q, Ctrl+C and ordinary startup/shutdown failures.
+It never adopts, overwrites or removes a pre-existing rule. Rule setup failure stops startup;
+do not work around it with a broad exception. Existing broader firewall exceptions are not
+audited or modified. IP allowlisting is not encryption or authentication.
+
+The exact owned rule name and emergency removal command are printed at startup and recorded
+in `logs/launcher/launcher.json`. A forced kill of the supervisor or power loss cannot execute
+its cleanup; children and listeners stop, but the rule can remain. After such a kill, use the
+printed exact name in Administrator PowerShell:
+
+```powershell
+Remove-NetFirewallRule -Name "PrismPolarMqtt-<the-exact-printed-id>"
+```
+
+Do not use a wildcard or remove the old probe's rule by guessing. A bridge-only restart keeps
+the launcher's rule, recreates the memory broker/source, and returns to a fresh idle session;
+the phone reconnects while its PPI stream remains running. No old broker queue survives a crash.
 
 ## Display mapping and browser-test geometry
 
@@ -62,7 +146,7 @@ Inspect/change the mapping without editing code:
 ```powershell
 .venv\Scripts\python.exe -m tools.launch --list-displays
 .venv\Scripts\python.exe -m tools.launch --console-display 0 --task-display 0 --spectator-display 1
-.venv\Scripts\python.exe -m tools.launch --booth --console-display 0 --spectator-display 1
+.venv\Scripts\python.exe -m tools.launch --booth --lan-ip 192.168.1.201 --mqtt-phone-ip 192.168.1.135 --console-display 0 --spectator-display 1
 ```
 
 In test mode, a separate third task monitor can use `--task-display 2`; in that layout both browser
@@ -107,9 +191,10 @@ is no HTTP or WebSocket start/stop path. JSON status files are read-only telemet
 cannot press a button. Browser debug connections only inspect the page's health; they do not
 dispatch button/key events or inject session data.
 
-The bridge starts with the synthetic packet source until prompt 2.8 supplies BLE. The console
-labels it `SYNTHETIC INPUT - NO ARMBAND`. No canned feed or simulation mode is added to either
-browser. Browser pages are loaded from local files, including their local fonts.
+Default browser-test mode uses synthetic packets and labels them `SYNTHETIC INPUT - NO ARMBAND`.
+Booth mode defaults to the phone's MQTT PPI source, with source/warm-up status on the console.
+No canned feed or simulation mode is added to either browser. Browser pages are loaded from
+local files, including their local fonts.
 
 Closing/killing a browser restarts that browser. A bridge crash or stalled audio/status loop
 starts a **new idle bridge and session ID**; the visitor must start again. Nothing resumes or
@@ -135,6 +220,16 @@ crashed profile locks cannot be resumed. Profiles use the Windows temporary dire
 system drive, separate from the project/audio/log drive; their exact paths are recorded in
 status telemetry. They are retained for diagnostics. Logs stay under gitignored `logs/launcher/`;
 no engine source or built library is modified.
+
+## Private physiological recordings
+
+Booth session JSONL logs, raw HR/PPI captures, filter/baseline analyses, listening WAVs and
+screenshots containing a real visitor's readings must stay local. `logs/` and
+`private-data/physiology/` are gitignored; use `private-data/physiology/captures/` for raw
+recordings and `private-data/physiology/reports/` for their analyses. Never force-add these
+files, copy their readings into tracked documentation, or move them into `tools/fixtures/`.
+Only generated synthetic fixtures belong in Git and canonical tests. Gitignore is a guard
+against accidental staging, not access control or a guarantee against an explicit force-add.
 
 ## Recovery diagnostics
 

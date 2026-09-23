@@ -6,7 +6,8 @@ more about the walk than about them.
 
 - hr_base uses every interval the scheduler accepted (not bootstrap), the set the gate trusts,
   so it exists whenever the gate passes. A stray false interval moves a 30 s mean very little.
-  Fed through bridge/psv.py, "accepted" also means sent with sensor contact.
+  For legacy HRM, "accepted" also means sent with sensor contact. Optical PPI deliberately does
+  not use contact/HR as wear evidence; the scheduler applies blocker/error quality first.
 - rmssd_base uses only HRV-clean successive differences (bridge/hrv.py), because one false
   interval moves RMSSD a lot. After a few artefacts it can be None while the gate passes; that
   is honest, and whatever reads it must cope.
@@ -27,15 +28,21 @@ about 12 intervals, and that must not send a well-seated armband back.
     baseline.add(cleaner.add(result.intervals), now)  # the classified stream HRV uses, and when
     if baseline.ready(now): baseline.result()
     baseline.result(as_of_ms=t)  # from only what had been classified by t
+
+PPI mode records scheduler-accepted evidence at arrival for the gate and HR independently of
+HRV's lookahead. It still waits for full classification when possible. At the session's 11 s
+hold cap, an accepted-data gate that passes yields HR_base even when HRV is incomplete; that
+immutable snapshot explicitly carries hrv_complete=False and no baseline RMSSD or HR spread.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 
+from bridge.beat_scheduler import Interval
 from bridge.hrv import MIN_DIFFERENCES, HrvInterval, covered_ms, summarise
 
 DURATION_MS = 45_000
@@ -70,27 +77,76 @@ class Baseline:
     # and how many differences rmssd_base rests on.
     hr_sd_bpm: float | None = None
     rmssd_base_differences: int = 0
+    hrv_complete: bool = True  # PPI cap may freeze HR/gate before HRV lookahead is complete
 
 
 class BaselineCapture:
-    def __init__(self, start_ms: float, duration_ms: float = DURATION_MS) -> None:
+    def __init__(
+        self, start_ms: float, duration_ms: float = DURATION_MS, *, measured_ppi: bool = False
+    ) -> None:
         self.start_ms = start_ms
         self.end_ms = start_ms + duration_ms
+        self.measured_ppi = measured_ppi
         self._intervals: list[HrvInterval] = []
         self._classified_ms: list[float] = []  # when each was classified, if the caller said
         self._classified_past_end = False
+        self._classified_past_end_ms = math.inf
+        self._received_ms: list[float] = []
+        self._reported_index: dict[float, int] = {}
+        self.reported_past_end_ms: float | None = None
+
+    def add_reported(self, intervals: Iterable[Interval], received_ms: float) -> None:
+        """PPI gate/HR evidence on arrival, independently of HRV's guarded lookahead.
+
+        A placeholder is deliberately not HRV-clean. Later classification replaces only its
+        clean/difference fields; accepted intervals cannot be counted a second time. The reported
+        watermark says the gate's whole time window is available, not that HRV is complete.
+        """
+        if not self.measured_ppi:
+            raise ValueError("reported baseline evidence requires measured PPI mode")
+        for interval in intervals:
+            if interval.t_beat > self.end_ms:
+                if self.reported_past_end_ms is None:
+                    self.reported_past_end_ms = received_ms
+            elif self.start_ms < interval.t_beat and interval.t_beat not in self._reported_index:
+                self._reported_index[interval.t_beat] = len(self._intervals)
+                self._intervals.append(
+                    HrvInterval(
+                        interval.t_beat,
+                        interval.rr_ms,
+                        interval.accepted,
+                        interval.bootstrap,
+                        False,
+                        None,
+                    )
+                )
+                self._received_ms.append(received_ms)
+                self._classified_ms.append(math.inf)
 
     def add(self, intervals: Iterable[HrvInterval], classified_ms: float = -math.inf) -> None:
         """Intervals as the cleaner classifies them, and when that was (T_engine)."""
         for interval in intervals:
             if interval.t_beat > self.end_ms:
                 self._classified_past_end = True
+                self._classified_past_end_ms = min(self._classified_past_end_ms, classified_ms)
             elif interval.t_beat > self.start_ms:
-                self._intervals.append(interval)
-                self._classified_ms.append(classified_ms)
+                if self.measured_ppi:
+                    index = self._reported_index.get(interval.t_beat)
+                    if index is not None and self._classified_ms[index] == math.inf:
+                        self._intervals[index] = replace(
+                            self._intervals[index], clean=interval.clean, diff_ms=interval.diff_ms
+                        )
+                        self._classified_ms[index] = classified_ms
+                else:
+                    self._intervals.append(interval)
+                    self._classified_ms.append(classified_ms)
 
     def ready(self, now_ms: float) -> bool:
-        """True once every interval inside the window has been classified."""
+        """Wait for complete HRV when possible; the session enforces its separate hold cap.
+
+        In PPI mode the gate/HR are available earlier through add_reported, but the immutable
+        snapshot waits for this classification watermark or is explicitly closed at the cap.
+        """
         return self._classified_past_end or now_ms >= self.end_ms + READY_TIMEOUT_MS
 
     def progress(self) -> float:
@@ -113,11 +169,30 @@ class BaselineCapture:
         return [i for i in chosen if i.accepted and not i.bootstrap]
 
     def result(self, as_of_ms: float = math.inf) -> Baseline:
-        """The result from every interval classified by as_of_ms: all of them by default."""
+        """Evidence available by as_of_ms, not a later packet or classification.
+
+        PPI uses received intervals for HR/gate, and only classified ones for HRV. If lookahead
+        has not passed the capture end, RMSSD and HR spread remain unavailable: a partial tail is
+        not passed off as a complete baseline. No later enrichment changes a frozen snapshot.
+        """
         start, end = self.start_ms, self.end_ms
-        intervals = [
-            i for i, at in zip(self._intervals, self._classified_ms, strict=True) if at <= as_of_ms
-        ]
+        if self.measured_ppi:
+            intervals = [
+                i if classified <= as_of_ms else replace(i, clean=False, diff_ms=None)
+                for i, received, classified in zip(
+                    self._intervals, self._received_ms, self._classified_ms, strict=True
+                )
+                if received <= as_of_ms
+            ]
+        else:
+            intervals = [
+                i
+                for i, at in zip(self._intervals, self._classified_ms, strict=True)
+                if at <= as_of_ms
+            ]
+        complete = not self.measured_ppi or (
+            self._classified_past_end and self._classified_past_end_ms <= as_of_ms
+        )
         tail = summarise(intervals, end - TAIL_MS, end, MIN_DIFFERENCES)
         trusted = self._trusted(intervals)
         accepted_ms = sum(covered_ms(i, start, end) for i in trusted)
@@ -139,8 +214,8 @@ class BaselineCapture:
             start_ms=start,
             end_ms=end,
             hr_base_bpm=hr_base,
-            rmssd_base_ms=tail.rmssd_ms,
-            ln_rmssd_base=tail.ln_rmssd,
+            rmssd_base_ms=tail.rmssd_ms if complete else None,
+            ln_rmssd_base=tail.ln_rmssd if complete else None,
             slope_bpm_per_min=slope,
             baseline_quality=_quality(slope),
             accepted_ms=accepted_ms,
@@ -149,8 +224,11 @@ class BaselineCapture:
             problems=tuple(problems),
             hr_sd_bpm=_robust_sd(
                 [60_000 / i.rr_ms for i in intervals if i.clean and i.t_beat > end - TAIL_MS]
-            ),
+            )
+            if complete
+            else None,
             rmssd_base_differences=tail.differences,
+            hrv_complete=complete,
         )
 
 

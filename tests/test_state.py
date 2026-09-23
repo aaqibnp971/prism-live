@@ -202,4 +202,4 @@ def test_signal_and_heart_rate_fields_obey_the_contract_rules():
     validate(msg, "out")
     assert msg["t_engine"] == 1235 and msg["t_session"] is None
     assert msg["hr_base"] is None and msg["hr_bpm"] is None
-    assert msg["signal"] == {"contact": True, "rr_accepted_pct": 0.0, "baseline_quality": 1.0}
+    assert msg["signal"] == {"contact": False, "rr_accepted_pct": 0.0, "baseline_quality": 1.0}

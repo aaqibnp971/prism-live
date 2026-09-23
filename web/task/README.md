@@ -40,6 +40,8 @@ To soften the two-second state cadence, drawing eases palette weights for at mos
 each newly reported host weight; it never advances beyond that target. Unity must use the same
 ten-second host schedule plus this bounded visual settling, not a predicted local timeline.
 
+The live debug caption explicitly labels `DELAYED MEASURED BEATS`: the phone's batched PPI and
+laptop buffer mean the pulse follows scheduled playback, not a physical heartbeat happening now.
 Clock ping/pong converts a beat's `t_play` before it is queued. There are no arrival-time flashes,
 rejected beats or late catch-up flashes. A lost socket or 2.5 seconds without host state freezes
 the field and task behind a large red connection warning, clears queued beats and reconnects.

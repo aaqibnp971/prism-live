@@ -31,6 +31,10 @@ What each value is, in this module and nowhere else:
 
 Confidence is per dimension, 0 to 1, a product of factors:
 
+For measured PPI, the scheduler's blocker/error quality replaces the legacy contact check below.
+Contact and reported HR never prove wear; PPI forces the contact field to unknown and the contact
+factor to 1. Packet-silence and beat-freshness limits use the slower source-specific burst timing.
+
 - the signal: the share of reported intervals the scheduler accepted over the last 60 s; silence
   on the link (held through the scheduler's interpolate_after_ms, falling to 0 at grace_ms); a
   recovery ramp after any gap, as long as twice the gap and at most 15 s, starting from where the
@@ -308,6 +312,8 @@ class PsvModel:
         self._reported: deque[tuple[float, bool]] = deque()  # (arrival, accepted)
         self._last_arrival: float | None = None
         self._last_t_beat = -math.inf
+        self._last_signal_beat: float | None = None
+        self._visit_start: float | None = None
         self._contact: bool | None = None
         self._contact_false_since: float | None = None
         self._contact_fall_from = 1.0  # the contact factor when the current loss began
@@ -327,7 +333,19 @@ class PsvModel:
         t = _num(t_ms, *TIME_RANGE_MS)
         if t is None:
             return False
-        self._start_session(BaselineCapture(t))
+        if self.measured_ppi:
+            # Transport keeps its freshness evidence, but a new visitor must not inherit
+            # the previous visitor's displayed HR, acceptance or HRV history.
+            self._visit_start = t
+            self._trusted.clear()
+            self._wire_rr.clear()
+            self._reported.clear()
+            self._clean.clear()
+            self._cleaner = IntervalCleaner()
+            self._hr_now = None
+            self._rmssd_differences = 0
+            self._rmssd_end_ms = None
+        self._start_session(BaselineCapture(t, measured_ppi=self.measured_ppi))
         return True
 
     def reset(self) -> None:
@@ -348,6 +366,8 @@ class PsvModel:
         when it passes, only hr_base was late, and the session is DEGRADED. A result that came
         after as_of_ms is set aside, so the verdict does not depend on when this is called. A result
         in by as_of_ms, a window still open at it, and a degraded or absent baseline are left alone.
+        PPI instead judges received scheduler-accepted evidence at the cap. A passing gate yields
+        READY with hr_base; unfinished HRV is explicitly unavailable, never a degraded HR baseline.
         Returns the phase."""
         as_of, capture = _num(as_of_ms, *TIME_RANGE_MS), self._capture
         decided = self._baseline_decided_ms
@@ -360,6 +380,18 @@ class PsvModel:
         ):
             return self._phase
         so_far = capture.result(as_of)
+        if self.measured_ppi and so_far.passed and so_far.hr_base_bpm is not None:
+            # PPI's accepted gate/HR evidence is independent of HRV's lookahead. At the hold
+            # cap take that baseline; incomplete HRV stays explicitly unavailable, not guessed.
+            self._baseline, self._baseline_decided_ms = so_far, as_of
+            self._phase = BaselinePhase.READY
+            # A stalled loop may already have cached HRV against a later complete snapshot.
+            # That cannot survive rollback to a cap-time baseline without usable HRV.
+            self._z_rmssd = None
+            self._z_rmssd_now = False
+            if self._hr_now is not None:
+                self._peak = self._hr_now
+            return self._phase
         if so_far.passed:
             self._baseline, self._baseline_decided_ms = None, None
             self._phase = BaselinePhase.DEGRADED
@@ -367,6 +399,25 @@ class PsvModel:
             self._baseline, self._baseline_decided_ms = so_far, as_of
             self._phase = BaselinePhase.FAILED
         return self._phase
+
+    @property
+    def measured_ppi(self) -> bool:
+        return self._tuning.measured_ppi
+
+    @property
+    def signal_lost_ms(self) -> float:
+        """No accepted reconstructed beat for this long: reporting gap plus newest-beat lag."""
+        return self._tuning.grace_ms + self._tuning.max_lag_ms
+
+    @property
+    def measurement_settle_ms(self) -> float:
+        """Time to wait after a measurement window for its final burst to arrive."""
+        return self._tuning.packet_settle_ms
+
+    @property
+    def baseline_reported_ms(self) -> float | None:
+        """PPI report-watermark time; HR/gate can be read before complete HRV classification."""
+        return self._capture.reported_past_end_ms if self._capture is not None else None
 
     @property
     def baseline_decided_ms(self) -> float | None:
@@ -447,7 +498,8 @@ class PsvModel:
 
     def heart_rate(self, start_ms: float, end_ms: float) -> HeartRateWindow:
         """Mean heart rate over (start_ms, end_ms]: accepted, non-bootstrap beats sent with
-        contact, the same set hr_base comes from. Known as soon as the beats arrive. Covers the
+        contact for legacy HRM, or the scheduler's blocker/error quality for PPI: the same set
+        hr_base comes from. Known as soon as the beats arrive. Covers the
         two minutes before the newest beat."""
         start, end = _num(start_ms), _num(end_ms)
         if start is None or end is None or end <= start:
@@ -463,12 +515,15 @@ class PsvModel:
 
     @property
     def last_trusted_beat_ms(self) -> float | None:
-        """The newest accepted, non-bootstrap beat sent with contact, T_engine; None before one."""
+        """Newest accepted, non-bootstrap reconstructed beat; no PPI wear inference."""
+        if self.measured_ppi:
+            return self._last_signal_beat
         return self._trusted[-1][0] if self._trusted else None
 
     def rmssd(self, start_ms: float, end_ms: float) -> HrvReading | None:
         """RMSSD from HRV-clean successive differences over (start_ms, end_ms]. None until
-        classification has passed end_ms, 3 to 7.5 s after it. Covers about the last two minutes."""
+        classification has passed end_ms; the guarded lookahead plus PPI burst/anchor lag can
+        exceed the legacy 3 to 7.5 s. Covers about the last two minutes."""
         start, end = _num(start_ms), _num(end_ms)
         horizon = self._cleaner.horizon_ms
         if start is None or end is None or horizon is None or horizon < end:
@@ -482,6 +537,8 @@ class PsvModel:
         now = _num(now_ms, *TIME_RANGE_MS)
         if now is None or not isinstance(result, PacketResult):
             return
+        if self.measured_ppi and not result.intervals:
+            return  # a stale/dropped/duplicate batch cannot freshen signal confidence
         tuning = self._tuning
         if self._last_arrival is None:
             self._gap_ramp = _Ramp(now, 0.0, RECOVERY_MAX_MS)
@@ -495,7 +552,11 @@ class PsvModel:
                 length = min(RECOVERY_MAX_MS, RECOVERY_PER_GAP * gap)
                 self._gap_ramp = _Ramp.after(self._gap_ramp, now, silence * under_way, length)
 
-        contact = result.contact if isinstance(result.contact, bool) else None
+        # The optical contact flag and reported HR stayed positive off-arm in the capture.
+        # PPI quality is the scheduler's blocker/error decision, never an inferred wear state.
+        contact = (
+            result.contact if not self.measured_ppi and isinstance(result.contact, bool) else None
+        )
         if contact is False:
             if self._contact_false_since is None:
                 self._contact_false_since = now
@@ -514,6 +575,12 @@ class PsvModel:
         intervals = result.intervals if isinstance(result.intervals, tuple | list) else ()
         for raw in intervals:
             interval, scheduler_accepted = self._checked(raw, now, contact)
+            if interval is not None and self.measured_ppi:
+                if interval.accepted and not interval.bootstrap:
+                    self._last_signal_beat = interval.t_beat
+                if self._visit_start is not None and interval.t_beat < self._visit_start:
+                    self._last_t_beat = interval.t_beat
+                    continue
             self._reported.append((now, scheduler_accepted))
             if interval is None:
                 continue
@@ -528,6 +595,8 @@ class PsvModel:
         classified = self._cleaner.add(fed)
         self._clean.extend(c for c in classified if c.clean)
         if self._capture is not None:
+            if self.measured_ppi:
+                self._capture.add_reported(fed, now)
             self._capture.add(classified, now)
         self._prune(now)
         self._update_heart_rate()
@@ -767,7 +836,8 @@ class PsvModel:
         _, fill = self._heart_rate_window()
         if not self._trusted:
             return 0.0
-        return fill * (1.0 - _ramp(now - self._trusted[-1][0], HR_STALE_FROM_MS, HR_STALE_UNTIL_MS))
+        stale_from = self.signal_lost_ms if self.measured_ppi else HR_STALE_FROM_MS
+        return fill * (1.0 - _ramp(now - self._trusted[-1][0], stale_from, HR_STALE_UNTIL_MS))
 
     def _update_baseline(self, now: float) -> None:
         if self._phase not in _CAPTURE_PHASES or not self._capture.ready(now):
@@ -864,9 +934,7 @@ class PsvModel:
             return None
         interval_ms = self._task_latest_interval_ms
         stream_gap_ms = max(0.0, now - self._task_last_event_ms)
-        stream_freshness = 1.0 - _ramp(
-            stream_gap_ms / interval_ms, *TASK_STREAM_FRESH_INTERVALS
-        )
+        stream_freshness = 1.0 - _ramp(stream_gap_ms / interval_ms, *TASK_STREAM_FRESH_INTERVALS)
 
         interaction_anchor = (
             self._task_last_interaction_ms
@@ -910,9 +978,7 @@ class PsvModel:
         )
         difficulty = self._task_latest_difficulty
         engaged_value = (
-            TASK_ENGAGED_BASE
-            + TASK_DIFFICULTY_WEIGHT * difficulty
-            + TASK_STRAIN_WEIGHT * strain
+            TASK_ENGAGED_BASE + TASK_DIFFICULTY_WEIGHT * difficulty + TASK_STRAIN_WEIGHT * strain
         )
         value = TASK_DISENGAGED_VALUE + engagement * (engaged_value - TASK_DISENGAGED_VALUE)
 

@@ -5,3 +5,6 @@ tools/fixtures/** -text
 # The committed engine library is checked against its SHA-256 (vendor/lib/README.md).
 # Never let any line-ending or diff setting touch it.
 vendor/lib/*.dll binary
+
+# Git for Windows executes hooks through its POSIX shell.
+.githooks/* text eol=lf

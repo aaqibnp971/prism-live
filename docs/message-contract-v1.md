@@ -1,6 +1,6 @@
-# Prism Live: Message Contract v1.6
+# Prism Live: Message Contract v1.7
 
-**Status:** FROZEN as of 10 September 2026. v1.1 to v1.5 (13 and 14 September 2026) turn fourteen gaps into explicit rules, and v1.6 (14 September 2026) brings one older wording up to date; nothing was added or removed, and the schema version `v` is still `1`.
+**Status:** FROZEN as of 10 September 2026. Clarifications through v1.7 (23 September 2026) add or remove no fields; the schema version `v` is still `1`. v1.7 deprecates contact as wear evidence and documents delayed measured PPI playback.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -13,7 +13,7 @@ Nothing is added or removed after this date without both sides updating together
 | Change | Was | Now | Reason |
 |---|---|---|---|
 | `state` cadence | 30 s | **2 s** | The engine now infers at 2 s (Script §6.1). At 30 s the visuals get 8 updates in a whole session and 2 during regulate, so sound and picture cannot move together |
-| `beat` timing | implied "now" | **`t_play`, a scheduled future time** | Audio is wired and instant, visuals cross WiFi and are not. Without a shared target time the heartbeat sound and the visual pulse land at different moments |
+| `beat` timing | implied "now" | **`t_play`, a scheduled future time** | Wired audio and WiFi visuals share a playback target. The measured heartbeat is buffered; wired output does not mean instantaneous physiological playback |
 | Direction | laptop to client only | **added client to laptop** | Plan task 3.5 requires task events to feed `cognitive_load`. There was no channel for that |
 | Transport | UDP or WebSocket | **WebSocket** | One server, any number of clients, works in a browser and in Unity, no packet loss handling to write |
 | Clock | not addressed | **`clock` ping/pong** | `t_play` is meaningless unless both sides agree what time it is |
@@ -109,7 +109,7 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | `authority` | `min(confidence, segment_ceiling)`. Computed once on the laptop so audio and visuals can never disagree |
 | `hr_bpm` | Current heart rate. `null` before the first accepted interval |
 | `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended. **A degraded session keeps it `null` to the end:** when the baseline result does not come within 12 s of the baseline window closing, load starts without it, and every later `state` in that session sends `hr_base` `null` and `signal.baseline_quality` 0.0 |
-| `signal` | Feeds the honesty display. `contact` comes from the armband's own sensor-contact bit. `baseline_quality` is 0.0 through baseline and its hold, and takes the baseline result's value from the first `load` message. Nothing uses it during baseline: the baseline visual is driven by confidence (VR handoff §9) |
+| `signal` | `contact` is a deprecated diagnostic, **never wear evidence**. Legacy HRM may forward its bit; unknown/unreliable contact (including all Verity Sense PPI) sends `false`. Neither value may label the armband worn or unworn, or gate PPI confidence. `baseline_quality` is 0.0 through baseline and its hold, and takes the baseline result's value from the first `load` message. Nothing uses it during baseline: the baseline visual is driven by confidence (VR handoff §9) |
 
 **Segment ceilings**, applied laptop-side before sending:
 
@@ -210,11 +210,21 @@ Two throwaway tools, both worth an hour:
 - **`fake_sender`** replays a recorded JSONL session at real speed. Every client is built and tested against this, with no armband and no engine.
 - **`fake_receiver`** connects to the real laptop and prints every message with the wall-clock delta between `t_play` and arrival. This is how you verify scheduling headroom is real before anything renders.
 
-Record one good JSONL session in Week A and use it as the fake sender's input for the rest of the project.
+Record one good **synthetic** JSONL session in Week A and use it as the fake sender's input for
+the rest of the project. Real physiological recordings and derived session logs stay local in
+gitignored storage; they are never committed fixtures or required test inputs.
 
 ---
 
 ## Changelog
+
+v1.7 (23 September 2026): no schema change. The MQTT PPI route schedules accepted measured
+intervals with a 12 s reconstructed-time buffer; it never creates interpolated replacement
+beats. `rr_ms` remains the original measured interval, even across a rejected or skipped beat;
+`t_play` is playback time, not acquisition time. Gentle phase correction can slightly change
+playback spacing. PPI has no per-sample acquisition timestamp. `signal.contact` is deprecated
+as wear evidence; unreliable/unknown sends false. HRV delay no longer forces a degraded
+baseline when accepted-only gate and `hr_base` are available by the unchanged hold cap.
 
 | Version | Date | Change |
 |---|---|---|

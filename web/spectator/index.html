@@ -42,12 +42,12 @@
             <div id="baseline-learning" class="baseline-learning" hidden>
               <p>LEARNING YOUR RESTING RATE</p><div class="learning-track"><i id="baseline-learning-fill"></i></div>
             </div>
-            <p class="signal-line"><span id="signal-quality">—</span> · <span id="contact-state">—</span></p>
+            <p class="signal-line"><span id="signal-quality">—</span></p>
           </section>
           <section id="live-trace-card" class="trace-card" aria-labelledby="live-trace-title">
             <header class="trace-heading"><h2 id="live-trace-title">YOUR HEART, BEAT BY BEAT</h2><span><span id="live-trace-min">—</span> – <span id="live-trace-max">—</span> BPM</span></header>
             <div class="trace-frame">
-              <svg id="live-trace-svg" class="trace-svg" viewBox="0 0 1000 210" preserveAspectRatio="none" role="img" aria-label="Your live heart rate trace">
+              <svg id="live-trace-svg" class="trace-svg" viewBox="0 0 1000 210" preserveAspectRatio="none" role="img" aria-label="Your measured heart rate trace, shown on the delayed playback timeline">
                 <defs><clipPath id="live-plot-clip"><rect x="0" y="0" width="1000" height="210" /></clipPath></defs>
                 <g class="plot-content" clip-path="url(#live-plot-clip)">
                   <g class="trace-grid" aria-hidden="true"><path d="M0 12H1000 M0 105H1000 M0 198H1000" /></g>
@@ -107,7 +107,7 @@
             <p id="reveal-status" class="reveal-status">YOUR SESSION TRACE</p>
             <div class="reveal-numbers">
               <article><h3>SAT DOWN AT</h3><div><output id="reveal-start">—</output><span>BPM</span></div><p>YOUR FIRST READING</p></article>
-              <article><h3>PEAKED AT</h3><div><output id="reveal-peak">—</output><span>BPM</span></div><p>YOUR LOAD SEGMENT ONLY</p></article>
+              <article><h3>PEAKED AT</h3><div><output id="reveal-peak">—</output><span>BPM</span></div><p>YOUR LOAD SEGMENT · PLAYBACK TIME</p></article>
               <article class="reveal-ending"><h3>LEFT AT</h3><div><output id="reveal-end">—</output><span>BPM</span></div><p id="reveal-end-note">YOUR LATEST RESOLVE BEAT</p></article>
             </div>
             <div class="reveal-difference"><h3>PEAKED AT − LEFT AT</h3><p><span id="reveal-equation">— − — = </span><output id="reveal-difference">—</output> <span>BPM</span></p></div>
@@ -138,6 +138,7 @@
         </section>
       </main>
       <footer class="system-footer">
+        <span id="playback-disclosure">YOUR MEASURED BEATS · DELAYED PLAYBACK</span>
         <span id="link-badge" data-state="waiting"><i class="link-dot"></i><span id="link-label">CONNECTING</span></span>
         <span id="header-session">WAITING FOR DATA</span><button id="fullscreen-button" type="button">FULL SCREEN</button>
       </footer>

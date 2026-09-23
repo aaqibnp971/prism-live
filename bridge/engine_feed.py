@@ -616,6 +616,10 @@ class HeartbeatLevel:
             )
             return None
 
+        # A stalled loop may deliver completed RESET before the control tick gets to issue
+        # resolve's overdue fade. Preserve that deadline before clearing the old segment:
+        # starting a fresh three-second fade now would make resumed beats audible after the end.
+        resolve_already_ended = self._resolve_end_ms is not None and t >= self._resolve_end_ms
         entered = segment != self._segment
         if entered:
             self._segment = segment
@@ -629,7 +633,8 @@ class HeartbeatLevel:
         restoring = self._restarting or (entered and elapsed > SOONER_MS)
         self._restarting = False
         if segment in ("idle", "reset"):
-            self._send_if_changed(-math.inf, HEARTBEAT_FINAL_FADE_MS, t, segment, commands)
+            ramp = 0.0 if resolve_already_ended else HEARTBEAT_FINAL_FADE_MS
+            self._send_if_changed(-math.inf, ramp, t, segment, commands)
         elif segment == "baseline":
             if entered:
                 self._enter_baseline(t, elapsed, restoring, commands)

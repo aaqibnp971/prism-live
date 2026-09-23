@@ -31,6 +31,9 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 
+from bridge.mqtt_broker import private_ipv4
+from tools.mqtt_firewall import MqttFirewall
+
 ROOT = Path(__file__).resolve().parents[1]
 POLL_SECONDS = 0.25
 STARTUP_TIMEOUT = 15.0
@@ -158,6 +161,13 @@ class Config:
     headless: bool = False
     booth: bool = False
     lan_ip: str | None = None
+    packet_source: str = "synthetic"
+    mqtt_phone_ip: str | None = None
+    mqtt_port: int = 1883
+    mqtt_broker_port: int = 1884
+    mqtt_topic_prefix: str = "psl/prism-probe"
+    mqtt_client_id: str = "verity-phone"
+    mqtt_device_id: str = "1967873D"
     console_input: str = "terminal"
     displays: dict[str, Display] = field(default_factory=dict)
     distance_cm: float = 60.0
@@ -205,7 +215,28 @@ def bridge_command(config: Config, generation: int) -> list[str]:
         str(generation),
         "--console-input",
         config.console_input,
+        "--packet-source",
+        config.packet_source,
     ]
+    if config.packet_source == "mqtt":
+        if not config.booth or config.mqtt_phone_ip is None:
+            raise ValueError("MQTT requires booth mode and the phone's fixed IPv4 address")
+        command += [
+            "--mqtt-bind",
+            config.bind_host,
+            "--mqtt-phone-ip",
+            config.mqtt_phone_ip,
+            "--mqtt-port",
+            str(config.mqtt_port),
+            "--mqtt-broker-port",
+            str(config.mqtt_broker_port),
+            "--mqtt-topic-prefix",
+            config.mqtt_topic_prefix,
+            "--mqtt-client-id",
+            config.mqtt_client_id,
+            "--mqtt-device-id",
+            config.mqtt_device_id,
+        ]
     if config.booth and not config.headless:
         command.append("--console-fullscreen")
     return command
@@ -531,6 +562,7 @@ class Supervisor:
         self.stopping = False
         self.status_path = config.status_dir / "launcher.json"
         self._lock_file = None
+        self.firewall = None
 
     def event(self, kind: str, role: str, **detail: Any) -> None:
         record = {"event": kind, "role": role, "at": time.time(), **detail}
@@ -753,6 +785,8 @@ class Supervisor:
             "headless": self.config.headless,
             "browser_task": self.config.browser_task,
             "booth": self.config.booth,
+            "packet_source": self.config.packet_source,
+            "mqtt_firewall": self.firewall.scope if self.firewall is not None else None,
             "stopping": self.stopping,
             "children": children,
             "bridge": bridge,
@@ -765,16 +799,47 @@ class Supervisor:
 
     async def close(self) -> None:
         self.stopping = True
-        for role in tuple(self.children):
-            await self.stop_child(role)
-        if self._lock_file is not None:
-            self.snapshot()
-            self._lock_file.close()
-            self._lock_file = None
+        try:
+            for role in tuple(self.children):
+                await self.stop_child(role)
+        finally:
+            try:
+                if self.firewall is not None:
+                    await asyncio.to_thread(self.firewall.close)
+                    self.firewall = None
+            finally:
+                if self._lock_file is not None:
+                    self.snapshot()
+                    self._lock_file.close()
+                    self._lock_file = None
 
     async def run(self) -> None:
         self._acquire()
         try:
+            if self.config.packet_source == "mqtt":
+                self.firewall = MqttFirewall(
+                    self.config.bind_host,
+                    self.config.mqtt_phone_ip,
+                    self.config.python,
+                    port=self.config.mqtt_port,
+                )
+                # Print before creation: even interruption during setup leaves a named,
+                # owned rule whose emergency cleanup command is visible to the operator.
+                print(
+                    f"Temporary MQTT firewall: {self.firewall.name}. "
+                    "Removed on normal shutdown; after a forced supervisor kill use "
+                    f'Remove-NetFirewallRule -Name "{self.firewall.name}"',
+                    flush=True,
+                )
+                setup = asyncio.create_task(asyncio.to_thread(self.firewall.open))
+                try:
+                    await asyncio.shield(setup)
+                except asyncio.CancelledError:
+                    # The OS command is not cancelled with its awaiting coroutine.
+                    # Wait for it before finally removes the rule; no late creation leak.
+                    with contextlib.suppress(Exception):
+                        await setup
+                    raise
             while await self.step():
                 await asyncio.sleep(POLL_SECONDS)
         finally:
@@ -824,6 +889,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--lan-ip", help="Booth router's local IPv4 adapter; requires --booth")
     parser.add_argument(
+        "--packet-source",
+        choices=("synthetic", "mqtt"),
+        help="Default: synthetic in local tests, MQTT in booth mode",
+    )
+    parser.add_argument("--mqtt-phone-ip", help="Android phone's fixed IPv4 on the booth router")
+    parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument("--mqtt-broker-port", type=int, default=1884)
+    parser.add_argument("--mqtt-topic-prefix", default="psl/prism-probe")
+    parser.add_argument("--mqtt-client-id", default="verity-phone")
+    parser.add_argument("--mqtt-device-id", default="1967873D")
+    parser.add_argument(
         "--task-display", type=int, help="Testing mode only; default shares the console display"
     )
     parser.add_argument("--spectator-display", type=int, default=1)
@@ -849,6 +925,22 @@ def main(argv: list[str] | None = None) -> None:
             )
         if args.lan_ip is not None and not args.booth:
             raise ValueError("--lan-ip requires --booth; testing stays on localhost")
+        packet_source = args.packet_source or ("mqtt" if args.booth else "synthetic")
+        if packet_source == "mqtt":
+            if not args.booth or args.lan_ip is None or args.mqtt_phone_ip is None:
+                raise ValueError(
+                    "MQTT requires --booth, explicit --lan-ip and --mqtt-phone-ip; "
+                    "reserve both addresses on your own travel router"
+                )
+            private_ipv4(args.mqtt_phone_ip)
+            if args.mqtt_phone_ip == args.lan_ip:
+                raise ValueError("Laptop and phone must have different fixed addresses")
+            if not all(1024 <= port <= 65535 for port in (args.mqtt_port, args.mqtt_broker_port)):
+                raise ValueError("MQTT ports must be between 1024 and 65535")
+            if len({args.port, args.mqtt_port, args.mqtt_broker_port}) != 3:
+                raise ValueError("WebSocket, MQTT LAN and MQTT loopback ports must differ")
+        elif args.mqtt_phone_ip is not None:
+            raise ValueError("--mqtt-phone-ip requires --packet-source mqtt")
         if not args.python.is_file():
             raise ValueError(f"Python environment missing: {args.python}; nothing was installed.")
         if not 1 <= args.port <= 65535:
@@ -864,6 +956,13 @@ def main(argv: list[str] | None = None) -> None:
             headless=args.headless,
             booth=args.booth,
             lan_ip=select_lan_address(args.lan_ip) if args.booth else None,
+            packet_source=packet_source,
+            mqtt_phone_ip=args.mqtt_phone_ip,
+            mqtt_port=args.mqtt_port,
+            mqtt_broker_port=args.mqtt_broker_port,
+            mqtt_topic_prefix=args.mqtt_topic_prefix,
+            mqtt_client_id=args.mqtt_client_id,
+            mqtt_device_id=args.mqtt_device_id,
             console_input=args.console_input,
             distance_cm=args.distance_cm,
             screen_width_cm=args.screen_width_cm,
@@ -887,6 +986,12 @@ def main(argv: list[str] | None = None) -> None:
             )
         else:
             print("TEST MODE: localhost, browser task producer; no LAN listener.", flush=True)
+        if config.packet_source == "mqtt":
+            print(
+                f"Phone MQTT: {config.bind_host}:{config.mqtt_port}; only {config.mqtt_phone_ip}. "
+                "Keep PPI running between visitors. No stream data is proof of wear.",
+                flush=True,
+            )
         asyncio.run(Supervisor(config).run())
     except KeyboardInterrupt:
         pass

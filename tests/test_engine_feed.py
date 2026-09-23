@@ -873,6 +873,41 @@ def test_heartbeat_level_uses_the_same_stop_latch_as_session_gain(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("control_first", [False, True])
+@pytest.mark.parametrize("resume_ms", [45_000, 50_000])
+def test_stall_across_resolve_end_cannot_start_a_new_fade_in_reset(
+    tmp_path, control_first, resume_ms
+):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+    heartbeat.on_state(message(0, 0.5, segment="resolve", elapsed=0, nominal=45_000))
+    heartbeat.tick(40_000)
+    if control_first:
+        heartbeat.tick(resume_ms)
+    heartbeat.on_state(
+        message(
+            resume_ms,
+            0.5,
+            segment="reset",
+            elapsed=resume_ms - 45_000,
+            nominal=20_000,
+        )
+    )
+    heartbeat.tick(resume_ms)
+    assert sink.heartbeats[-1] == (-math.inf, 0.0)
+    assert sink.heartbeats.count((-math.inf, 0.0)) == 1
+    assert (-math.inf, 3000.0) not in sink.heartbeats
+
+
+def test_early_manual_stop_during_resolve_still_has_its_three_second_fade(tmp_path):
+    sink = Recorder()
+    heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
+    heartbeat.on_state(message(0, 0.5, segment="resolve", elapsed=0, nominal=45_000))
+    assert heartbeat.on_state(
+        message(40_000, 0.5, segment="reset", elapsed=0, nominal=3000),
+    ) == ((-math.inf, 3000.0),)
+
+
 def test_heartbeat_onset_measurements_are_logged_from_the_control_thread(tmp_path):
     class TimedRecorder(Recorder):
         records = [

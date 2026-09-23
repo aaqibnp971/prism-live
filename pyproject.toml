@@ -1,13 +1,14 @@
 [project]
 name = "prism-live"
 version = "0.1.0"
-description = "Prism Live host: BLE bridge, beat scheduler, PSV, WebSocket server, tools"
+description = "Prism Live host: MQTT PPI, beat scheduler, PSV, WebSocket server, tools"
 requires-python = ">=3.11"
 dependencies = ["websockets>=15"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "numpy>=1.26"]  # numpy: the shim and engine tests' meters
 audio = ["sounddevice>=0.4", "numpy>=1.26"]  # tools/click_track.py only
+mqtt = ["amqtt==0.11.3", "paho-mqtt==2.1.0"]  # local phone broker and measured PPI source
 
 [build-system]
 requires = ["setuptools>=68"]
