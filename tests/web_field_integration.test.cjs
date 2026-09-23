@@ -115,6 +115,98 @@ test("freeze preserves exact last pixels, stops drift and clears queued heartbea
   assert.ok(view.drift < drift + .001); // No six-second drift catch-up.
 });
 
+test("live rendered amplitude follows95..120 taper exactly once across45..180 and all segments", () => {
+  for (const segment of Mapping.ACTIVE_SEGMENTS) for (const bpm of [
+    ...Array.from({length:136},(_,i)=>i+45),107.5,119.999,120.001,
+  ]) {
+    const { view, next } = fieldHarness();
+    const current = state(segment,1,{hr_bpm:bpm});
+    view.onState(current,0);
+    const message = beat(1,{hr_bpm:bpm,rr_ms:60000/bpm});
+    assert.equal(view.onBeat(message,500,0),bpm<120);
+    next(500); next(545);
+    const rise = view.renderer.draws.at(-1);
+    next(590);
+    const peak = view.renderer.draws.at(-1);
+    const expected = Mapping.mapState(current).pulse;
+    for(const layer of peak.layers) assert.ok(Math.abs(layer.tokens.pulse-expected)<1e-12);
+    assert.ok(Math.abs(rise.pulse-(bpm<120 ? .5 : 0))<1e-12);
+    assert.equal(peak.pulse,bpm<120 ? 1 : 0);
+    // The event object is read-only here; visual rejection never feeds back into audio.
+    assert.deepEqual(message,beat(1,{hr_bpm:bpm,rr_ms:60000/bpm}));
+    view.destroy();
+  }
+});
+
+test("fast beat metadata overrides stale slow state without doubling the taper", () => {
+  for (const segment of Mapping.ACTIVE_SEGMENTS) {
+    for(const extra of [{hr_bpm:107.5,rr_ms:60000/107.5},{hr_bpm:75,rr_ms:60000/107.5}]) {
+      const { view, next } = fieldHarness();
+      const current = state(segment,1,{hr_bpm:95});
+      view.onState(current,0);
+      assert.equal(view.onBeat(beat(1,extra),500,0),true);
+      next(500); next(590);
+      for(const layer of view.renderer.draws.at(-1).layers) {
+        assert.ok(Math.abs(layer.tokens.pulse-Mapping.mapState(current).pulse/2)<1e-12);
+      }
+      view.destroy();
+    }
+    for(const extra of [{hr_bpm:120,rr_ms:800},{hr_bpm:75,rr_ms:500}]) {
+      const { view, next } = fieldHarness();
+      view.onState(state(segment,1,{hr_bpm:95}),0);
+      assert.equal(view.onBeat(beat(1,extra),500,0),false);
+      next(500); next(590);
+      assert.equal(view.renderer.draws.at(-1).pulse,0);
+      view.destroy();
+    }
+  }
+});
+
+test("scheduled cadence tapers even stale HR/RR; recovery never replays suppressed beats", () => {
+  const { view, next } = fieldHarness();
+  view.onState(state("load",1,{hr_bpm:95}),0);
+  assert.equal(view.onBeat(beat(),500,0),true);
+  const second=500+60000/107.5;
+  assert.equal(view.onBeat(beat(2),second,0),true);
+  next(500); next(590); next(second); next(second+90);
+  assert.ok(Math.abs(view.renderer.draws.at(-1).layers[0].tokens.pulse-.08)<1e-12);
+  for(let i=0;i<10;i++) {
+    const when=second+(i+1)*400;
+    assert.equal(view.onBeat(beat(i+3),when,0),false);
+    next(when); next(when+90);
+    assert.equal(view.renderer.draws.at(-1).pulse,0);
+  }
+  const recovered=second+4000+800;
+  assert.equal(view.onBeat(beat(13),recovered,0),true);
+  next(recovered-1); assert.equal(view.renderer.draws.at(-1).pulse,0);
+  next(recovered); next(recovered+90);
+  assert.equal(view.renderer.draws.at(-1).pulse,1);
+});
+
+test("fast state zeros both palettes during a dissolve, including its outgoing settling frame", () => {
+  const { view, next } = fieldHarness();
+  view.onState(state("load",1,{hr_bpm:95}),0);
+  view.onState(state("regulate",2,{hr_bpm:95,segment_elapsed_ms:9999}),0);
+  view.onBeat(beat(),500,0); next(500); next(590);
+  assert.ok(view.renderer.draws.at(-1).layers.every(layer=>layer.tokens.pulse>0));
+  view.onState(state("regulate",3,{hr_bpm:120,segment_elapsed_ms:10000}),600);
+  for(const now of [600,650,849,850]) {
+    next(now);
+    assert.ok(view.renderer.draws.at(-1).layers.every(layer=>layer.tokens.pulse===0));
+  }
+});
+
+test("resolve combines one rate taper with the final fade; new slower beats cannot undo either", () => {
+  const { view, next } = fieldHarness();
+  view.onState(state("resolve",1,{hr_bpm:107.5,segment_elapsed_ms:43500}),0);
+  view.onBeat(beat(1,{hr_bpm:107.5,rr_ms:60000/107.5}),500,0);
+  next(500); next(590);
+  assert.ok(Math.abs(view.renderer.draws.at(-1).layers[0].tokens.pulse-.04/Math.sqrt(2))<1e-12);
+  view.onState(state("resolve",2,{hr_bpm:120,segment_elapsed_ms:44000}),650);
+  view.onBeat(beat(2),1300,700); next(1300); next(1390);
+  assert.equal(view.renderer.draws.at(-1).layers[0].tokens.pulse,0);
+});
+
 test("new session clears old beats; idle and reset clear physiology rather than hold a field", () => {
   const { view, canvas, next, frames } = fieldHarness();
   view.onState(state(), 0);

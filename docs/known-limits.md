@@ -703,12 +703,27 @@ segment mappings have horizon y ≥ 0.44, so the centre stays above ground. Retu
 puts it on the horizon. The global token minimum is 0.38, so the global clamp does not prevent
 this: recheck the geometry if ranges change. Never move the source to conceal such a retune.
 
-**The old photosensitivity claim does not establish safety at 180 bpm.** The script's claim
-about 95 bpm being below *any* threshold was not validated. At 180 bpm, the visual cadence is
-3 Hz, not approximately 1.6 Hz. The implementation clamps amplitude above the authored 95-bpm
-endpoint, accepts scheduled non-rejected beats only, never adds overlapping envelopes, uses
-a 90 ms raised-cosine rise and 180 ms fall, and suppresses rates beyond the tested range or
-more than three planned onsets in a rolling second. It never creates replacement beats.
+**Visual-only high-rate taper, 22 September.** The script's old claim about 95 bpm being below
+*any* photosensitivity threshold was not validated. Holding amplitude above that authored
+endpoint left a gap: 180 bpm would give a 3 Hz visual cadence. The audio heartbeat is the
+demo's primary evidence; the visual pulse is secondary and gives way. Every segment's authored
+amplitude is now multiplied by **`clamp((120 − hr_bpm) / 25, 0, 1)`**: full through 95 bpm,
+half at 107.5, **zero at and above 120 bpm (2 Hz)**. The original 62–95 bpm amplitude mapping
+still clamps at its endpoints before tapering. Resolve's final-three-second equal-power fade
+multiplies the tapered amplitude. Unknown HR gives zero. There is no every-Nth-beat substitute.
+The audio path, scheduler and heartbeat levels are unchanged by this visual-only correction:
+every eligible scheduled audio beat still plays at every supported rate.
+
+The state mapping uses `state.hr_bpm`; it is not the only protection. A live beat uses the
+maximum rate from its `hr_bpm`, `60000 / rr_ms`, and `60000 / planned_onset_interval_ms`.
+The preceding onset is the last valid, non-rejected future candidate, **including a candidate
+suppressed visually**; 500 ms or shorter intervals or beat rates at least 120 bpm cannot flash.
+The view caps the mapped amplitude by the active beat's tapered segment amplitude using a
+minimum, not a second taper multiplication. Thus a fast stream cannot use the two-second
+state cadence's stale low-rate brightness or turn suppression into alternating flashes.
+Only future non-rejected beats are eligible; late, duplicate and wrong-session beats do not
+flash. The envelope retains its 90 ms raised-cosine rise, 180 ms fall and no-addition rule.
+Suppressed visuals are neither replayed nor substituted, and do not suppress audio.
 
 The renderer additionally enforces, **per actual 8-bit output pixel**, a positive linear-sRGB
 luminance change no greater than the token amplitude (hard-capped at 0.22) times the unpulsed
@@ -727,8 +742,17 @@ the optical output of a headset. They do not cover simultaneous task/other-UI ch
 brightness/HDR, headset optics, motion relative to the eye, or individual susceptibility.
 Hardware/display-specific assessment is still required; make no medical safety claim.
 
-**Timing and portability.** Tested scheduling covers every integer rate 45–180 bpm; late
-arrival beats and first-render onsets missed by more than 45 ms are dropped, not replayed.
+**Timing and portability.** Mandatory pulse coverage spans every integer rate 45–180 bpm,
+including unchanged amplitude through 95, the taper to 120 and zero visual output from 120
+through 180; boundary and stale-state/mismatched-rate checks exercise the live guard as well.
+The same renderer checks retain the 0.22 relative / 0.09 absolute rails and fog/light-only
+modulation. Verified on 22 September: **136 integer rates × four segments**, with **417,792
+actual framebuffer pixel comparisons**; all **244 cases at 120–180 bpm** were byte-identical
+to the unpulsed field. The 40 JavaScript field checks also cover the 107.5-bpm midpoint,
+stale states, disagreeing beat metadata/cadence, dissolve boundaries and resolve's final fade.
+The existing ten-reference-frame and 31 rendered-luminance cases still pass.
+Late arrival beats and first-render onsets missed by more than 45 ms are dropped,
+not replayed.
 The 90 ms rise describes the continuous envelope; a 60/90 Hz display samples it in frames,
 and 8-bit output adds quantization. This is not millisecond DAC/display alignment evidence.
 Cross-dissolve target weights follow host segment elapsed across ten seconds, with up to

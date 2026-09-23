@@ -13,7 +13,7 @@
   const FALL_MS = 180;
   const DURATION_MS = RISE_MS + FALL_MS;
   const MAX_ONSET_LATENESS_MS = 45; // Drop a frame-starved onset; never start a fresh late rise.
-  const MIN_INTERVAL_MS = 60_000 / 180;
+  const MIN_INTERVAL_MS = 60_000 / 120; // At/below this interval visuals are silent, not decimated.
   const MAX_QUEUE = 64;
   function envelope(age) {
     if (!Number.isFinite(age) || age <= 0 || age >= DURATION_MS) return 0;
@@ -37,7 +37,7 @@
     clear() {
       this.queue = [];
       this.active = null;
-      this.planned = [];
+      this.lastPlanned = null;
     }
     schedule(m, localPlay, receivedAt) {
       if (!validBeat(m) || m.session !== this.session || !Number.isFinite(localPlay) || !Number.isFinite(receivedAt)) return false;
@@ -45,18 +45,17 @@
       this.lastSeq = m.seq;
       if (m.quality === "rejected") { this.stats.rejected++; return false; }
       if (localPlay < receivedAt) { this.stats.late++; return false; }
-      const last = this.planned.at(-1);
-      // Integer wire milliseconds alternate 333/334 at 180 bpm. The rolling-three guard also
-      // prevents four starts inside any half-open one-second window despite rounded timing.
-      if (m.hr_bpm > 180.5 || m.rr_ms < MIN_INTERVAL_MS - .51 ||
-          (last !== undefined && localPlay - last < MIN_INTERVAL_MS - .51) ||
-          (this.planned.length >= 3 && localPlay - this.planned.at(-3) < 1000 - .001)) {
+      const interval = this.lastPlanned === null ? Infinity : localPlay - this.lastPlanned;
+      if (interval <= 0) { this.stats.rate_limited++; return false; }
+      // Keep EVERY eligible future candidate, even if suppressed. Measuring from the last
+      // visible beat instead would invent a slower, every-other-beat flash at high rates.
+      this.lastPlanned = localPlay;
+      const bpm = Math.max(m.hr_bpm, 60_000 / m.rr_ms, 60_000 / interval);
+      if (bpm >= 120 || interval <= MIN_INTERVAL_MS) {
         this.stats.rate_limited++; return false;
       }
       if (this.queue.length >= MAX_QUEUE) { this.stats.overflow++; return false; }
-      this.queue.push({ time: localPlay });
-      this.planned.push(localPlay);
-      if (this.planned.length > 3) this.planned.shift();
+      this.queue.push({ time: localPlay, bpm });
       return true;
     }
     value(now) {
@@ -71,6 +70,7 @@
       if (age >= DURATION_MS) { this.active = null; return 0; }
       return envelope(age); // One bounded envelope, NEVER sum beat amplitudes.
     }
+    activeRate() { return this.active?.bpm ?? null; }
   }
   return Object.freeze({ RISE_MS, FALL_MS, DURATION_MS, MAX_ONSET_LATENESS_MS, MIN_INTERVAL_MS, MAX_QUEUE, envelope, validBeat, BeatPulse });
 });

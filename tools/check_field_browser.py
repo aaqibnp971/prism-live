@@ -107,7 +107,7 @@ font:14px/1.5 'IBM Plex Sans',sans-serif;position:absolute;bottom:0}
 <div class="panels" id="implementation"></div></section></main>
 <footer>Rest / peak are frozen comparisons, not an animated heartbeat or a live session.<br>
 Both sides use the reference's exact seven values. Local fonts; original bundle never run.</footer>
-<script src="__RENDERER__"></script><script>
+<script src="__RENDERER__"></script><script src="__MAPPING__"></script><script>
 class DCLogic { constructor() { this.props = {}; } }
 __COMPONENT__
 const reference = new Component();
@@ -159,6 +159,7 @@ def comparison_page(component):
     return (
         PAGE.replace("__FONTS__", (ROOT / "web/spectator/fonts/fonts.css").as_uri())
         .replace("__RENDERER__", (ROOT / "web/shared/field_renderer.js").as_uri())
+        .replace("__MAPPING__", (ROOT / "web/shared/field_mapping.js").as_uri())
         .replace("__COMPONENT__", component)
     )
 
@@ -263,6 +264,76 @@ GPU_SETUP = r"""(() => {
 })()"""
 
 
+# Separate from the exact reference endpoints/31 existing safety cases: exercise the
+# production mapping at EVERY integer rate, then read actual displayed framebuffer bytes.
+# Unit tests establish the 90 ms envelope peak; this checks its maximum rendered contrast.
+GPU_TAPER_SETUP = r"""(() => {
+  const segments=['baseline','load','regulate','resolve'];
+  const canvas=document.createElement('canvas');canvas.width=32;canvas.height=24;
+  const renderer=new PrismFieldRenderer.Renderer(canvas);
+  const width=canvas.width,height=canvas.height;
+  const Y=(data,i)=>PrismFieldRenderer.luminance([data[i],data[i+1],data[i+2]].map(v=>
+    PrismFieldRenderer.linear(v/255)));
+  window.gpuTaperSegment=index=> {
+    const segment=segments[index];
+    const state={type:'state',v:1,session:'S-20260922-0001',seq:1,t_engine:20000,
+      t_session:20000,segment,segment_elapsed_ms:20000,
+      segment_nominal_ms:segment==='load'||segment==='regulate'?75000:45000,
+      psv:{arousal:.8,cognitive_load:.6,readiness:.5,valence:.5},
+      confidence:{arousal:.393,cognitive_load:.393,readiness:.393,valence:0},
+      authority:{arousal:segment==='baseline'?0:segment==='load'?.2:1,
+        cognitive_load:segment==='baseline'?0:segment==='load'?.2:1,readiness:0,valence:0}};
+    let maxRelative=0,maxAbsolute=0,unchangedOutside=0,checkedPixels=0;
+    let zeroCases=0,zeroPixels=0,lowRateVisibleCases=0;
+    for(let bpm=45;bpm<=180;bpm++) {
+      const tokens=PrismFieldMapping.mapState({...state,hr_bpm:bpm});
+      const layers=[{tokens,weight:1}];
+      renderer.render(layers,{pulse:0,drift:0});const rest=renderer.readPixels();
+      renderer.render(layers,{pulse:1,drift:0});const peak=renderer.readPixels();
+      let changedPixels=0;
+      for(let row=0;row<height;row++)for(let col=0;col<width;col++) {
+        const i=(row*width+col)*4;
+        const base=PrismFieldRenderer.sampleLayers(layers,(col+.5)/width,
+          1-(row+.5)/height,{pulse:0,width,height});
+        const delta=Y(peak,i)-Y(rest,i);
+        const changed=[0,1,2,3].some(channel=>peak[i+channel]!==rest[i+channel]);
+        if(changed)changedPixels++;
+        maxRelative=Math.max(maxRelative,delta/base.baseLuminance);
+        maxAbsolute=Math.max(maxAbsolute,delta);
+        if(delta < -1e-8 || delta > .22*base.baseLuminance+1e-6 ||
+          delta > base.budget+1e-6 || delta > .09+1e-6)
+          throw new Error(JSON.stringify({segment,bpm,pixel:i/4,delta,
+            base:base.baseLuminance,budget:base.budget}));
+        if(base.layers.every(layer=>layer.rest.fogAlpha===0 &&
+          layer.rest.streakAlpha===0 && layer.rest.lightAlpha===0)) {
+          if(changed)throw new Error('Rate taper changed outside fog/light '+segment+' '+bpm);
+          unchangedOutside++;
+        }
+        if(bpm>=120) {
+          if(changed)throw new Error('Visual pulse survived cutoff '+segment+' '+bpm);
+          zeroPixels++;
+        }
+        checkedPixels++;
+      }
+      if(bpm<=95) {
+        if(changedPixels===0)
+          throw new Error('Authored low-rate pulse disappeared '+segment+' '+bpm);
+        lowRateVisibleCases++;
+      }
+      if(bpm>=120)zeroCases++;
+    }
+    if(unchangedOutside===0)throw new Error('No outside-mask pixels checked '+segment);
+    return {segment,rate_count:136,zero_amplitude_cases:zeroCases,
+      zero_amplitude_pixels:zeroPixels,low_rate_visible_cases:lowRateVisibleCases,
+      max_relative_delta:maxRelative,max_absolute_delta:maxAbsolute,
+      unchanged_outside_pixels:unchangedOutside,checked_pixels:checkedPixels};
+  };
+  window.disposeTaperRenderer=()=>renderer.dispose();
+  return {segment_count:segments.length,rate_count:136,min_bpm:45,max_bpm:180,
+    cutoff_bpm:120,peak_age_ms:90,framebuffer:[width,height]};
+})()"""
+
+
 async def _compare(cdp, output, page):
     await cdp.call("Runtime.enable")
     await cdp.call("Network.enable")
@@ -299,6 +370,17 @@ async def _compare(cdp, output, page):
         await cdp.evaluate(f"window.gpuSafetyCase({index})") for index in range(safety_count)
     ]
     await cdp.evaluate("window.disposeSafetyRenderer()")
+    taper = await cdp.evaluate(GPU_TAPER_SETUP)
+    taper["segments"] = [
+        await cdp.evaluate(f"window.gpuTaperSegment({index})")
+        for index in range(taper["segment_count"])
+    ]
+    taper["zero_amplitude_cases"] = sum(
+        segment["zero_amplitude_cases"] for segment in taper["segments"]
+    )
+    taper["checked_pixels"] = sum(segment["checked_pixels"] for segment in taper["segments"])
+    report["rendered_rate_taper"] = taper
+    await cdp.evaluate("window.disposeTaperRenderer()")
     report["external_requests"] = [u for u in cdp.requests if u.startswith(("http:", "https:"))]
     assert not report["external_requests"], report["external_requests"]
     assert not cdp.errors, cdp.errors

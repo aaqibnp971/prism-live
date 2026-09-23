@@ -179,6 +179,11 @@ compute authority from confidence. The ranges below are endpoints, not permissio
 low-authority reading to an extreme. In regulate high arousal uses the bright 46° end and low
 arousal the dim 24° end. Baseline alone reads confidence directly for its learning animation.
 
+All pulse-amplitude ranges below are the **authored 62–95 bpm endpoints, before the visual-only
+rate taper in §10**. Clamp the authored interpolation at those endpoints, then multiply by
+`clamp((120 − hr_bpm) / 25, 0, 1)`: unchanged through 95, half at 107.5, zero from 120 bpm.
+This applies to all four segments, including resolve and its additional final fade.
+
 **Baseline** (45 s, then held to 56 s while the laptop waits for a heart rate figure)
 - **baseline confidence**, 0.0 to 1.0, drives: fog density 0.38 → 0.26, light intensity 0.45 → 0.62, horizon 0.44 → 0.50
 - compute it from each `state` message as `min(1.0, (confidence.arousal + confidence.cognitive_load + confidence.readiness) / 3 / 0.393)`
@@ -213,7 +218,8 @@ Note the field **slows** as load rises. Less to fight.
 - cognitive load → saturation 0.30 → 0.14, horizon 0.56 → 0.44
 - heartbeat → pulse amplitude 0.16 → 0.08
 
-The visual pulse shrinks as their heart rate falls, so the screen and their body agree.
+Within the authored 62–95 bpm range the visual pulse shrinks as heart rate falls. Above 95,
+the safety taper takes precedence; do not infer a physiological direction from its brightness.
 
 **Resolve** (45 s)
 - Everything eases to fixed values and holds: hue 30°, saturation 0.14, fog density 0.44, light intensity 0.50, field motion 0.006
@@ -232,7 +238,8 @@ Baseline and load are blue, around 202° to 214°. Regulate and resolve are oran
 
 Every `beat` message carries `t_play`, a **time in the future**.
 
-You do not flash when the message arrives. You **schedule** the flash for `t_play`, converted into your local clock using the offset from the `clock` exchange.
+You do not flash when the message arrives. An eligible visual pulse is **scheduled** for
+`t_play`, converted into your local clock using the offset from the `clock` exchange.
 
 This is because the audio travels down a wire and arrives instantly, while your message crosses WiFi and does not. If you flash on arrival, the thump and the flash land at different moments, and the whole point is that they are the same event.
 
@@ -243,12 +250,41 @@ This is because the audio travels down a wire and arrives instantly, while your 
 - **90 ms rise time**
 
 **22 September correction:** 95 bpm is only an authored endpoint, not the highest possible rate.
-The shared reference tests 45–180 bpm (180 is 3 Hz), clamps amplitude above 95, and additionally
-limits absolute linear-light luminance change to 0.09. Rise is 90 ms, fall 180 ms; envelopes never
-add. These software bounds replace the old unsupported assertion of being below *any*
-photosensitivity threshold. They are not headset or medical safety certification. Preserve the
-rails in Unity, test its actual rendered output, and read the ambient-field limits in
-`docs/known-limits.md` before making any safety claim.
+The **audio heartbeat is the evidence the demo rests on; the visual pulse is secondary**.
+Unity must apply the same visual-only gain as the browser:
+
+`visualRateGain(hr_bpm) = clamp((120 − hr_bpm) / 25, 0, 1)`
+
+Multiply the segment's authored amplitude by this gain: full through **95 bpm**, half at
+**107.5 bpm**, **exactly zero at and above 120 bpm (2 Hz)**. Unknown HR gives no visual pulse.
+Resolve uses the same taper and its final-three-second equal-power fade, multiplied together.
+Do not hold amplitude above 95 or create every-Nth-beat flashes. The audio keeps following
+every eligible scheduled beat at every supported rate, with its levels and ending unchanged;
+only visuals yield so their cadence cannot approach 180 bpm / 3 Hz.
+
+Port both protections, not just the state formula:
+
+- `field_mapping.js` applies the taper from `state.hr_bpm`.
+- `field_pulse.js` derives a conservative per-beat rate: the maximum of the beat's `hr_bpm`,
+  `60000 / rr_ms` and `60000 / planned_onset_interval_ms`. Measure the interval from the last
+  valid, non-rejected future candidate, **even if it was suppressed visually**, not from the
+  last visible flash. A rate at least 120 bpm or interval of 500 ms or less cannot flash.
+- `field_view.js` caps the mapped amplitude by that active beat's tapered segment amplitude
+  using `min`, **not a second multiplication by the taper**. A two-second-old slow-rate state
+  must not brighten a newly arrived fast beat. Late, rejected, duplicate and wrong-session
+  events cannot flash; a suppressed visual event is never replayed and never suppresses audio.
+
+Keep the **90 ms raised-cosine rise**, **180 ms fall**, non-additive envelope, fog/light-only
+modulation, and the renderer's **0.22 relative / 0.09 absolute linear-luminance caps**, including
+8-bit quantization and palette cross-dissolves. Mandatory tests span **45–180 bpm**: original
+amplitudes through 95, the taper and midpoint, exact zero from 120 upwards, rate disagreement
+and stale-state cases, plus the same rendered-pixel/90-ms-rise checks as prompt 3.4.
+
+These software bounds replace the old unsupported assertion of being below *any*
+photosensitivity threshold. They are **not headset, medical or whole-experience safety
+certification**. Test Unity's actual rendered output and read the ambient-field limits in
+`docs/known-limits.md`; headset optics, display behaviour and combined task/UI flashes remain
+unverified.
 
 ## 11. The attention task
 

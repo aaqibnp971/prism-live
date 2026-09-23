@@ -43,12 +43,16 @@ the extreme reference frames. The ten frames are design endpoints, not synthetic
 | Resolve | Capture the last observed regulate tokens and entry authority. Hue/light/fog/motion ease from those values to (30°,.50,.44,.006), scaling each entry offset by current arousal authority / entry arousal authority. Saturation eases to .14 using the cognitive-load authority ratio. Zero entry authority has zero offset. A mid-resolve join has no history and uses fixed resolve targets. Horizon independently lerps(.44,.58,(20000−remaining)/8000). `remaining = segment_nominal_ms − segment_elapsed_ms`. |
 
 Pulse amplitude uses `R = clamp((hr_bpm − 62) / 33)`, matching the 62/95-bpm authored endpoints.
-Baseline lerps .06→.10, load .10→.16, regulate .08→.16. **Above 95 the amplitude stays clamped,
-not amplified**, even though beats continue at their actual rate. Unknown HR gives zero
-amplitude. Resolve holds .08, then multiplies by `cos(π/2 × clamp((3000−remaining)/3000))` in the
-final three host-reported seconds and is exactly zero at/past the end. No beat message means no
+Baseline lerps .06→.10, load .10→.16, regulate .08→.16; resolve's authored amplitude is .08.
+**Visual-only correction, 22 September:** multiply these clamped authored amplitudes in every
+segment by **`visualRateGain(hr_bpm) = clamp((120 − hr_bpm) / 25, 0, 1)`**. It is unchanged
+through 95 bpm, half at 107.5 and exactly zero at/above 120 bpm. Unknown HR gives zero.
+Resolve additionally multiplies by `cos(π/2 × clamp((3000−remaining)/3000))` in the final
+three host-reported seconds and is exactly zero at/past the end. No beat message means no
 pulse, irrespective of amplitude. Idle/reset clear the live field; the spectator's held trace
-continues to obey prompt 3.5.
+continues to obey prompt 3.5. The audio heartbeat is the primary evidence and is unchanged:
+every eligible scheduled audio beat continues at every supported rate, with its original
+level and ending policy. Only visuals yield before their cadence can approach 3 Hz.
 
 ## Transitions, motion and disconnection
 
@@ -74,8 +78,14 @@ The pulse begins at synchronized `t_play`. It uses a 90 ms raised-cosine rise, a
 raised-cosine fall and no support beyond 270 ms. Envelopes never add. Already-late messages,
 rejected beats, duplicates, wrong-session events and onsets first observed over 45 ms late
 cannot flash. No autonomous beat timer exists. Defence against unexpected faster streams
-limits accepted cadence to the tested 180-bpm range and at most three planned starts per
-rolling second; a suppressed visual event is not replayed.
+uses the maximum of `beat.hr_bpm`, `60000 / beat.rr_ms` and
+`60000 / planned_onset_interval_ms`. The last valid, non-rejected future candidate supplies
+the previous onset, including candidates suppressed visually. A rate at least 120 bpm or
+interval of 500 ms or less is suppressed, not converted into an every-Nth-beat visual pattern.
+The view caps the state's already-tapered mapped amplitude with the active beat's tapered
+segment amplitude using `min`; it does not multiply the taper twice. Thus a state message
+from up to two seconds earlier cannot allow fresh fast beats to flash at the old brightness.
+These are visual-only guards; they cannot suppress audio and never replay a suppressed pulse.
 
 The shader measures **linear-sRGB relative luminance**, not HSV brightness or CSS opacity.
 For every pixel it preserves the unpulsed gradient and full-field haze, constructs a local
@@ -89,9 +99,12 @@ dithering is disabled. Only fog/light masked pixels can change. The continuous e
 sampled by display frames; frame pacing and quantization are not a sub-millisecond onset claim.
 
 Tests combine every integer rate from **45 to 180 bpm** (future scheduling, complete 90 ms
-rise, no overlap/addition, dropped late/rejected events) with CPU pixel/property checks and
+rise on visible pulses, no overlap/addition, dropped late/rejected events) with CPU pixel/property checks and
 actual browser framebuffer comparisons of rest/rise/peak across all ten palettes, amplitude
 .22 variants, and blue/amber cross-dissolves. See the measured acceptance report below.
+The taper adds checks for unchanged amplitudes at/below 95, the 107.5 midpoint and exact zero
+through 120–180 bpm in all segments, including resolve's fade. Stale-state and disagreement
+between HR, RR and onset cadence must not bypass the taper or manufacture divided-rate flashes.
 
 **No photosensitivity safety certification is claimed**, at 95 or 180 bpm. The old assertion
 in the script was unsupported. Hardware, headset and whole-experience limitations, plus the
@@ -136,7 +149,7 @@ node --test tests/web_field.test.cjs tests/web_field_renderer.test.cjs tests/web
 Review scope: light self-check and tests, including the mandatory pulse rail tests. No adversarial
 review round, engine edit, native audio edit or contract change is part of prompt 3.4.
 
-Final verification on 22 September: **719 tests passed**, including existing scheduler/audio
+Original prompt 3.4 verification on 22 September, before the high-rate taper: **719 tests passed**, including existing scheduler/audio
 coverage and the live task/spectator browser checks; **34 Node field tests** are exercised by
 the Python wrappers. Ruff and whitespace checks passed. The ten-frame output and a live
 spectator capture in `logs/field-live-screen-20260922-fixed/` were visually inspected. Existing

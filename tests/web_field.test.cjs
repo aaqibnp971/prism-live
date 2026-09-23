@@ -98,12 +98,21 @@ test("invalid, duplicate, regressing host states leave field untouched", () => {
   assert.equal(tracker.onState(state("load", { seq: 2, authority: { ...authority(), valence: .1 } })), false);
   assert.deepEqual(tracker.layers(), old);
 });
-test("HR amplitude clamps at authored95endpoint through180 and unknownHR produces no pulse", () => {
+test("every integer45..180 preserves authored amplitudes then linearly tapers95..120 in every segment", () => {
   for (const segment of Mapping.ACTIVE_SEGMENTS) {
     const top = Mapping.mapState(state(segment)).pulse;
-    for (let bpm = 95; bpm <= 180; bpm++) close(Mapping.mapState(state(segment, { hr_bpm: bpm })).pulse, top);
+    const low = { baseline: .06, load: .10, regulate: .08, resolve: .08 }[segment];
+    for (const bpm of [...Array.from({length:136},(_,i)=>i+45),94.999,95.001,107.5,119.999,120.001]) {
+      const gain = bpm <= 95 ? 1 : bpm >= 120 ? 0 : (120-bpm)/25;
+      const authored = low + (top-low) * Math.max(0,Math.min(1,(bpm-62)/33));
+      close(Mapping.mapState(state(segment, { hr_bpm: bpm })).pulse, authored*gain);
+    }
+    close(Mapping.mapState(state(segment, { hr_bpm: 107.5 })).pulse, top/2);
     assert.equal(Mapping.mapState(state(segment, { hr_bpm: null })).pulse, 0);
   }
+  for (const hr_bpm of [null,NaN,Infinity,0,-1]) assert.equal(Mapping.visualRateGain(hr_bpm),0);
+  close(Mapping.mapState(state("resolve",{hr_bpm:107.5,segment_elapsed_ms:43500})).pulse,.04/Math.sqrt(2));
+  assert.equal(Mapping.mapState(state("resolve",{hr_bpm:120,segment_elapsed_ms:43500})).pulse,0);
 });
 test("all valid mapped states respect seven token ranges and leave light above horizon", () => {
   for (const segment of Mapping.ACTIVE_SEGMENTS) for (const p of [0,.32,.5,1]) for (const a of [0,.2,1]) for (const elapsed of [0,25000,33000,42000,45000,105000]) {
@@ -122,19 +131,19 @@ test("90 ms rise is monotone, peaks exactly at90, falls tozero at270", () => {
   for (let age = 90; age <= 270; age++) { const value = Pulse.envelope(age); assert.ok(value <= last); last = value; }
   assert.equal(last, 0); assert.equal(Pulse.envelope(-1), 0); assert.equal(Pulse.envelope(Infinity), 0);
 });
-test("every integer rate45..180: future-only, full90msrise, no overlap or additive brightness", () => {
+test("every integer rate45..180: future-only, full90msrise below120, zero at120+, no overlap", () => {
   for (let bpm = 45; bpm <= 180; bpm++) {
     const pulse = new Pulse.BeatPulse(); pulse.reset(SESSION);
     const starts = Array.from({length: 12}, (_, i) => Math.round(500 + i * 60000 / bpm));
-    starts.forEach((time, i) => assert.equal(pulse.schedule(beat(i+1,time,bpm),time,0),true, `${bpm} bpm seq${i+1}`));
+    starts.forEach((time, i) => assert.equal(pulse.schedule(beat(i+1,time,bpm),time,0),bpm<120, `${bpm} bpm seq${i+1}`));
     for (let now = 0; now <= starts.at(-1) + 300; now++) {
       const value = pulse.value(now);
       const active = starts.filter((time) => now >= time && now < time+270);
       assert.ok(active.length <= 1);
-      close(value, active.length ? Pulse.envelope(now-active[0]) : 0);
+      close(value, bpm<120 && active.length ? Pulse.envelope(now-active[0]) : 0);
       assert.ok(value >= 0 && value <= 1);
     }
-    assert.equal(pulse.stats.late, 0); assert.equal(pulse.stats.rate_limited, 0);
+    assert.equal(pulse.stats.late, 0); assert.equal(pulse.stats.rate_limited, bpm<120 ? 0 : starts.length);
   }
 });
 test("latearrival/rejected/duplicate/wrongsession neverflash; frozen renderer nevercatchesup", () => {
@@ -154,18 +163,38 @@ test("latearrival/rejected/duplicate/wrongsession neverflash; frozen renderer ne
 test("unexpected faster stream suppresses visuals instead of stacking or speeding the rise", () => {
   const pulse = new Pulse.BeatPulse(); pulse.reset(SESSION);
   assert.equal(pulse.schedule(beat(1,500,200),500,0),false);
-  assert.equal(pulse.schedule(beat(2,500,180),500,0),true);
-  assert.equal(pulse.schedule(beat(3,501,180),501,0),false);
+  assert.equal(pulse.schedule(beat(2,1200,95),1200,0),true);
+  assert.equal(pulse.schedule(beat(3,1201,95),1201,0),false);
   assert.equal(pulse.stats.rate_limited,2);
-  pulse.value(500); close(pulse.value(590),1);
-  pulse.reset("S-20260922-0002"); assert.equal(pulse.value(591),0);
+  pulse.value(1200); close(pulse.value(1290),1);
+  pulse.reset("S-20260922-0002"); assert.equal(pulse.value(1291),0);
+});
+
+test("HR, RR and scheduled cadence each independently enforce120 cutoff; no every-other-beat substitute", () => {
+  for (const extra of [{hr_bpm:120,rr_ms:800},{hr_bpm:75,rr_ms:500}]) {
+    const pulse = new Pulse.BeatPulse(); pulse.reset(SESSION);
+    assert.equal(pulse.schedule(beat(1,500,75,extra),500,0),false);
+    assert.equal(pulse.value(500),0); assert.equal(pulse.value(590),0);
+  }
+  for (const interval of [500,400,60000/180]) {
+    const pulse = new Pulse.BeatPulse(); pulse.reset(SESSION);
+    // Even inconsistent low-HR/long-RR metadata cannot turn a fast cadence into flashes.
+    for(let i=0;i<20;i++) {
+      const time=500+i*interval;
+      assert.equal(pulse.schedule(beat(i+1,time,75),time,0),i===0);
+      pulse.value(time); close(pulse.value(time+90),i===0 ? 1 : 0);
+    }
+    const recovered=500+19*interval+800;
+    assert.equal(pulse.schedule(beat(21,recovered,75),recovered,0),true);
+    pulse.value(recovered); close(pulse.value(recovered+90),1);
+  }
 });
 
 test("45..180 bpm scheduled envelopes obey the rendered luminance rail in every segment", () => {
   for (let bpm = 45; bpm <= 180; bpm++) {
     const pulse = new Pulse.BeatPulse(); pulse.reset(SESSION);
     const starts = [500, 500 + 60000 / bpm, 500 + 120000 / bpm];
-    starts.forEach((start, index) => assert.equal(pulse.schedule(beat(index + 1, start, bpm), start, 0), true));
+    starts.forEach((start, index) => assert.equal(pulse.schedule(beat(index + 1, start, bpm), start, 0), bpm<120));
     for (const start of starts) {
       for (const age of [0, 45, 90, 180, 270]) {
         const strength = pulse.value(start + age);
@@ -178,6 +207,7 @@ test("45..180 bpm scheduled envelopes obey the rendered luminance rail in every 
             assert.ok(change <= .09 + 1e-12);
             assert.deepEqual(pixel.layers[0].rest.base, pixel.layers[0].candidate.base);
             assert.deepEqual(pixel.layers[0].rest.haze, pixel.layers[0].candidate.haze);
+            if(bpm>=120) { assert.equal(strength,0); assert.equal(change,0); assert.deepEqual(pixel.rgb,pixel.rest); }
           }
         }
       }

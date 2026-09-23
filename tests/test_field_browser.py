@@ -72,3 +72,22 @@ def test_all_ten_field_frames_render_in_browser():
         assert case["max_relative_delta"] <= 0.22 + 1e-6
         assert case["max_absolute_delta"] <= 0.09 + 1e-6
         assert case["unchanged_outside_pixels"] > 0
+    taper = report["rendered_rate_taper"]
+    assert (taper["min_bpm"], taper["max_bpm"], taper["rate_count"]) == (45, 180, 136)
+    assert taper["segment_count"] == 4
+    assert taper["cutoff_bpm"] == 120
+    assert taper["peak_age_ms"] == 90
+    assert taper["zero_amplitude_cases"] == 4 * (180 - 120 + 1)
+    width, height = taper["framebuffer"]
+    assert taper["checked_pixels"] == 4 * 136 * width * height
+    assert {segment["segment"] for segment in taper["segments"]} == {
+        "baseline", "load", "regulate", "resolve"
+    }
+    for segment in taper["segments"]:
+        assert segment["rate_count"] == 136
+        assert segment["zero_amplitude_cases"] == 61
+        assert segment["zero_amplitude_pixels"] == 61 * width * height
+        assert segment["low_rate_visible_cases"] == 95 - 45 + 1
+        assert segment["max_relative_delta"] <= 0.22 + 1e-6
+        assert segment["max_absolute_delta"] <= 0.09 + 1e-6
+        assert segment["unchanged_outside_pixels"] > 0

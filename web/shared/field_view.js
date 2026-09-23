@@ -23,6 +23,7 @@
       this.canvas = canvas;
       this.canvas.hidden = true;
       this.mapping = new Mapping.FieldState();
+      this.pulseAmplitude = Mapping.pulseAmplitude;
       this.pulse = new Pulse.BeatPulse();
       this.renderer = null;
       this.available = true;
@@ -174,7 +175,14 @@
           this.renderer.resize(width, height, ratio);
           this.size = size;
         }
-        this.renderer.render(this.layers(), { pulse, drift: this.drift });
+        // State can lag beats by two seconds. Cap EVERY palette by the current state's and
+        // active beat's tapered amplitudes, not their product (no doubled taper), and never
+        // retain a stale outgoing-palette pulse during the final 250 ms of a dissolve.
+        const amplitude = this.standalone ? 0 : Math.min(this.mapping.tokens?.pulse ?? 0,
+          this.pulseAmplitude(this.mapping.state, this.pulse.activeRate()));
+        const layers = this.layers().map(layer => ({ ...layer,
+          tokens: { ...layer.tokens, pulse: amplitude } }));
+        this.renderer.render(layers, { pulse, drift: this.drift });
       } catch (error) {
         this.fail(error);
       }

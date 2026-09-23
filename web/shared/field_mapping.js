@@ -4,7 +4,7 @@
  * effective = .5 + (psv - .5) * authority. LOAD's .20 ceiling is ALREADY in authority; never apply
  * it again. Regulate ranges run from low arousal/load to high, not from elapsed start to end.
  * Baseline alone uses confidence directly, because learning is visible while authority is zero.
- * Pulse amplitude uses the authored 62..95 bpm endpoints and CLAMPS above 95 (tested to 180);
+ * Pulse amplitude uses the authored 62..95 bpm endpoints, then tapers to ZERO at 120 bpm;
  * no event, no pulse. Unknown HR has zero amplitude, never an invented reference rate.
  *
  * Horizon y is measured FROM THE TOP. Light centre is always (.50,.40), so y < .40 would put
@@ -33,8 +33,22 @@
   const mix = (a, b, x) => a + (b - a) * clamp(x);
   const effective = (value, authority) => .5 + (value - .5) * authority;
   const baselineConfidence = (s) => clamp((s.confidence.arousal + s.confidence.cognitive_load + s.confidence.readiness) / 3 / .393);
-  const ratePosition = (s) => s.hr_bpm === null ? null : clamp((s.hr_bpm - 62) / (95 - 62));
-  const pulseRange = (s, lo, hi) => s.hr_bpm === null ? 0 : mix(lo, hi, ratePosition(s));
+  const visualRateGain = (bpm) => finite(bpm) && bpm > 0 ? clamp((120 - bpm) / 25) : 0;
+  // Shared by state mapping and the live beat guard. Apply the taper ONCE, including resolve.
+  // Audio is independent: this is only the optional visual reinforcement of each heartbeat.
+  function pulseAmplitude(s, bpm = s.hr_bpm) {
+    if (!ACTIVE_SEGMENTS.includes(s.segment)) return 0;
+    const rate = clamp((bpm - 62) / 33);
+    const gain = visualRateGain(bpm);
+    if (gain === 0) return 0;
+    if (s.segment === "resolve") {
+      const remaining = s.segment_nominal_ms - s.segment_elapsed_ms;
+      return remaining <= 0 ? 0 : .08 * gain *
+        Math.cos(Math.PI / 2 * clamp((3_000 - remaining) / 3_000));
+    }
+    const [lo, hi] = { baseline: [.06, .10], load: [.10, .16], regulate: [.08, .16] }[s.segment];
+    return mix(lo, hi, rate) * gain;
+  }
 
   // Validate every consumed contract input before changing a visible field. No authority is
   // inferred from confidence, and valence cannot acquire authority via a malformed message.
@@ -58,13 +72,13 @@
     if (s.segment === "baseline") {
       const b = baselineConfidence(s);
       result = { ...BASES.baseline, fog: mix(.38, .26, b), light: mix(.45, .62, b),
-        horizon: mix(.44, .50, b), pulse: pulseRange(s, .06, .10) };
+        horizon: mix(.44, .50, b) };
     } else if (s.segment === "load") {
       result = { fog: mix(.20, .30, c), light: mix(.70, 1.05, a), hue: mix(214, 202, a),
-        sat: mix(.16, .30, a), horizon: .50, pulse: pulseRange(s, .10, .16), motion: mix(.010, .004, c) };
+        sat: mix(.16, .30, a), horizon: .50, motion: mix(.010, .004, c) };
     } else if (s.segment === "regulate") {
       result = { fog: mix(.58, .34, a), light: mix(.38, .95, a), hue: mix(24, 46, a),
-        sat: mix(.14, .30, c), horizon: mix(.44, .56, c), pulse: pulseRange(s, .08, .16), motion: mix(.008, .030, a) };
+        sat: mix(.14, .30, c), horizon: mix(.44, .56, c), motion: mix(.008, .030, a) };
     } else {
       result = { ...BASES.resolve };
       // The host tapers authority in resolve. Hold entry offsets, scaled by its observed ratio,
@@ -80,9 +94,8 @@
       }
       const remaining = s.segment_nominal_ms - s.segment_elapsed_ms;
       result.horizon = mix(.44, .58, (20_000 - remaining) / 8_000);
-      result.pulse = s.hr_bpm === null ? 0 : remaining <= 0 ? 0 :
-        .08 * Math.cos(Math.PI / 2 * clamp((3_000 - remaining) / 3_000));
     }
+    result.pulse = pulseAmplitude(s);
     return Object.freeze(result);
   }
 
@@ -121,5 +134,5 @@
       return [{ tokens: from, weight: 1 - weight }, { tokens: this.tokens, weight }];
     }
   }
-  return Object.freeze({ ACTIVE_SEGMENTS, BASES, KEYS, DISSOLVE_MS, effective, baselineConfidence, validState, mapState, FieldState });
+  return Object.freeze({ ACTIVE_SEGMENTS, BASES, KEYS, DISSOLVE_MS, effective, baselineConfidence, visualRateGain, pulseAmplitude, validState, mapState, FieldState });
 });

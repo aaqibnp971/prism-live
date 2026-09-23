@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.7**
+# **Prism Live: Experience Script v1.8**
 
 &nbsp;
 
@@ -298,7 +298,13 @@ surfaces use it. See `docs/field-reference.md` for the exact Unity-port mapping 
 
 &nbsp;
 
-**Flash and modulation rail (hard, applies to every frame and every driven axis).** Peak-to-peak luminance modulation from the per-beat layer never exceeds **0.22** of base field luminance, and is never applied as a full-field flash — it modulates the local fog and the diffuse source only, with a 90 ms rise. The base gradient and ambient full-field haze never pulse. **Correction, 22 September:** the old assertion of being below *any* photosensitivity threshold at 95 bpm was not a safety validation and does not extend to a stressed visitor at 180 bpm (3 Hz). The browser reference tests 45–180 bpm, clamps pulse amplitude above the authored 95 bpm endpoint, and additionally caps absolute linear-light luminance change at 0.09. Those are software bounds, not a claim of safety for a person or headset. See `docs/known-limits.md`, ambient-field section. These rails are not style choices.
+**Flash and modulation rail (hard, applies to every frame and every driven axis).** Peak-to-peak luminance modulation from the per-beat layer never exceeds **0.22** of base field luminance, and is never applied as a full-field flash — it modulates the local fog and the diffuse source only, with a 90 ms raised-cosine rise and 180 ms fall. Envelopes never add. The base gradient and ambient full-field haze never pulse. Absolute linear-light luminance change is additionally capped at **0.09**, including quantized output and palette cross-dissolves. These rails are not style choices.
+
+**Visual-only rate taper, decided 22 September.** Multiply every segment's authored pulse amplitude by **`clamp((120 − hr_bpm) / 25, 0, 1)`**: unchanged through **95 bpm**, half amplitude at **107.5 bpm**, and **exactly zero at and above 120 bpm**. The 62–95 bpm amplitude ranges in §2 still clamp to their authored endpoints before this multiplication; resolve's 0.08 amplitude uses the same taper as well as its final-three-second equal-power fade. Any §2 description of the pulse shrinking as the heart slows applies within the authored range, not across the high-rate taper. Unknown heart rate gives no visual pulse.
+
+The state mapping applies this taper to `state.hr_bpm`. The live beat guard also uses the most conservative rate from the beat's `hr_bpm`, `60000 / rr_ms`, and `60000 / planned_onset_interval_ms`. The interval is measured from the last valid, non-rejected future candidate, including candidates suppressed visually; intervals of **500 ms or less** or beat rates **at least 120 bpm** cannot flash. The view takes the smaller of the mapped amplitude and the active beat's tapered segment amplitude, rather than multiplying the taper twice. This prevents the two-second state cadence from allowing a fresh fast beat to use stale slow-rate brightness. There is no every-Nth-beat visual substitute or replay.
+
+**Reasoning:** the audio heartbeat is the evidence the demo rests on; the visual pulse is secondary. Removing the visual modulation by 120 bpm (2 Hz) keeps it from approaching the 180 bpm / 3 Hz cadence, while **the audio heartbeat continues to follow every eligible scheduled beat at every supported rate**, with its existing level/fade policy unchanged. Mandatory tests cover 45–180 bpm, the taper and zero-output threshold, the complete 90 ms rise on visible pulses, non-addition and the unchanged local-luminance rails. This replaces the unsupported original claim of being below *any* photosensitivity threshold at 95 bpm; it is **not** photosensitivity certification for a person, display, headset or whole experience. See `docs/known-limits.md`, ambient-field section.
 
 &nbsp;
 
@@ -377,6 +383,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.5 | 14 Sep 2026 | §0: the hard cap counts from when start fires, not from the press, correcting 1.4. The console's countdown is not part of the experience, so it does not count against the cap. The worst case is 56 + 75 + 105 + 45 = 281 s, 4:41, inside the cap, and nothing is cut. |
 | 1.6 | 21 Sep 2026 | §3: peaked at is the load-only maximum, excluding baseline settling and later spikes. Sat down at remains the first reading; left at updates through resolve and freezes at session end. N subtracts the same displayed numbers, never `drop_bpm`; the screen gives no verdict. |
 | 1.7 | 22 Sep 2026 | §4: ten frames now supplied; shared browser renderer and portable mapping. Horizon coordinates are top-origin, fixed light at (0.50, 0.40), resolve opens the sky. Replaced the unsupported 95-bpm photosensitivity assurance with measured software rails and explicit 45–180-bpm/hardware limits. §5 records the supplied frame deliverable. |
+| 1.8 | 22 Sep 2026 | §4: visual-only amplitude taper from full authored amplitude at 95 bpm to zero at 120 bpm, including resolve and conservative per-beat cadence checks between state updates. No divided-rate substitute. Audio keeps every eligible scheduled beat; its primacy is why visuals give way. Retained mandatory 45–180-bpm pulse tests and whole-experience/headset safety limitations. |
 
 &nbsp;
 
