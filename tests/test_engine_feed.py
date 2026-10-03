@@ -782,9 +782,13 @@ def test_heartbeat_load_level_is_clamped_or_held_without_a_baseline(hr_bpm, hr_b
 def test_heartbeat_level_follows_the_script_and_fades_at_resolve_t_minus_3(tmp_path):
     sink = Recorder()
     heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
-    assert heartbeat.on_state(
-        message(10_000, 0.5, segment="baseline", nominal=45_000)
-    ) == ((HEARTBEAT_BASELINE_START_DBFS, 0.0), (HEARTBEAT_BASELINE_END_DBFS, 12_000.0))
+    assert heartbeat.on_state(message(10_000, 0.5, segment="baseline", nominal=45_000)) == (
+        (HEARTBEAT_BASELINE_START_DBFS, 0.0),
+    )
+    assert heartbeat.on_beat({"t_play": 23_000, "quality": "ok"}, t_engine=22_500)
+    due = 23_000 - HEARTBEAT_CHAIN_LATENCY_MS
+    assert heartbeat.tick(due - 0.001) is None
+    assert heartbeat.tick(due) == pytest.approx((HEARTBEAT_BASELINE_END_DBFS, 12_000.0))
     assert heartbeat.on_state(
         message(61_040, 0.5, segment="load", elapsed=5, hr_bpm=75.6, hr_base=68.1)
     ) == ((pytest.approx(-11.0), HEARTBEAT_LEVEL_SMOOTH_MS),)
@@ -812,7 +816,7 @@ def test_heartbeat_level_follows_the_script_and_fades_at_resolve_t_minus_3(tmp_p
     ) is None
     assert sink.heartbeats == [
         (HEARTBEAT_BASELINE_START_DBFS, 0.0),
-        (HEARTBEAT_BASELINE_END_DBFS, HEARTBEAT_BASELINE_RAMP_MS),
+        (HEARTBEAT_BASELINE_END_DBFS, pytest.approx(HEARTBEAT_BASELINE_RAMP_MS)),
         (pytest.approx(-11.0), HEARTBEAT_LEVEL_SMOOTH_MS),
         (HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
         (HEARTBEAT_LOAD_MAX_DBFS, HEARTBEAT_LEVEL_SMOOTH_MS),
@@ -844,11 +848,16 @@ def test_restart_reconstructs_mid_segment_levels_without_overwriting_staged_ramp
     sink = Recorder()
     heartbeat = HeartbeatLevel(sink, open_log(tmp_path))
 
+    heartbeat.on_state(message(0, 0.5, segment="baseline", nominal=56_000))
+    first = 1_000 + HEARTBEAT_CHAIN_LATENCY_MS
+    assert heartbeat.on_beat({"t_play": first, "quality": "ok"}, t_engine=500)
+    heartbeat.tick(1_000)
+    heartbeat.fade_out(0.0)
     heartbeat.resume()
     assert heartbeat.on_state(
-        message(6_000, 0.5, segment="baseline", elapsed=6_000, nominal=56_000)
+        message(7_000, 0.5, segment="baseline", elapsed=7_000, nominal=56_000)
     ) == ((-15.5, HEARTBEAT_RESTART_RAMP_MS),)
-    assert heartbeat.tick(6_100) == (HEARTBEAT_BASELINE_END_DBFS, 5_900.0)
+    assert heartbeat.tick(7_100) == (HEARTBEAT_BASELINE_END_DBFS, 5_900.0)
 
     heartbeat.fade_out(0.0)
     heartbeat.resume()

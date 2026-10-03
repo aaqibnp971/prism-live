@@ -434,6 +434,9 @@ class LiveLoop:
                 quality=msg["quality"],
                 dropped=self.audio_beats_dropped,
             )
+        else:
+            if self.heartbeat is not None:
+                self.heartbeat.on_beat(msg, t_engine=self.clock())
 
     def _start_now(self, now: float, alignment: object | None) -> str | None:
         target = getattr(alignment, "fire_frame", None)

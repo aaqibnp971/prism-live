@@ -568,6 +568,17 @@ def test_restart_staging_reaches_the_real_shim_before_its_continuation(
     shim = open_shim(Signal())
     shim.set_clock_anchor(now, 0)
     controller = HeartbeatLevel(shim, Events())
+    if segment == "baseline":
+        controller.on_state(
+            {
+                "t_engine": 0,
+                "segment": "baseline",
+                "segment_elapsed_ms": 0,
+                "segment_nominal_ms": nominal,
+            }
+        )
+        controller.on_beat({"t_play": 1_000, "quality": "ok"}, t_engine=500)
+        controller.fade_out(0.0)
     controller.resume()
     command = controller.on_state(
         {

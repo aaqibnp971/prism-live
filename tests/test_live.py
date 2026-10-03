@@ -102,6 +102,9 @@ class FakeHeartbeat(FakeGain):
     def tick(self, now):
         return None
 
+    def on_beat(self, msg, *, t_engine):
+        self.order.append(("heartbeat beat", msg["seq"]))
+
 
 class FakeBeatSink:
     def __init__(self) -> None:

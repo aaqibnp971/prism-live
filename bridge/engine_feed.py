@@ -57,8 +57,10 @@ attendant confirms hearing it.
 
 Both log every update to the session log and are used from one thread, the bridge's loop.
 
-HeartbeatLevel. The heartbeat layer's only level writer. Baseline starts at -18 dBFS and reaches
--13 over 12 s; load follows instantaneous HR from -13 at HR_base to -9 at HR_base + 15 bpm (or
+HeartbeatLevel. The heartbeat layer's only level writer. Baseline holds -18 dBFS until the first
+accepted measured beat successfully queued to audio, then reaches -13 over 12 s from its t_play
+(not packet arrival or session start). Rejected/interpolated beats cannot start this envelope.
+Load follows instantaneous HR from -13 at HR_base to -9 at HR_base + 15 bpm (or
 holds -13 without a baseline); regulate first reaches the script's -9 start, then recedes to -11
 over the nominal 75 s; resolve holds -11 and starts the shim's equal-power fade so its delayed
 output runs from T-3 s to T. on_state stores resolve's exact end and tick issues the command at
@@ -72,6 +74,7 @@ logs.
     gain, heartbeat = SessionGain(shim, log), HeartbeatLevel(shim, log)
     # every state message: publish(msg); feed.on_state(msg); gain.on_state(msg)
     #                      heartbeat.on_state(msg)
+    # after successfully pushing an accepted beat: heartbeat.on_beat(msg, t_engine=now)
     # every bridge tick: heartbeat.tick(now)
     # the console: feed.set_source("pose")
 """
@@ -600,6 +603,9 @@ class HeartbeatLevel:
         self._resolve_fade_sent = False
         self._pending: tuple[float, float, float, str] | None = None
         self._restarting = False
+        self._session: str | None = None
+        self._baseline_key: tuple[str | None, float] | None = None
+        self._baseline_first_play_ms: float | None = None
         self._onset_measurements = 0
         self._telemetry_dropped = 0
 
@@ -654,12 +660,25 @@ class HeartbeatLevel:
         # resolve's overdue fade. Preserve that deadline before clearing the old segment:
         # starting a fresh three-second fade now would make resumed beats audible after the end.
         resolve_already_ended = self._resolve_end_ms is not None and t >= self._resolve_end_ms
-        entered = segment != self._segment
+        session = msg.get("session")
+        entered = segment != self._segment or session != self._session
         if entered:
             self._segment = segment
+            self._session = session
             self._resolve_end_ms = None
             self._resolve_fade_sent = False
             self._pending = None
+            if segment == "baseline":
+                key = (session, t - elapsed)
+                previous = self._baseline_key
+                # State clocks are rounded to milliseconds. Keep a same-session device
+                # restart's beat origin, but never carry it into another baseline.
+                if previous is None or previous[0] != key[0] or abs(previous[1] - key[1]) > 1:
+                    self._baseline_first_play_ms = None
+                self._baseline_key = key
+            else:
+                self._baseline_key = None
+                self._baseline_first_play_ms = None
 
         commands: list[tuple[float, float]] = []
         if not entered:
@@ -671,7 +690,7 @@ class HeartbeatLevel:
             self._send_if_changed(-math.inf, ramp, t, segment, commands)
         elif segment == "baseline":
             if entered:
-                self._enter_baseline(t, elapsed, restoring, commands)
+                self._enter_baseline(t, restoring, commands)
         elif segment == "load":
             target = heartbeat_load_level_dbfs(msg.get("hr_bpm"), msg.get("hr_base"))
             self._send_if_changed(
@@ -698,6 +717,44 @@ class HeartbeatLevel:
             raise ValueError(f"unknown segment {segment!r}")
         return tuple(commands) or None
 
+    def on_beat(self, msg: Mapping, *, t_engine: float) -> bool:
+        """Observe a beat only AFTER push_beat succeeded, on the bridge control thread.
+
+        The first real beat's scheduled output onset anchors the baseline intro. Never start
+        on publication/arrival, predictions, rejected or refused audio commands. The existing
+        control tick sends the ramp one limiter latency early, just like resolve's ending.
+        """
+        if (
+            self._holding
+            or self._segment != "baseline"
+            or self._baseline_first_play_ms is not None
+            or msg.get("session") != self._session
+            or msg.get("quality") != "ok"
+        ):
+            return False
+        t, first = float(t_engine), float(msg["t_play"])
+        if (
+            not math.isfinite(t)
+            or not math.isfinite(first)
+            or first < t + HEARTBEAT_CHAIN_LATENCY_MS
+        ):
+            return False
+        assert self._baseline_key is not None
+        if first < self._baseline_key[1]:
+            return False
+        self._baseline_first_play_ms = first
+        due = first - HEARTBEAT_CHAIN_LATENCY_MS
+        end = due + HEARTBEAT_BASELINE_RAMP_MS
+        self._schedule(due, HEARTBEAT_BASELINE_END_DBFS, end, "baseline")
+        self._log.event(
+            "heartbeat_baseline_first_beat",
+            t_engine=t,
+            beat_seq=msg.get("seq"),
+            t_play=first,
+            ramp_end_t_play=first + HEARTBEAT_BASELINE_RAMP_MS,
+        )
+        return True
+
     def tick(self, t_engine_ms: float) -> tuple[float, float] | None:
         """Run staged ramps and issue resolve's fade early enough to sound exactly at T-3 s."""
         if self._holding:
@@ -711,31 +768,26 @@ class HeartbeatLevel:
     def _enter_baseline(
         self,
         t: float,
-        elapsed: float,
         restoring: bool,
         commands: list[tuple[float, float]],
     ) -> None:
-        remaining = max(0.0, HEARTBEAT_BASELINE_RAMP_MS - elapsed)
-        if not restoring:
-            self._send(HEARTBEAT_BASELINE_START_DBFS, 0.0, t, "baseline", commands)
-            self._send(
-                HEARTBEAT_BASELINE_END_DBFS,
-                remaining if remaining > 0.0 else HEARTBEAT_LEVEL_SMOOTH_MS,
-                t,
-                "baseline",
-                commands,
-            )
+        first = self._baseline_first_play_ms
+        restore = HEARTBEAT_RESTART_RAMP_MS if restoring else 0.0
+        if first is None:
+            self._send(HEARTBEAT_BASELINE_START_DBFS, restore, t, "baseline", commands)
             return
+        begins = first - HEARTBEAT_CHAIN_LATENCY_MS
+        end = begins + HEARTBEAT_BASELINE_RAMP_MS
+        remaining = max(0.0, end - t)
         if remaining <= HEARTBEAT_RESTART_RAMP_MS:
             self._send(HEARTBEAT_BASELINE_END_DBFS, remaining, t, "baseline", commands)
             return
-        fraction = min(1.0, max(0.0, elapsed / HEARTBEAT_BASELINE_RAMP_MS))
+        fraction = min(1.0, max(0.0, (t - begins) / HEARTBEAT_BASELINE_RAMP_MS))
         current = HEARTBEAT_BASELINE_START_DBFS + fraction * (
             HEARTBEAT_BASELINE_END_DBFS - HEARTBEAT_BASELINE_START_DBFS
         )
-        self._send(current, HEARTBEAT_RESTART_RAMP_MS, t, "baseline", commands)
-        end = t - elapsed + HEARTBEAT_BASELINE_RAMP_MS
-        self._schedule(t + HEARTBEAT_RESTART_RAMP_MS, HEARTBEAT_BASELINE_END_DBFS, end, "baseline")
+        self._send(current, restore, t, "baseline", commands)
+        self._schedule(max(begins, t + restore), HEARTBEAT_BASELINE_END_DBFS, end, "baseline")
 
     def _enter_regulate(
         self,
