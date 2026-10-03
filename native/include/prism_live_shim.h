@@ -61,8 +61,8 @@
 extern "C" {
 #endif
 
-/* 3: pls_stats gained device-clock and heartbeat-onset telemetry, appended. */
-#define PLS_ABI_VERSION 3
+/* 4: added the read-only opened-device name accessor. */
+#define PLS_ABI_VERSION 4
 #define PLS_SAMPLE_RATE 48000u
 #define PLS_CEILING_DBTP (-1.0)
 
@@ -153,6 +153,12 @@ PLS_API int32_t pls_open(const pls_config* config, pls_render_fn render, void* c
  * afresh and checks it again. A kept device that fails to start is reopened the same way, once.
  * Send pls_set_time_origin_ns before every pls_start. */
 PLS_API int32_t pls_start(pls_shim* shim);
+
+/* UTF-8 name of the playback endpoint this shim actually opened. Control thread only. The
+ * returned pointer belongs to the shim and stays valid until the device is closed or reopened.
+ * NULL if shim is NULL or no device is open. This reports the pinned stream endpoint, not a
+ * separate lookup of whichever Windows device is currently the default. */
+PLS_API const char* pls_device_name(const pls_shim* shim);
 
 /* Stop the stream. No fade: the bridge fades first. Idempotent. The engine's phase pauses
  * with the stream and is not reset. After a stop pls_stop did not ask for, it also closes the

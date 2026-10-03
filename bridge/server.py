@@ -46,7 +46,7 @@ from websockets.frames import CloseCode
 from websockets.http11 import Request, Response
 
 from bridge.clock import t_engine_ms
-from bridge.console import ConsoleLog, run_console
+from bridge.console import ConsoleLog, StartupSoundCheck, run_console
 from bridge.contract import (
     CLIENTS,
     MIN_LEAD_MS,
@@ -452,6 +452,16 @@ def main(argv: list[str] | None = None) -> int:
                 await broker.open_lan()
             host.start(gain, heartbeat)
             started = True
+            audio_device = host.shim.device_name()
+            log.event("audio_device_opened", audio_device=audio_device)
+            if not args.one_session:
+                bridge.require_sound_check(
+                    StartupSoundCheck(gain, log, audio_device, clock=t_engine_ms)
+                )
+            else:
+                # --one-session is a non-interactive timing diagnostic. Booth launches always
+                # use the console and therefore always install the human-confirmed interlock.
+                log.event("sound_check_bypassed", reason="one_session_diagnostic")
             async with server:
                 print(
                     f"ws://{args.host or 'localhost'}:{server.port}{PATH}  "

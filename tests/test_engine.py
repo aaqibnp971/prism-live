@@ -131,7 +131,7 @@ def test_the_ctypes_structs_have_the_c_layouts():
     assert PlsStats.heartbeat_onset_error_abs_max_ms.offset == 112
     assert PlsStats.heartbeat_onset_telemetry_dropped.offset == 120
     assert PlsHeartbeatOnset.error_ms.offset == 8
-    assert Shim.abi_version() == engine_module.SHIM_ABI_VERSION == 3
+    assert Shim.abi_version() == engine_module.SHIM_ABI_VERSION == 4
 
 
 def test_a_44_1_khz_scene_is_refused_and_the_engine_destroyed(tmp_path):

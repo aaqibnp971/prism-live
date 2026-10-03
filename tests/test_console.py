@@ -11,6 +11,7 @@ import pytest
 from bridge.console import (
     AttendantConsole,
     ConsoleLog,
+    StartupSoundCheck,
     render,
     run_console,
     screen_lines,
@@ -58,6 +59,29 @@ class StubBridge:
         return True
 
 
+class SoundCheckGain:
+    def __init__(self):
+        self.commands = []
+        self.resumes = 0
+
+    def begin_sound_check(self, target, ramp_ms, *, t_engine=None):
+        self.commands.append(("begin", target, ramp_ms, t_engine))
+
+    def end_sound_check(self, ramp_ms, *, t_engine=None):
+        self.commands.append(("end", 0.0, ramp_ms, t_engine))
+
+    def resume(self):
+        self.resumes += 1
+
+
+class EventLog:
+    def __init__(self):
+        self.events = []
+
+    def event(self, name, **fields):
+        self.events.append((name, fields))
+
+
 @pytest.mark.parametrize(
     "status, expected",
     [
@@ -99,6 +123,99 @@ def test_one_button_arms_cancels_then_rearms_starts_stops_and_waits():
         await ui.press()
         assert bridge.stops == 1 and bridge.starts == 1
         assert ui.snapshot()["action"] == "WAIT FOR RESET"
+
+    asyncio.run(scenario())
+
+
+def test_sound_check_plays_on_prism_gain_and_needs_a_separate_confirmation_press():
+    async def scenario():
+        bridge = StubBridge()
+        gain, log = SoundCheckGain(), EventLog()
+
+        async def no_wait(_seconds):
+            await asyncio.sleep(0)
+
+        bridge.sound_check = StartupSoundCheck(
+            gain, log, "Wired Headphones (USB)", clock=lambda: 123.0, sleep=no_wait
+        )
+        ui = AttendantConsole(bridge)
+        ui.start_sound_check()
+        await ui.sound_check_task
+
+        view = ui.snapshot()
+        assert view["state"] == "SOUND CHECK"
+        assert view["action"] == "CONFIRM SOUND HEARD"
+        assert view["audio_device"] == "Wired Headphones (USB)"
+        assert "AUDIO DEVICE: Wired Headphones (USB)" in "\n".join(screen_lines(view, 160))
+        assert gain.commands == [
+            ("begin", 0.5, 500.0, 123.0),
+            ("end", 0.0, 500.0, 123.0),
+        ]
+        assert bridge.starts == 0
+
+        await ui.press()  # confirmation only
+        assert bridge.starts == 0 and not ui.armed
+        assert bridge.sound_check.confirmed and gain.resumes == 1
+        assert ui.snapshot()["action"] == "ARM START"
+
+        await ui.press()  # a distinct press may now arm
+        assert ui.armed
+        await ui.close()
+
+        assert [name for name, _ in log.events] == [
+            "sound_check_started",
+            "sound_check_finished",
+            "sound_check_confirmed",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_sound_check_returns_the_engine_to_silence():
+    async def scenario():
+        gain, log = SoundCheckGain(), EventLog()
+        playing = asyncio.Event()
+
+        async def blocked(_seconds):
+            playing.set()
+            await asyncio.Event().wait()
+
+        check = StartupSoundCheck(
+            gain, log, "Wired Headphones", clock=lambda: 10.0, sleep=blocked
+        )
+        task = asyncio.create_task(check.play())
+        await playing.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert check.state == "pending" and not check.confirmed
+        assert gain.commands[-1] == ("end", 0.0, 0.0, 10.0)
+        assert [name for name, _ in log.events][-1] == "sound_check_cancelled"
+
+    asyncio.run(scenario())
+
+
+def test_start_cannot_bypass_an_unconfirmed_sound_check(tmp_path):
+    class WaitingSource:
+        async def __aiter__(self):
+            await asyncio.Event().wait()
+            yield b""  # pragma: no cover - makes this an async generator
+
+    async def scenario():
+        log = ConsoleLog(tmp_path)
+        bridge = LiveLoop(WaitingSource(), lambda _msg: True, log)
+        bridge.require_sound_check(SimpleNamespace(confirmed=False))
+        runtime = asyncio.create_task(bridge.run())
+        await asyncio.sleep(0)
+        try:
+            assert await bridge.attendant_start() == "sound_check"
+            assert bridge.session.segment == "idle"
+        finally:
+            runtime.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await runtime
+            log.close()
 
     asyncio.run(scenario())
 

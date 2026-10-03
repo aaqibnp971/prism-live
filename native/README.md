@@ -81,6 +81,10 @@ Nothing on the audio thread allocates, locks, logs, touches a file, or calls COM
 
 **Device.** miniaudio 0.11.25 (`third_party/miniaudio`, public domain or MIT-0, copied from the engine's clone), WASAPI only. Playback, float32, the device's own channel count, 48 kHz, a 10 ms period, no pre-silenced buffer, no clipping. `wasapi.noAutoConvertSRC` is set: without it, WASAPI shared mode resamples 48 kHz to the endpoint's mix rate itself and miniaudio reports 48 kHz anyway. With it, the internal rate is the endpoint's, and `pls_start` refuses anything but 48 kHz with `PLS_ERROR_SAMPLE_RATE`.
 
+After `pls_start`, `pls_device_name` exposes miniaudio's UTF-8 name for the endpoint this stream
+actually opened. It is a control-thread read of the pinned device, not a separate lookup of the
+current Windows default; the attendant console uses it for the mandatory startup sound check.
+
 The stream never follows a default-device change (`wasapi.noAutoStreamRouting`). Left on, miniaudio would reopen the stream on the new default endpoint by itself, through its resampler if that endpoint is not at 48 kHz, with the device period and the time anchor stale. So the stream stays on the endpoint it opened: plug the headphones in before `pls_start`, and plugging in a USB or HDMI device at the booth does not take the sound away from them. If the endpoint goes away, the stream stops by itself, `frames_rendered` stops advancing, and `device_unrequested_stops` in `pls_stats` counts it. miniaudio's notification callback counts that stop; because miniaudio posts no notification when its own stop of a lost endpoint fails, `pls_get_stats`, `pls_start` and `pls_stop` also read the device's state, and each lost stream is counted once. Recovery is `pls_stop` (which releases the lost device), `pls_set_time_origin_ns`, `pls_start`: the device is opened afresh, so the 48 kHz refusal runs again and the period and `IAudioClock` are read again. A kept device that fails to start is reopened the same way, once. No test opens the real device, so the endpoint, COM thread and physical recovery paths remain hardware work even though their mapping and lifecycle state are exercised synthetically.
 
 ## Build
@@ -109,19 +113,19 @@ sha256sum native/bin/libprism_live_shim.dll
 - `src/` is on the include path through `-iquote`, never `-I`: `src/process.h` would otherwise replace the C runtime's `<process.h>` for every file that includes `<pthread.h>`.
 - The source hash is computed at configure time: SHA-256 over `CMakeLists.txt` and every file under `include/`, `src/` and `third_party/`, sorted by path relative to `native/` with forward slashes, each contributing `path + "\n" + contents with CRLF as LF + "\n"`. No build type or compiler is folded in. Every hashed file is a configure dependency, so an edit re-runs it.
 
-The ctest suite: `rt_tripwire_test` (the allocation tripwire) and `shim_dsp_test` (91 checks: ABI version, the stats and per-onset layouts and argument checks, the queues under two threads, exact frame counts, the high-pass response at 12 frequencies, exact session-gain and heartbeat-level curves, a bounded non-stepping anchor slew, exact fixed-anchor beat samples, the 250 ms non-overlap boundary, late and full beats, restart-generation invalidation, stale-clock suppression, individual onset telemetry, the detector against exact sine peaks, the limiter margin above, transparency, and NaN and infinity from the render function). About 10 to 30 s together on the development laptop.
+The ctest suite: `rt_tripwire_test` (the allocation tripwire) and `shim_dsp_test` (92 checks: ABI version and the unopened-device-name guard, the stats and per-onset layouts and argument checks, the queues under two threads, exact frame counts, the high-pass response at 12 frequencies, exact session-gain and heartbeat-level curves, a bounded non-stepping anchor slew, exact fixed-anchor beat samples, the 250 ms non-overlap boundary, late and full beats, restart-generation invalidation, stale-clock suppression, individual onset telemetry, the detector against exact sine peaks, the limiter margin above, transparency, and NaN and infinity from the render function). About 10 to 30 s together on the development laptop.
 
 ## The committed DLL
 
 | | |
 |---|---|
 | File | `bin/libprism_live_shim.dll`, 446,464 bytes, Windows x64 (PE32+) |
-| SHA-256 | `1f62d3eebd23cdd5e0af3faff4b5e3588db2138171311d57eb1e48b5bda912c7` |
-| `pls_source_hash()` | `4e3b71d612004df03d77787bbfb1ed62f12f32a81afc3ffcc7906b439ae9c38e` |
-| `pls_abi_version()` | 3 (`pls_stats` gained device-clock, onset and telemetry-loss fields, appended) |
-| Exports | The 17 `PLS_API` functions of `include/prism_live_shim.h`, and nothing else |
+| SHA-256 | `5d1a0794031273d28a6fe173f3f409991c37b1208e06c0f718d850d9bc0f80b0` |
+| `pls_source_hash()` | `64d5f44c51f6abae939e5b3440034bbd62a03a0b0525a124fe80286f560a4cce` |
+| `pls_abi_version()` | 4 (adds the read-only name of the endpoint this stream actually opened) |
+| Exports | The 18 `PLS_API` functions of `include/prism_live_shim.h`, and nothing else |
 | Imports | `KERNEL32.dll`, Windows' `ole32.dll` COM runtime, and the Windows Universal C Runtime (`api-ms-win-crt-*`) only |
 
-The linker still has a zero PE timestamp and deterministic flags. ABI 2 was reproduced byte for byte from a second build directory and a CRLF copy on 14 September; the ABI 3 binary above is checked against its complete source hash on every Python test run.
+The linker still has a zero PE timestamp and deterministic flags. ABI 2 was reproduced byte for byte from a second build directory and a CRLF copy on 14 September; the ABI 4 binary above is checked against its complete source hash on every Python test run.
 
 To change the shim: edit, build, run ctest, copy the DLL to `bin/`, and update the size, SHA-256 and source hash above. Commit the sources and the DLL together. A DLL built with a different compiler or binutils has a different SHA-256 and is a different library until it is checked again. To debug a crash inside the shim, build without `-s` and load that DLL instead; never commit it.

@@ -303,7 +303,8 @@ pls_stats stats_of(pls_shim* shim) {
 
 void test_abi() {
   std::printf("abi\n");
-  check(pls_abi_version() == PLS_ABI_VERSION && PLS_ABI_VERSION == 3, "pls_abi_version is 3");
+  check(pls_abi_version() == PLS_ABI_VERSION && PLS_ABI_VERSION == 4, "pls_abi_version is 4");
+  check(pls_device_name(nullptr) == nullptr, "pls_device_name(NULL) is NULL");
   check(sizeof(pls_stats) == 128 && offsetof(pls_stats, limiter_min_gain) == 48 &&
             offsetof(pls_stats, device_unrequested_stops) == 56 &&
             offsetof(pls_stats, device_clock_samples) == 64 &&

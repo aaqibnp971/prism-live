@@ -188,7 +188,7 @@ def test_native_readme_describes_the_committed_dll():
 
 
 def test_abi_version_and_defaults():
-    assert Shim.abi_version() == 3
+    assert Shim.abi_version() == 4
     config = Shim.config_default()
     assert (config.sample_rate, config.max_block_frames, config.command_capacity) == (
         48_000,
@@ -196,6 +196,15 @@ def test_abi_version_and_defaults():
         256,
     )
     assert (config.beat_capacity, config.engine_trim_db) == (64, -6.0)
+
+
+def test_device_name_is_unavailable_until_the_stream_opens():
+    shim = open_shim(Signal())
+    try:
+        with pytest.raises(RuntimeError, match="no open audio device"):
+            shim.device_name()
+    finally:
+        shim.close()
 
 
 @pytest.mark.parametrize(

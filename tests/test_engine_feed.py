@@ -713,6 +713,29 @@ def test_fade_out_holds_every_state_message_until_resume(tmp_path):
     assert sink.gains[2:] == [(1.0, 2_000.0)]
 
 
+def test_sound_check_uses_the_only_gain_writer_and_holds_idle_until_confirmed(tmp_path):
+    log = open_log(tmp_path)
+    sink = Recorder()
+    gain = SessionGain(sink, log)
+
+    gain.begin_sound_check(0.5, 500.0, t_engine=100.0)
+    assert gain.holding
+    assert gain.on_state(message(200, 0.5, segment="idle")) is None
+    gain.end_sound_check(500.0, t_engine=2_600.0)
+    assert gain.holding
+    assert gain.on_state(message(3_200, 0.5, segment="baseline")) is None
+    assert sink.gains == [(0.5, 500.0), (0.0, 500.0)]
+
+    gain.resume()
+    assert gain.on_state(message(3_300, 0.5, segment="baseline")) == (1.0, 2_000.0)
+    assert sink.gains[-1] == (1.0, 2_000.0)
+    sound_events = [e for e in events(log, "session_gain") if e.get("sound_check")]
+    assert [(e["target"], e["ramp_ms"]) for e in sound_events] == [
+        (0.5, 500.0),
+        (0.0, 500.0),
+    ]
+
+
 @pytest.mark.parametrize("segment", ["baseline", "load"])
 def test_resume_resends_the_target_after_a_restart(tmp_path, segment):
     """The stream restarted (EngineHost.start) wherever the gain was: the next message sends its

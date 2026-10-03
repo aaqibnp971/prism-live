@@ -168,17 +168,42 @@ the debug corner shows the resulting physical viewport width. Measure the test m
 judging browser-task difficulty. Keep the task on its assigned monitor. These laptop measurements
 do not describe viewing geometry inside the headset.
 
+## Mandatory audio sound check
+
+Plug in the visitor's **wired headphones**, select them as the Windows output, and set a low safe
+volume **before launching Prism**. The shim pins the endpoint it opens and deliberately does not
+follow a later default-device change.
+
+Every new bridge process automatically plays a short piece of the loaded Prism scene through the
+real path: engine render, high-pass, session gain, limiter and the opened output device. The
+attendant console shows `AUDIO DEVICE: <name>` using the endpoint name reported by that opened
+stream. Read the name, listen through the visitor headphones, and wait for the whole check to end.
+Then press Space or Enter once at `NEXT PRESS: CONFIRM SOUND HEARD`. That press only confirms the
+check; it does not arm a session. The following press can arm the first visitor.
+
+The first session is locked until a person confirms that they actually heard the check. An endpoint
+name or moving audio counter alone is not proof of audible sound. Press R to replay an unconfirmed
+check. If the named device is wrong or the sound is missing, press Q, correct the Windows output,
+cable, 48 kHz setting and volume, then relaunch. Never confirm a check that was not heard.
+
+Confirmation lasts for later visitors while that bridge process and its opened stream remain alive.
+A bridge restart opens the device again, plays the check again, and requires a new confirmation;
+restarting only a browser does not. The non-interactive `bridge.server --one-session` timing
+diagnostic bypasses this human interlock and is not a booth launch path.
+
 ## The attendant button
 
 With the attendant terminal focused, Space or Enter is the same single button:
 
+- Before the first session: confirm the completed sound check; a separate next press arms.
 - Idle: arm and show the pulse-aligned countdown, up to 11 s.
 - Countdown: cancel and disarm. The session has not started.
 - Running: stop through the host's 3 s reset.
 - Reset: wait; another press cannot shorten it or queue a new visitor.
 
-The console always says what the next press will do. B and P switch the existing body/pose PSV
-source; Q exits the launcher and its processes. Signal loss makes the whole console red but never auto-stops.
+The console always says what the next press will do. R replays an unconfirmed sound check. B and P
+switch the existing body/pose PSV source; Q exits the launcher and its processes. Signal loss makes
+the whole console red but never auto-stops.
 Read the spoken close's difference from the spectator's trace, not from the console.
 
 ## Supervision and ownership

@@ -77,7 +77,7 @@ ENGINE_DLL = ROOT / "vendor" / "lib" / "libprism_core.dll"
 SHIM_DLL = ROOT / "native" / "bin" / "libprism_live_shim.dll"
 
 ENGINE_VERSION = "0.3.0"  # prism_version() at acbfd50
-SHIM_ABI_VERSION = 3  # PLS_ABI_VERSION
+SHIM_ABI_VERSION = 4  # PLS_ABI_VERSION
 SAMPLE_RATE = 48_000  # the project's rate; the engine takes whatever the stems are
 
 # prism_config (docs/engine-findings.md, prompt 0.4 item 4). They only steer the inference thread,
@@ -239,6 +239,7 @@ def shim_library() -> ctypes.CDLL:
     # The render function goes in as an address: prism_render's, or a RENDER_FN's.
     _bind(lib, "pls_open", [_c.POINTER(PlsConfig), p, p, _c.POINTER(p)], _c.c_int32)
     _bind(lib, "pls_start", [p], _c.c_int32)
+    _bind(lib, "pls_device_name", [p], _c.c_char_p)
     _bind(lib, "pls_stop", [p], _c.c_int32)
     _bind(lib, "pls_close", [p], None)
     _bind(lib, "pls_set_session_gain", [p, _c.c_double, _c.c_double], _c.c_int32)
@@ -430,6 +431,16 @@ class Shim:
 
     def start(self) -> None:
         self._check("pls_start", self._lib.pls_start(self.handle))
+
+    def device_name(self) -> str:
+        """Exact UTF-8 name of the endpoint opened by this shim, after :meth:`start`."""
+        name = self._lib.pls_device_name(self.handle)
+        if name is None:
+            raise RuntimeError("the shim has no open audio device")
+        decoded = name.decode("utf-8", errors="replace")
+        if not decoded.strip():
+            raise RuntimeError("the opened audio device reported no name")
+        return decoded
 
     def stop(self) -> None:
         self._check("pls_stop", self._lib.pls_stop(self.handle))

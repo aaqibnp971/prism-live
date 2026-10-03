@@ -1,6 +1,7 @@
 """In-process attendant UI (3.6), on LiveLoop's one asyncio thread.
 
-Space/Enter is ONE button: arm -> cancel; running -> stop; reset -> wait.
+Before the first session, Space/Enter confirms the completed automatic sound check. After that it
+is ONE button: arm -> cancel; running -> stop; reset -> wait.
 No HTTP, WebSocket, callback from another thread, or session-control server exists here.
 The booth terminal fills the laptop; the participant's task runs in the headset.
 The pipe input is only for repeatable process-recovery tests, never a browser control path.
@@ -26,6 +27,11 @@ from bridge.logging import SessionLog
 from bridge.phase import SAMPLE_RATE
 
 RESTART_NOTICE = "BRIDGE RESTARTED - VISITOR MUST START AGAIN. Nothing has resumed."
+SOUND_CHECK_LEVEL = 0.5
+SOUND_CHECK_ATTACK_MS = 500.0
+SOUND_CHECK_HOLD_S = 2.5
+SOUND_CHECK_RELEASE_MS = 500.0
+SOUND_CHECK_TAIL_S = 0.1
 
 
 class ConsoleLog(SessionLog):
@@ -43,6 +49,78 @@ class ConsoleLog(SessionLog):
                 self.baseline_notice += " - " + "; ".join(fields["problems"])
 
 
+class StartupSoundCheck:
+    """One audible check of the actual Prism scene and opened endpoint per bridge process."""
+
+    def __init__(self, gain, log, device_name, *, clock, sleep=asyncio.sleep):
+        self.gain = gain
+        self.log = log
+        self.device_name = device_name
+        self.clock = clock
+        self.sleep = sleep
+        self.state = "pending"
+        self.error = ""
+
+    @property
+    def confirmed(self) -> bool:
+        return self.state == "confirmed"
+
+    async def play(self) -> None:
+        """Fade up the loaded scene, hold briefly, fade out, then wait for a human answer."""
+        if self.confirmed or self.state == "playing":
+            return
+        self.state, self.error = "playing", ""
+        started_at = self.clock()
+        self.log.event(
+            "sound_check_started",
+            t_engine=started_at,
+            audio_device=self.device_name,
+            target=SOUND_CHECK_LEVEL,
+            attack_ms=SOUND_CHECK_ATTACK_MS,
+            hold_ms=SOUND_CHECK_HOLD_S * 1000,
+            release_ms=SOUND_CHECK_RELEASE_MS,
+        )
+        try:
+            self.gain.begin_sound_check(
+                SOUND_CHECK_LEVEL, SOUND_CHECK_ATTACK_MS, t_engine=started_at
+            )
+            await self.sleep(SOUND_CHECK_HOLD_S)
+            self.gain.end_sound_check(SOUND_CHECK_RELEASE_MS, t_engine=self.clock())
+            await self.sleep(SOUND_CHECK_RELEASE_MS / 1000 + SOUND_CHECK_TAIL_S)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                self.gain.end_sound_check(0.0, t_engine=self.clock())
+            self.state = "pending"
+            self.log.event(
+                "sound_check_cancelled", t_engine=self.clock(), audio_device=self.device_name
+            )
+            raise
+        except Exception as error:
+            with contextlib.suppress(Exception):
+                self.gain.end_sound_check(0.0, t_engine=self.clock())
+            self.state, self.error = "failed", str(error)
+            self.log.event(
+                "sound_check_failed",
+                t_engine=self.clock(),
+                audio_device=self.device_name,
+                error=str(error),
+            )
+            raise
+        self.state = "awaiting_confirmation"
+        self.log.event("sound_check_finished", t_engine=self.clock(), audio_device=self.device_name)
+
+    def confirm_heard(self) -> bool:
+        """Release the gain latch only after playback ended and the attendant heard it."""
+        if self.state != "awaiting_confirmation":
+            return False
+        self.gain.resume()
+        self.state = "confirmed"
+        self.log.event(
+            "sound_check_confirmed", t_engine=self.clock(), audio_device=self.device_name
+        )
+        return True
+
+
 class AttendantConsole:
     def __init__(self, bridge: LiveLoop, *, generation=0):
         self.bridge = bridge
@@ -50,14 +128,62 @@ class AttendantConsole:
         self.restart_pending = bool(generation)
         self.notice = "Waiting for your press."
         self.start_task: asyncio.Task | None = None
+        self.sound_check_task: asyncio.Task | None = None
         self.fault: Exception | None = None
 
     @property
     def armed(self):
         return self.start_task is not None and not self.start_task.done()
 
+    @property
+    def sound_check(self):
+        return getattr(self.bridge, "sound_check", None)
+
+    def start_sound_check(self) -> None:
+        check = self.sound_check
+        if (
+            check is None
+            or check.confirmed
+            or (self.sound_check_task is not None and not self.sound_check_task.done())
+        ):
+            return
+        self.notice = "Playing the Prism sound check. Listen through the visitor headphones."
+        self.sound_check_task = asyncio.create_task(
+            self._play_sound_check(), name="Prism startup sound check"
+        )
+
+    async def _play_sound_check(self) -> None:
+        await self.sound_check.play()
+        self.notice = "Did you hear it? Press once to confirm, or R to replay."
+
+    def _collect_sound_check_fault(self) -> None:
+        task = self.sound_check_task
+        if task is None or not task.done() or task.cancelled() or self.fault is not None:
+            return
+        if error := task.exception():
+            self.fault = error
+
+    async def replay_sound_check(self) -> None:
+        check = self.sound_check
+        if check is None or check.confirmed:
+            return
+        if self.sound_check_task is not None and not self.sound_check_task.done():
+            self.notice = "The sound check is already playing."
+            return
+        self.start_sound_check()
+        await asyncio.sleep(0)
+
     async def press(self):
         """Always on the bridge loop; cancellation completes before another press can arm."""
+        check = self.sound_check
+        if check is not None and not check.confirmed:
+            if check.confirm_heard():
+                self.notice = "SOUND CHECK CONFIRMED. Press again to arm the first session."
+            elif check.state == "failed":
+                self.notice = "SOUND CHECK FAILED. First session is locked; press R to retry."
+            else:
+                self.notice = "WAIT - hear the whole sound check before confirming."
+            return
         if self.armed:
             self.start_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -91,8 +217,13 @@ class AttendantConsole:
             self.start_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.start_task
+        if self.sound_check_task is not None and not self.sound_check_task.done():
+            self.sound_check_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.sound_check_task
 
     def snapshot(self):
+        self._collect_sound_check_fault()
         session = self.bridge.session
         now = self.bridge.clock()
         schedule = session.schedule
@@ -100,9 +231,23 @@ class AttendantConsole:
         wait = None
         if self.armed and alignment is not None and self.bridge.phase is not None:
             wait = max(0, alignment.fire_frame - self.bridge.phase.frame()) / SAMPLE_RATE
-        state = "COUNTDOWN" if self.armed else session.segment.upper()
+        check = self.sound_check
+        check_state = None if check is None else check.state
+        state = (
+            "SOUND CHECK"
+            if check is not None and not check.confirmed
+            else "COUNTDOWN"
+            if self.armed
+            else session.segment.upper()
+        )
         action = (
-            "CANCEL COUNTDOWN"
+            "WAIT - SOUND CHECK PLAYING"
+            if check_state in ("pending", "playing")
+            else "CONFIRM SOUND HEARD"
+            if check_state == "awaiting_confirmation"
+            else "REPLAY SOUND CHECK"
+            if check_state == "failed"
+            else "CANCEL COUNTDOWN"
             if self.armed
             else "ARM START"
             if session.segment == "idle"
@@ -132,6 +277,9 @@ class AttendantConsole:
             "source": source_label,
             "source_status": source_status,
             "psv_source": getattr(self.bridge.psv_feed, "source", "body"),
+            "audio_device": None if check is None else check.device_name,
+            "sound_check_state": check_state,
+            "sound_check_confirmed": None if check is None else check.confirmed,
         }
 
 
@@ -147,6 +295,15 @@ def screen_lines(view, columns=80):
     """Plain, testable content. No regulate_result access, verdict, or inferred close."""
     width = max(20, columns - 2)
     lines = ["PRISM / ATTENDANT", view["source"], ""]
+    if view.get("audio_device"):
+        check_label = {
+            "pending": "STARTING",
+            "playing": "PLAYING - LISTEN NOW",
+            "awaiting_confirmation": "WAITING FOR YOUR CONFIRMATION",
+            "confirmed": "CONFIRMED HEARD",
+            "failed": "FAILED - REPLAY REQUIRED",
+        }.get(view.get("sound_check_state"), "UNKNOWN")
+        lines += [f"AUDIO DEVICE: {view['audio_device']}", f"AUDIO CHECK: {check_label}", ""]
     status = view.get("source_status", "synthetic")
     if status != "synthetic":
         data_notice = {
@@ -176,7 +333,7 @@ def screen_lines(view, columns=80):
         view["baseline_notice"],
         "",
         "SPACE / ENTER = button",
-        "B = body | P = pose | Q = quit booth",
+        "R = replay unconfirmed sound check | B = body | P = pose | Q = quit booth",
         f"PSV: {view['psv_source']} | {view['session']}",
         "Close: read peaked-at minus left-at from the spectator trace. No verdict here.",
     ]
@@ -330,6 +487,7 @@ async def run_console(
     clients=lambda: [],
 ):
     console = AttendantConsole(bridge, generation=generation)
+    console.start_sound_check()
     keys = PipeKeys() if input_mode == "pipe" else TerminalKeys(fullscreen=fullscreen)
     terminal = input_mode == "terminal"
     last_render = 0.0
@@ -347,6 +505,8 @@ async def run_console(
                     await console.press()
                 elif key.lower() in ("b", "p"):
                     bridge.set_psv_source("body" if key.lower() == "b" else "pose")
+                elif key.lower() == "r":
+                    await console.replay_sound_check()
                 elif key.lower() == "q":
                     shutdown_requested = True
                     return
@@ -385,6 +545,8 @@ async def run_console(
                             "console_state": view["state"],
                             "console_text": text,
                             "audio_frames": frames,
+                            "audio_device": view.get("audio_device"),
+                            "sound_check_confirmed": view.get("sound_check_confirmed"),
                             "source": "synthetic"
                             if view["source_status"] == "synthetic"
                             else "mqtt",

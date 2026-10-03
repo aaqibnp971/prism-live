@@ -473,6 +473,13 @@ int32_t pls_start(pls_shim* shim) {
   }
 }
 
+const char* pls_device_name(const pls_shim* shim) {
+  if (shim == nullptr || !shim->device_initialized) {
+    return nullptr;
+  }
+  return shim->device.playback.name;
+}
+
 int32_t pls_stop(pls_shim* shim) {
   if (shim == nullptr) {
     return PLS_ERROR_INVALID_ARGUMENT;

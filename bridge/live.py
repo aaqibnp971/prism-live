@@ -52,6 +52,13 @@ class BeatSink(Protocol):
     def push_beat(self, t_play_ms: float, rr_ms: float, quality: int = PLS_BEAT_OK) -> None: ...
 
 
+class SoundCheckGate(Protocol):
+    """Human-confirmed startup interlock; owned and changed on this loop."""
+
+    @property
+    def confirmed(self) -> bool: ...
+
+
 Publish = Callable[[dict], bool | None]
 Clock = Callable[[], float]
 
@@ -175,10 +182,17 @@ class LiveLoop:
         self._measurement: _Measurement | None = None
         self._completed: list[SessionMetrics] = []
         self._completed_event: asyncio.Event | None = None
+        self.sound_check: SoundCheckGate | None = None
 
     @property
     def completed_metrics(self) -> tuple[SessionMetrics, ...]:
         return tuple(self._completed)
+
+    def require_sound_check(self, gate: SoundCheckGate) -> None:
+        """Install the per-process audio interlock before the loop starts."""
+        if self._running:
+            raise RuntimeError("the sound-check gate must be installed before the live loop runs")
+        self.sound_check = gate
 
     async def run(self) -> None:
         """Run until cancelled or a source/control fault occurs."""
@@ -213,6 +227,11 @@ class LiveLoop:
         assert self._start_lock is not None
         pressed_t = self.clock()
         self.log.event("attendant_start_pressed", t_engine=pressed_t)
+        if self.sound_check is not None and not self.sound_check.confirmed:
+            self.log.event(
+                "attendant_start_refused", t_engine=pressed_t, reason="sound_check_unconfirmed"
+            )
+            return "sound_check"
         async with self._start_lock:
             # A second press while the first session is already running must be routed through
             # Session so its ordinary, logged ``running`` refusal is the single source of truth.

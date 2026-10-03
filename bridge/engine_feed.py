@@ -51,6 +51,10 @@ which sends 0 over 3 s and holds: every state message after it sends nothing, so
 re-targets the gain while the fade leaves the chain. EngineHost.start(gain) calls resume, and the
 next message sends its target whatever was sent before.
 
+The startup sound check also goes through SessionGain, never around it: it latches state messages,
+opens the loaded Prism scene briefly, returns to silence, then releases the latch only after the
+attendant confirms hearing it.
+
 Both log every update to the session log and are used from one thread, the bridge's loop.
 
 HeartbeatLevel. The heartbeat layer's only level writer. Baseline starts at -18 dBFS and reaches
@@ -517,6 +521,36 @@ class SessionGain:
         self._sink.set_session_gain(0.0, ramp_ms)
         self._holding, self._target, self._ends_ms = True, 0.0, math.inf
         self._log.event("session_gain", t_engine=t_engine, stop=True, target=0.0, ramp_ms=ramp_ms)
+
+    def begin_sound_check(
+        self, target: float = 0.5, ramp_ms: float = 500.0, *, t_engine: float | None = None
+    ) -> None:
+        """Audition the loaded Prism scene and hold state messages out of the way.
+
+        The console deliberately goes through this controller: it remains the shim session
+        gain's only writer, and an idle state cannot silence the check halfway through.
+        """
+        self._sink.set_session_gain(target, ramp_ms)
+        self._holding, self._target, self._ends_ms = True, target, math.inf
+        self._log.event(
+            "session_gain",
+            t_engine=t_engine,
+            sound_check=True,
+            target=target,
+            ramp_ms=ramp_ms,
+        )
+
+    def end_sound_check(self, ramp_ms: float = 500.0, *, t_engine: float | None = None) -> None:
+        """Fade the audition to silence and keep state messages held until confirmation."""
+        self._sink.set_session_gain(0.0, ramp_ms)
+        self._holding, self._target, self._ends_ms = True, 0.0, math.inf
+        self._log.event(
+            "session_gain",
+            t_engine=t_engine,
+            sound_check=True,
+            target=0.0,
+            ramp_ms=ramp_ms,
+        )
 
     def resume(self) -> None:
         """Stop holding, and forget what was sent: the next state message sends its target.

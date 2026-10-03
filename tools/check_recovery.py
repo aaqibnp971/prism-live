@@ -4,6 +4,8 @@ Runs installed Edge headlessly because a second display may not be attached. No 
 accelerated session clock, WebSocket control messages, or spectator simulation is used. The
 synthetic armband is the bridge's normal source until 2.8. Local stdin presses exercise the same
 AttendantConsole.press path as terminal keys. This does NOT verify physical display placement.
+It acknowledges the sound-check prompt mechanically so it can reach a session; that is not
+evidence that a person heard it and never replaces the runbook's booth check.
 """
 
 from __future__ import annotations
@@ -81,6 +83,21 @@ async def check(output: Path):
             for role in ("bridge", "task", "spectator"):
                 state = read_json(status_path)
                 if state["bridge"]["segment"] == "idle":
+                    if state["bridge"].get("sound_check_confirmed") is not True:
+                        await wait_status(
+                            process,
+                            status_path,
+                            lambda s: s.get("bridge", {}).get("console_state") == "SOUND CHECK"
+                            and "NEXT PRESS: CONFIRM SOUND HEARD"
+                            in s.get("bridge", {}).get("console_text", ""),
+                        )
+                        process.stdin.write(b" ")  # mechanical acknowledgement, not audibility
+                        process.stdin.flush()
+                        await wait_status(
+                            process,
+                            status_path,
+                            lambda s: s.get("bridge", {}).get("sound_check_confirmed") is True,
+                        )
                     process.stdin.write(b" ")
                     process.stdin.flush()
                     await wait_status(
