@@ -13,7 +13,11 @@ def test_the_production_manifest_is_one_default_scene_with_exactly_four_stems():
     assert tuple(spec.stems) == STEM_ROLES
     assert "lead" not in spec.stems
     assert [path.name for path in spec.stems.values()] == [f"{role}.wav" for role in STEM_ROLES]
-    assert {path.parent.name for path in spec.stems.values()} == {"placeholders"}
+    paths = [
+        path.relative_to(DEFAULT_MANIFEST.parent).as_posix()
+        for path in spec.stems.values()
+    ]
+    assert paths == [f"stems/v2/{role}.wav" for role in STEM_ROLES]
 
 
 def test_scene_load_is_blocking_measured_and_delegated_once(tmp_path):

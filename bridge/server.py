@@ -400,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         host.open(args.scene)
         assert host.engine is not None and host.shim is not None
         phase = PhaseTracker.for_shim(host.shim)
-        feed = PsvFeed(host.engine, log, phase=phase)
+        feed = PsvFeed(host.engine, log, source="body", phase=phase)
         gain = SessionGain(host.shim, log)
         heartbeat = HeartbeatLevel(host.shim, log)
 
