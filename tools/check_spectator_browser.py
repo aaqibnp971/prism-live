@@ -514,6 +514,37 @@ async def check(browser, output=None, reference=None):
                     ]
                     assert not report["external_requests"]
                     assert not cdp.errors, cdp.errors
+                    # Single-display test preview must not offer a button that covers the
+                    # attendant console. This changes layout only, never the data source.
+                    feed.silent = False
+                    await cdp.call("Page.navigate", url=url + "&tiled=1")
+                    await cdp.until("document.body?.dataset.view === 'active'")
+                    assert await cdp.evaluate("document.getElementById('fullscreen-button').hidden")
+                    await cdp.evaluate("document.getElementById('fullscreen-button').click()")
+                    assert await cdp.evaluate("document.fullscreenElement === null")
+                    await cdp.call(
+                        "Emulation.setDeviceMetricsOverride",
+                        width=672,
+                        height=500,
+                        deviceScaleFactor=1,
+                        mobile=False,
+                    )
+                    await cdp.evaluate("new Promise(resolve => requestAnimationFrame(resolve))")
+                    preview = await cdp.evaluate(BOUNDS)
+                    assert preview["plotInsideCard"] and preview["clipped"], preview
+                    await cdp.call("Page.navigate", url=url)
+                    await cdp.until("document.body?.dataset.view === 'active'")
+                    assert await cdp.evaluate(
+                        "!document.getElementById('fullscreen-button').hidden"
+                    )
+                    await cdp.call(
+                        "Emulation.setDeviceMetricsOverride",
+                        width=1920,
+                        height=1080,
+                        deviceScaleFactor=1,
+                        mobile=False,
+                    )
+                    assert not cdp.errors, cdp.errors
                     if reference:
                         await cdp.call("Page.navigate", url=reference.resolve().as_uri())
                         await cdp.until("!!document.getElementById('mirrorRef')")

@@ -1,6 +1,6 @@
-# **Prism Live: Project Plan v1.4**
+# **Prism Live: Project Plan v1.5**
 
-**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 23 September 2026
+**Owner:** Ridhwan **Team:** Dev A (laptop side), Dev B (Unity side) **Target:** internal showing, Thursday 15 October 2026 **Status:** planning complete, build starts Week 1 **Version date:** 26 September 2026
 
 ---
 
@@ -102,19 +102,21 @@ Two people per shift, and the second one is the important one.
 
 | Role | Job |
 | ----- | ----- |
-| **Fitter** | Armband, headphones, headset, hygiene wipe between users, restart if anything breaks |
+| **Fitter** | Fit and physically check the armband on the thick part of the left forearm; headphones, headset, hygiene wipe between users, restart if anything breaks |
 | **Narrator** | Stands at the big screen, talks the crowd through what they are seeing live, takes the conversations, hands out cards |
 
 Only about 50 people wear the headset in a day. Several hundred walk past the screen. The narrator is doing the commercial work. That is a marketing person, not a developer.
 
 **Per-person cycle: about 7 minutes.**
 
-1. Greet and seat the visitor, then exclusion questions and consent line, then armband on upper arm, 20 seconds. The armband goes on before the pitch.  
+1. Greet and seat the visitor, then exclusion questions and consent line, then armband on the thick part of the **left forearm**, 20 seconds. The attendant checks the fit; the armband goes on before the pitch.
 2. 20-second pitch, sitting down, with the armband already reading  
 3. Headphones, then headset, 30 seconds  
 4. Four-minute run  
 5. 20 seconds of trace on screen, they photograph it  
 6. 45-second close, card with QR
+
+**Standard placement and posture (26 September).** Left forearm, on its thick part, with both hands resting in the lap and no phone use. Checking the fit is the attendant/fitter's job; neither the device's HR number nor its skin-contact flag substitutes for a physical check. Keep the sensor-bearing arm resting throughout. In a browser mouse-control test only, the right hand operates the mouse during load while the left hand stays resting; both hands rest during baseline, regulate and resolve. This task-motion condition is not equivalent to a still baseline qualification recording.
 
 **Settling, and why the armband goes on before the pitch.** People arrive off a loud floor with their heart rate still falling. A baseline measured while it is still falling steeply gives the system nothing to trust for the rest of that person's run. The baseline starts 70 seconds after the greet and ends 115 seconds after it, inside the same 7-minute cycle. **Seating the visitor at the greet is what buys settling time:** they spend those 70 seconds sitting down, instead of standing through the pitch and sitting only for the headphones and headset. Fitting the armband before the pitch does not change the times. It means the armband is reading for about 50 seconds before the baseline instead of 30, so a poor fit can show up before the headset goes on.
 
@@ -321,5 +323,6 @@ Transparent overdraw is the number one Quest performance killer, so heavy partic
 * v1.2, 13 September 2026: §8 fits the armband before the pitch, right after the exclusion questions and the consent line, and states the settling time before and through the baseline.
 * v1.3, 13 September 2026: §8 seats the visitor at the greet, so the pitch happens sitting down. That is the change that buys settling time.
 * v1.4, 23 September 2026: §5 replaces the real-time heartbeat claim with delayed playback of measured intervals from the phone's batched PPI stream; audio and eligible visual pulses share the scheduled playback time.
+* v1.5, 26 September 2026: §8 standardises the thick part of the left forearm, resting hands and attendant-owned fit checks; distinguishes the browser test's right-hand mouse use from a still baseline.
 
 &nbsp;

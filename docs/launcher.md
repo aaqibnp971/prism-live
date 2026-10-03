@@ -18,6 +18,39 @@ The launcher starts an owned Windows Console Host window, even when launched fro
 Terminal; it does not move another terminal or any existing browser window.
 Direct `python -m bridge.server` also defaults to localhost; LAN access is never implicit.
 
+### Real MQTT browser test, including one display
+
+Real armband input does not require VR booth mode. In **Administrator PowerShell**, on a
+trusted private network, explicitly select MQTT and the laptop/phone addresses:
+
+```powershell
+.venv\Scripts\python.exe -m tools.launch --packet-source mqtt --mqtt-bind 192.168.0.39 --mqtt-phone-ip 192.168.0.251 --single-display-test --screen-width-cm 33.2 --distance-cm 80
+```
+
+These are the 26 September test addresses, not defaults: verify them whenever Wi-Fi changes.
+Set the app's broker to the laptop's `--mqtt-bind` address, port 1883; the remaining app settings
+below are unchanged. Only MQTT ingress listens on that LAN address, restricted to the phone.
+The WebSocket stays on `127.0.0.1`, `task-screen` remains the task-event producer, and both live
+browser pages open. The source stays MQTT after a bridge restart; it never falls back to synthetic.
+The launcher owns the same narrow temporary firewall rule and cleanup described below.
+Do not use a public/untrusted or venue network merely because its IP is private.
+
+`--single-display-test` is an explicit **test-only** layout: task in the left 65%, attendant
+console upper right, spectator preview lower right. Both browser windows are windowed and their
+full-screen buttons are hidden so they do not cover the controls. The preview is not a test of
+across-the-hall readability; the booth still needs its separate spectator display. All roles
+use `--console-display` (default 0). Conflicting display indices, `--booth` and `--headless`
+are refused with this flag. Omit it when using the normal two-display browser-test layout.
+
+The example geometry assumes a 15-inch 16:9 screen (about 33.2 cm wide) at 80 cm, **not a measured
+screen**. Replace it with measured width/distance before judging difficulty. The task uses the
+actual tiled viewport width and shows its geometry in the debug corner. `body` is the default
+PSV source; confirm `PSV: body` on the console (B selects it). No start is automatic: wait for
+flowing PPI, check fit and low-volume wired output, then use the console's Space/Enter button.
+For a full run, move focus to the task after starting, rest both hands during baseline, use only
+the right-hand mouse during load, and rest again during regulate/resolve. Q in the console
+shuts down cleanly and removes the owned firewall rule. Logs remain in gitignored `logs/`.
+
 ## VR booth mode
 
 The participant does the task in the headset and never looks at the laptop. On the project's
@@ -62,6 +95,10 @@ Quest address, rather than accepting Windows' broad "allow Python" prompt.
 
 ## Phone and router runbook (replacement for direct laptop BLE / prompt 2.8)
 
+**Fit and posture standard (26 September).** The attendant fits the armband on the **thick part of the left forearm** and physically checks the fit before starting. Both hands rest in the lap; no phone use by the participant. Keep the left arm resting for the whole experience. For the browser task test, only the right hand moves to the mouse during load; both hands rest again in regulate and resolve. Fit checking remains the attendant's responsibility even when packets are flowing. Neither Polar's reported HR nor its skin-contact flag verifies a good fit or wear.
+
+**HR for decisions comes from accepted PPI intervals, never Polar's separate HR number.** The latter is diagnostic only, including when carried inside a PPI sample. Do not use it to decide baseline quality, activation, regulate outcome, confidence, wear or when to start/stop. A low device HR is not a reason to override interval-derived session decisions; see the paired-rest finding in `docs/known-limits.md`.
+
 The travel router **must reserve fixed DHCP addresses for both laptop and Android phone**.
 Use the phone's per-network stable MAC when configuring its reservation; verify the addresses
 after reconnecting. If either address changes, stop the launcher and correct the reservations
@@ -69,7 +106,7 @@ and command. Do not widen the allowed source to a subnet. Do not port-forward ei
 
 Prepare the optional production MQTT dependencies using the project's `mqtt` extra in the
 project environment (`python -m pip install -e ".[mqtt]"`); this is an operator setup step, not
-an automatic installation by the launcher. Run MQTT booth mode from **Administrator PowerShell**
+an automatic installation by the launcher. Run either MQTT mode from **Administrator PowerShell**
 so it can create and remove its temporary firewall rule. Ordinary localhost synthetic tests do
 not need elevation or MQTT dependencies.
 
@@ -151,7 +188,8 @@ Inspect/change the mapping without editing code:
 
 In test mode, a separate third task monitor can use `--task-display 2`; in that layout both browser
 screens are full-screen. `--task-display` is rejected with `--booth`, where no browser task exists.
-The spectator cannot share the console or task display. Missing displays are an error before
+Except for explicit `--single-display-test`, the spectator cannot share the console or task display.
+Missing displays are an error before
 processes start, not an excuse to silently cover the console.
 
 For browser-task testing, pass the **whole task monitor's measured physical width**, not the
@@ -226,6 +264,20 @@ starts a **new idle bridge and session ID**; the visitor must start again. Nothi
 replays the interrupted session. The restarted console says so plainly. Surviving browsers
 reconnect by their existing live-client code. The supervisor also detects an unresponsive
 renderer and a responsive page whose feed never reconnects to a healthy bridge.
+
+**Edge startup handoff (26 September).** From Administrator PowerShell, Edge's initial process
+can exit successfully while its real browser continues inside the same launcher-owned Windows
+Job. That exit alone is not a crash: the supervisor retains the Job and checks the actual page
+and connection on the usual deadlines. The browser PID in status comes from browser telemetry
+and must belong to that Job; `wrapper_pid` records the original process. An empty Job, a nonzero
+initial exit or failed page health still triggers recovery. Q still closes the entire owned
+process family. No browser security flag, UAC setting or external browser process is changed.
+Visible-window lookup also uses the owned Job, not the exited wrapper PID, and matches the
+Prism page title so Edge's own dialogs are not mistaken for the application window. Status
+includes the observed window bounds when placement fails. Owned pages open in InPrivate mode
+to avoid the account sign-in/sync setup dialog that appeared in fresh app-mode profiles on this
+laptop. This changes only the launcher-owned browser invocation, not the user's Edge settings;
+InPrivate is not a claim that the browser makes no background network requests.
 
 Process checks run every 250 ms, browser health checks every second, with a 15 s startup
 allowance and a 5 s health timeout after first successful readiness. Restart backoff is 1 s.

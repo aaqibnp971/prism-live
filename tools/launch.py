@@ -40,6 +40,7 @@ STARTUP_TIMEOUT = 15.0
 HEALTH_TIMEOUT = 5.0
 PROBE_INTERVAL = 1.0
 ROLES = ("bridge", "task", "spectator")  # Default testing configuration, loopback only.
+BROWSER_TITLES = {"task": "Prism Live — Load Task", "spectator": "Prism Live — Spectator"}
 
 
 @dataclass(frozen=True)
@@ -105,12 +106,19 @@ def list_displays() -> list[Display]:
 
 
 def display_roles(
-    displays: list[Display], console: int, task: int | None, spectator: int
+    displays: list[Display],
+    console: int,
+    task: int | None,
+    spectator: int,
+    *,
+    single_display_test: bool = False,
 ) -> dict[str, Display]:
+    if single_display_test and not (console == task == spectator):
+        raise ValueError("Single-display testing must tile all three roles on the console display")
     requested = {"console": console, "spectator": spectator}
     if task is not None:
         requested["task"] = task
-    if spectator in (console, task):
+    if not single_display_test and spectator in (console, task):
         raise ValueError("The spectator needs its own display; do not hide the console or task.")
     available = {display.index: display for display in displays}
     if any(index not in available for index in requested.values()):
@@ -124,6 +132,14 @@ def display_roles(
 def role_bounds(config: Config, role: str) -> tuple[int, int, int, int]:
     """Booth mode uses whole displays; default browser testing shares the laptop."""
     display = config.displays[role]
+    if config.single_display_test:
+        task_width = round(display.width * 0.65)
+        console_height = display.height // 2
+        if role == "task":
+            return display.x, display.y, task_width, display.height
+        y = display.y if role == "console" else display.y + console_height
+        height = console_height if role == "console" else display.height - console_height
+        return display.x + task_width, y, display.width - task_width, height
     shared = (
         config.browser_task and config.displays["task"].index == config.displays["console"].index
     )
@@ -160,8 +176,10 @@ class Config:
     status_dir: Path = ROOT / "logs" / "launcher"
     headless: bool = False
     booth: bool = False
+    single_display_test: bool = False
     lan_ip: str | None = None
     packet_source: str = "synthetic"
+    mqtt_bind: str | None = None
     mqtt_phone_ip: str | None = None
     mqtt_port: int = 1883
     mqtt_broker_port: int = 1884
@@ -195,6 +213,15 @@ class Config:
     def bridge_status(self) -> Path:
         return self.status_dir / "bridge.json"
 
+    @property
+    def mqtt_bind_host(self) -> str:
+        # MQTT ingress is independent of the WebSocket listener: browser tests keep
+        # task events on localhost even while the phone sends real PPI over the LAN.
+        address = self.mqtt_bind or (self.lan_ip if self.booth else None)
+        if address is None:
+            raise ValueError("MQTT requires an explicit laptop LAN address")
+        return address
+
 
 def bridge_command(config: Config, generation: int) -> list[str]:
     command = [
@@ -219,11 +246,11 @@ def bridge_command(config: Config, generation: int) -> list[str]:
         config.packet_source,
     ]
     if config.packet_source == "mqtt":
-        if not config.booth or config.mqtt_phone_ip is None:
-            raise ValueError("MQTT requires booth mode and the phone's fixed IPv4 address")
+        if config.mqtt_phone_ip is None:
+            raise ValueError("MQTT requires the phone's fixed IPv4 address")
         command += [
             "--mqtt-bind",
-            config.bind_host,
+            config.mqtt_bind_host,
             "--mqtt-phone-ip",
             config.mqtt_phone_ip,
             "--mqtt-port",
@@ -246,6 +273,8 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
     if role not in config.roles or role == "bridge":
         raise ValueError(f"Browser role {role!r} is not enabled in this mode")
     query: dict[str, str | float] = {"ws": f"ws://{config.bind_host}:{config.port}/live"}
+    if config.single_display_test:
+        query["tiled"] = "1"
     if role == "task":
         fraction = (
             1.0 if config.headless else (role_bounds(config, role)[2] / config.displays[role].width)
@@ -264,6 +293,7 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
     url += "?" + urllib.parse.urlencode(query)
     command = [
         str(config.browser),
+        "--inprivate",  # No account sign-in / sync setup dialog in an owned booth profile.
         f"--user-data-dir={profile}",
         "--remote-debugging-port=0",
         "--remote-debugging-address=127.0.0.1",
@@ -283,7 +313,9 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
         return command + ["--headless=new", "--disable-gpu", "--window-size=1920,1080", url]
     x, y, width, height = role_bounds(config, role)
     command += [f"--window-position={x},{y}", f"--window-size={width},{height}"]
-    if role == "task" and config.displays["task"].index == config.displays["console"].index:
+    if config.single_display_test or (
+        role == "task" and config.displays["task"].index == config.displays["console"].index
+    ):
         return command + [f"--app={url}"]
     return command + ["--kiosk", url, "--edge-kiosk-type=fullscreen"]
 
@@ -417,12 +449,16 @@ class ManagedChild:
     positioned: bool = False
     was_ready: bool = False
     launched_epoch: float = field(default_factory=time.time)
+    browser_pid: int | None = None
+    handoff_logged: bool = False
+    window_bounds: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 def position_window(child: ManagedChild, config: Config) -> bool:
     """Position only a visible top-level window belonging to a launcher-owned process."""
     user = ctypes.WinDLL("user32", use_last_error=True)
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user.IsWindowVisible.argtypes = [wintypes.HWND]
     user.MoveWindow.argtypes = [
         wintypes.HWND,
@@ -445,17 +481,26 @@ def position_window(child: ManagedChild, config: Config) -> bool:
     ]
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     found = []
-    owned_pids = child.job.pids() if child.role == "bridge" else {child.process.pid}
+    # Both Console Host and Edge may hand off to a descendant. Never look only for
+    # the exited wrapper: that hides a live window and makes positioning time out.
+    owned_pids = child.job.pids()
+    expected_title = BROWSER_TITLES.get(child.role)
 
     @callback_type
     def collect(window, _data):
         pid = wintypes.DWORD()
         user.GetWindowThreadProcessId(window, ctypes.byref(pid))
         if pid.value in owned_pids and user.IsWindowVisible(window):
+            if expected_title is not None:
+                title = ctypes.create_unicode_buffer(512)
+                user.GetWindowTextW(window, title, len(title))
+                if not title.value.startswith(expected_title):
+                    return True  # An owned browser dialog is not the application window.
             found.append(window)
         return True
 
     user.EnumWindows(collect, 0)
+    child.window_bounds = []
     if not found:
         return False
     role = "console" if child.role == "bridge" else child.role
@@ -465,6 +510,9 @@ def position_window(child: ManagedChild, config: Config) -> bool:
         rect = wintypes.RECT()
         if not user.GetWindowRect(window, ctypes.byref(rect)):
             raise ctypes.WinError(ctypes.get_last_error())
+        child.window_bounds.append(
+            (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+        )
         # Console Host quantizes its size to character cells and the available desktop.
         height_tolerance = 64 if role == "console" else 2
         correct = (
@@ -505,10 +553,38 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         temporary.replace(path)
 
 
+async def browser_debug(url: str, method: str, **params: Any) -> dict:
+    """Read browser telemetry; never send input or session-control commands."""
+    async with connect(url, open_timeout=0.5, close_timeout=0.1) as socket:
+        await socket.send(json.dumps({"id": 1, "method": method, "params": params}))
+        while True:
+            reply = json.loads(await asyncio.wait_for(socket.recv(), 0.5))
+            if reply.get("id") == 1:
+                if "error" in reply or "exceptionDetails" in reply.get("result", {}):
+                    raise RuntimeError("Browser page is not responding normally")
+                return reply["result"]
+
+
+def owned_browser_pid(processes: list[dict], owned: set[int]) -> int:
+    """A handoff may change the root PID, but cannot expand our process ownership."""
+    candidates = [p["id"] for p in processes if p.get("type") == "browser"]
+    if len(candidates) != 1 or candidates[0] not in owned:
+        raise RuntimeError("Browser handoff did not identify exactly one owned browser process")
+    return candidates[0]
+
+
 async def browser_probe(child: ManagedChild, config: Config) -> tuple[bool, bool]:
     """Check real page responsiveness and feed indicator, without injecting events/data."""
     assert child.profile
-    port = int((child.profile / "DevToolsActivePort").read_text().splitlines()[0])
+    endpoint = (child.profile / "DevToolsActivePort").read_text().splitlines()
+    port = int(endpoint[0])
+    if child.process.poll() == 0:
+        owned = child.job.pids()
+        if child.browser_pid not in owned:
+            info = await browser_debug(
+                f"ws://127.0.0.1:{port}{endpoint[1]}", "SystemInfo.getProcessInfo"
+            )
+            child.browser_pid = owned_browser_pid(info["processInfo"], owned)
 
     def get_targets():
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=0.5) as response:
@@ -531,25 +607,14 @@ async def browser_probe(child: ManagedChild, config: Config) -> tuple[bool, bool
         "connected:document.getElementById('link-dot')?.dataset.state==='connected',"
         "width:innerWidth,scale:devicePixelRatio})"
     )
-    async with connect(
-        target["webSocketDebuggerUrl"], open_timeout=0.5, close_timeout=0.1
-    ) as socket:
-        await socket.send(
-            json.dumps(
-                {
-                    "id": 1,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": expression, "returnByValue": True},
-                }
-            )
-        )
-        while True:
-            reply = json.loads(await asyncio.wait_for(socket.recv(), 0.5))
-            if reply.get("id") == 1:
-                if "error" in reply or "exceptionDetails" in reply.get("result", {}):
-                    raise RuntimeError("Browser page is not responding normally")
-                value = reply["result"]["result"]["value"]
-                return bool(value["ready"]), bool(value["connected"])
+    result = await browser_debug(
+        target["webSocketDebuggerUrl"],
+        "Runtime.evaluate",
+        expression=expression,
+        returnByValue=True,
+    )
+    value = result["result"]["value"]
+    return bool(value["ready"]), bool(value["connected"])
 
 
 class Supervisor:
@@ -676,6 +741,11 @@ class Supervisor:
             child.positioned = position_window(child, self.config)
             if not child.positioned:
                 child.ready = child.connected = False
+                role = "console" if child.role == "bridge" else child.role
+                child.error = (
+                    f"window placement: expected {role_bounds(self.config, role)}, "
+                    f"observed {child.window_bounds}"
+                )
                 return
         if child.role == "bridge":
             status = read_json(self.config.bridge_status)
@@ -691,6 +761,7 @@ class Supervisor:
             child.ready = bool(current and fresh and status.get("ready") and audio_live)
             child.connected = child.ready
             if child.ready:
+                child.error = None
                 child.last_healthy = now
                 child.was_ready = True
             return
@@ -736,6 +807,15 @@ class Supervisor:
                 continue
             child = self.children[role]
             exit_code = child.process.poll()
+            # Edge started by an elevated launcher can exit 0 after handing off to
+            # another browser process inside the SAME owned Job. Keep that Job alive;
+            # page/connection health still has to pass the ordinary timeouts below.
+            # A nonzero exit or an empty Job is a real exit, never an accepted handoff.
+            if role != "bridge" and exit_code == 0 and child.job.pids():
+                if not child.handoff_logged:
+                    self.event("browser_handoff", role, wrapper_pid=child.process.pid)
+                    child.handoff_logged = True
+                continue
             if exit_code is not None:
                 status = read_json(self.config.bridge_status) if role == "bridge" else {}
                 clean_exit = (
@@ -772,6 +852,8 @@ class Supervisor:
                 "connected": child.connected,
                 "profile": str(child.profile) if child.profile else None,
                 "error": child.error,
+                "positioned": child.positioned,
+                "window_bounds": child.window_bounds,
             }
             for role, child in self.children.items()
         }
@@ -779,12 +861,16 @@ class Supervisor:
             child = self.children["bridge"]
             if bridge.get("pid") in (child.job.pids() | {child.process.pid}):
                 children["bridge"]["pid"] = bridge["pid"]
+        for role, child in self.children.items():
+            if role != "bridge" and child.browser_pid in child.job.pids():
+                children[role]["pid"] = child.browser_pid
         value = {
             "pid": os.getpid(),
             "updated": time.time(),
             "headless": self.config.headless,
             "browser_task": self.config.browser_task,
             "booth": self.config.booth,
+            "single_display_test": self.config.single_display_test,
             "packet_source": self.config.packet_source,
             "mqtt_firewall": self.firewall.scope if self.firewall is not None else None,
             "stopping": self.stopping,
@@ -818,7 +904,7 @@ class Supervisor:
         try:
             if self.config.packet_source == "mqtt":
                 self.firewall = MqttFirewall(
-                    self.config.bind_host,
+                    self.config.mqtt_bind_host,
                     self.config.mqtt_phone_ip,
                     self.config.python,
                     port=self.config.mqtt_port,
@@ -864,11 +950,11 @@ def local_lan_addresses() -> list[str]:
     )
 
 
-def select_lan_address(requested: str | None) -> str:
+def select_lan_address(requested: str | None, *, flag: str = "--lan-ip") -> str:
     candidates = local_lan_addresses()
     if requested is not None:
         if requested not in candidates:
-            raise ValueError(f"--lan-ip must be a local private IPv4 address: {candidates}")
+            raise ValueError(f"{flag} must be a local private IPv4 address: {candidates}")
         return requested
     if len(candidates) != 1:
         raise ValueError(
@@ -889,11 +975,20 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--lan-ip", help="Booth router's local IPv4 adapter; requires --booth")
     parser.add_argument(
+        "--mqtt-bind",
+        help="Explicit laptop LAN IPv4 for real MQTT browser tests; trusted Wi-Fi only",
+    )
+    parser.add_argument(
+        "--single-display-test",
+        action="store_true",
+        help="Tile task, console and spectator preview on the console display; testing only",
+    )
+    parser.add_argument(
         "--packet-source",
         choices=("synthetic", "mqtt"),
         help="Default: synthetic in local tests, MQTT in booth mode",
     )
-    parser.add_argument("--mqtt-phone-ip", help="Android phone's fixed IPv4 on the booth router")
+    parser.add_argument("--mqtt-phone-ip", help="Android phone's fixed IPv4 on the trusted router")
     parser.add_argument("--mqtt-port", type=int, default=1883)
     parser.add_argument("--mqtt-broker-port", type=int, default=1884)
     parser.add_argument("--mqtt-topic-prefix", default="psl/prism-probe")
@@ -902,7 +997,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--task-display", type=int, help="Testing mode only; default shares the console display"
     )
-    parser.add_argument("--spectator-display", type=int, default=1)
+    parser.add_argument(
+        "--spectator-display",
+        type=int,
+        help="Default: 1; console display in single-display testing",
+    )
     parser.add_argument(
         "--headless", action="store_true", help="Recovery diagnostic, not booth mode"
     )
@@ -919,6 +1018,14 @@ def main(argv: list[str] | None = None) -> None:
         if args.list_displays:
             print(json.dumps([asdict(display) for display in list_displays()], indent=2))
             return
+        if args.single_display_test:
+            if args.booth or args.headless:
+                raise ValueError("--single-display-test requires visible browser test mode")
+            if any(
+                index is not None and index != args.console_display
+                for index in (args.task_display, args.spectator_display)
+            ):
+                raise ValueError("--single-display-test tiles all roles on --console-display")
         if args.task_display is not None and args.booth:
             raise ValueError(
                 "--task-display is testing only; booth mode never opens a browser task"
@@ -926,21 +1033,27 @@ def main(argv: list[str] | None = None) -> None:
         if args.lan_ip is not None and not args.booth:
             raise ValueError("--lan-ip requires --booth; testing stays on localhost")
         packet_source = args.packet_source or ("mqtt" if args.booth else "synthetic")
+        mqtt_bind = None
         if packet_source == "mqtt":
-            if not args.booth or args.lan_ip is None or args.mqtt_phone_ip is None:
+            if args.booth and args.mqtt_bind is not None:
+                raise ValueError("Booth MQTT uses --lan-ip; --mqtt-bind is for browser testing")
+            mqtt_address = args.lan_ip if args.booth else args.mqtt_bind
+            if mqtt_address is None or args.mqtt_phone_ip is None:
                 raise ValueError(
-                    "MQTT requires --booth, explicit --lan-ip and --mqtt-phone-ip; "
-                    "reserve both addresses on your own travel router"
+                    "MQTT requires --mqtt-phone-ip and an explicit laptop address: "
+                    "--lan-ip in booth mode, --mqtt-bind in browser test mode; trusted router only"
                 )
             private_ipv4(args.mqtt_phone_ip)
-            if args.mqtt_phone_ip == args.lan_ip:
+            if args.mqtt_phone_ip == mqtt_address:
                 raise ValueError("Laptop and phone must have different fixed addresses")
             if not all(1024 <= port <= 65535 for port in (args.mqtt_port, args.mqtt_broker_port)):
                 raise ValueError("MQTT ports must be between 1024 and 65535")
             if len({args.port, args.mqtt_port, args.mqtt_broker_port}) != 3:
                 raise ValueError("WebSocket, MQTT LAN and MQTT loopback ports must differ")
-        elif args.mqtt_phone_ip is not None:
-            raise ValueError("--mqtt-phone-ip requires --packet-source mqtt")
+            if not args.booth:
+                mqtt_bind = select_lan_address(mqtt_address, flag="--mqtt-bind")
+        elif args.mqtt_phone_ip is not None or args.mqtt_bind is not None:
+            raise ValueError("--mqtt-bind and --mqtt-phone-ip require --packet-source mqtt")
         if not args.python.is_file():
             raise ValueError(f"Python environment missing: {args.python}; nothing was installed.")
         if not 1 <= args.port <= 65535:
@@ -955,8 +1068,10 @@ def main(argv: list[str] | None = None) -> None:
             status_dir=args.status_dir.resolve(),
             headless=args.headless,
             booth=args.booth,
+            single_display_test=args.single_display_test,
             lan_ip=select_lan_address(args.lan_ip) if args.booth else None,
             packet_source=packet_source,
+            mqtt_bind=mqtt_bind,
             mqtt_phone_ip=args.mqtt_phone_ip,
             mqtt_port=args.mqtt_port,
             mqtt_broker_port=args.mqtt_broker_port,
@@ -974,7 +1089,10 @@ def main(argv: list[str] | None = None) -> None:
                 (args.console_display if args.task_display is None else args.task_display)
                 if not args.booth
                 else None,
-                args.spectator_display,
+                args.spectator_display
+                if args.spectator_display is not None
+                else (args.console_display if args.single_display_test else 1),
+                single_display_test=args.single_display_test,
             )
         else:
             print("HEADLESS RECOVERY DIAGNOSTIC — display placement is not tested.", flush=True)
@@ -985,10 +1103,18 @@ def main(argv: list[str] | None = None) -> None:
                 flush=True,
             )
         else:
-            print("TEST MODE: localhost, browser task producer; no LAN listener.", flush=True)
+            network = "only MQTT listens on LAN" if packet_source == "mqtt" else "no LAN listener"
+            print(f"TEST MODE: localhost WebSocket, browser task producer; {network}.", flush=True)
+        if config.single_display_test:
+            print(
+                "ONE-SCREEN TEST: task left; console upper right; spectator preview lower right. "
+                "This is not a booth readability check.",
+                flush=True,
+            )
         if config.packet_source == "mqtt":
             print(
-                f"Phone MQTT: {config.bind_host}:{config.mqtt_port}; only {config.mqtt_phone_ip}. "
+                f"Phone MQTT: {config.mqtt_bind_host}:{config.mqtt_port}; "
+                f"only {config.mqtt_phone_ip}. "
                 "Keep PPI running between visitors. No stream data is proof of wear.",
                 flush=True,
             )

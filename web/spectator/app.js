@@ -32,7 +32,11 @@
   let failedOnce = false;
   let blockedConnection = null;
 
+  // The one-screen test keeps the local attendant console visible beside this preview.
+  const tiled = params.get("tiled") === "1";
+  elements.fullscreenButton.hidden = tiled;
   elements.fullscreenButton.addEventListener("click", () => {
+    if (tiled) return;
     document.documentElement.requestFullscreen?.().catch((error) => {
       console.warn("Fullscreen was refused", error);
     });

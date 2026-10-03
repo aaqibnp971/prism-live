@@ -1,12 +1,14 @@
 """Light self-checks for process ownership, restart semantics and booth display routing."""
 
 import asyncio
+import ctypes
 import json
 import sys
 import threading
 import time
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,6 +56,27 @@ def test_missing_or_overlapping_spectator_is_refused():
         launch.display_roles(displays(), 0, 0, 0)
 
 
+def test_single_display_is_explicit_and_tiles_all_roles_without_overlap(config):
+    config.single_display_test = True
+    config.headless = False
+    config.displays = launch.display_roles(displays()[:1], 0, 0, 0, single_display_test=True)
+    assert launch.role_bounds(config, "task") == (0, 0, 1248, 1080)
+    assert launch.role_bounds(config, "console") == (1248, 0, 672, 540)
+    assert launch.role_bounds(config, "spectator") == (1248, 540, 672, 540)
+    for role in ("task", "spectator"):
+        command = launch.browser_command(config, role, Path(role))
+        assert "--kiosk" not in command
+        assert command[-1].startswith("--app=")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(command[-1][6:]).query)
+        assert query["tiled"] == ["1"]
+        assert query["ws"] == ["ws://127.0.0.1:8787/live"]
+        if role == "task":
+            assert float(query["screen_width_cm"][0]) == pytest.approx(59.77 * 0.65)
+    assert "--console-fullscreen" not in launch.bridge_command(config, 0)
+    with pytest.raises(ValueError, match="all three roles"):
+        launch.display_roles(displays(), 0, 2, 1, single_display_test=True)
+
+
 def test_commands_have_no_network_control_or_standalone_mode(config):
     command = launch.bridge_command(config, 4)
     assert command[:3] == ["python.exe", "-m", "bridge.server"]
@@ -64,6 +87,7 @@ def test_commands_have_no_network_control_or_standalone_mode(config):
     assert "--console-fullscreen" not in command
     assert config.roles == ("bridge", "task", "spectator")
     browser = launch.browser_command(config, "task", Path("private-profile"))
+    assert "--inprivate" in browser
     assert "--headless=new" in browser
     parsed = urllib.parse.urlsplit(browser[-1])
     query = urllib.parse.parse_qs(parsed.query)
@@ -204,6 +228,105 @@ def test_booth_mqtt_command_keeps_phone_stream_independent_of_session(config):
     assert "--one-session" not in command
 
 
+def test_browser_mqtt_keeps_websocket_local_and_real_source_after_restart(config):
+    config.packet_source = "mqtt"
+    config.mqtt_bind = "192.168.0.39"
+    config.mqtt_phone_ip = "192.168.0.251"
+    for generation in (0, 1):
+        command = launch.bridge_command(config, generation)
+        for flag, value in {
+            "--packet-source": "mqtt",
+            "--mqtt-bind": "192.168.0.39",
+            "--mqtt-phone-ip": "192.168.0.251",
+            "--host": "127.0.0.1",
+            "--task-event-client": "task-screen",
+        }.items():
+            assert command[command.index(flag) + 1] == value
+        assert "--console-fullscreen" not in command
+    assert config.roles == ("bridge", "task", "spectator")
+
+
+def test_real_mqtt_single_display_cli(monkeypatch, capsys):
+    settings = []
+
+    class FakeSupervisor:
+        def __init__(self, config):
+            settings.append(config)
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr(launch, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["192.168.0.39"])
+    monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
+    monkeypatch.setattr(launch, "list_displays", lambda: displays()[:1])
+    launch.main(
+        [
+            "--python",
+            sys.executable,
+            "--single-display-test",
+            "--packet-source",
+            "mqtt",
+            "--mqtt-bind",
+            "192.168.0.39",
+            "--mqtt-phone-ip",
+            "192.168.0.251",
+            "--screen-width-cm",
+            "33.2",
+            "--distance-cm",
+            "80",
+        ]
+    )
+    config = settings[0]
+    assert config.bind_host == "127.0.0.1"
+    assert config.mqtt_bind_host == "192.168.0.39"
+    assert config.single_display_test and not config.booth
+    assert {d.index for d in config.displays.values()} == {0}
+    assert config.screen_width_cm == 33.2 and config.distance_cm == 80
+    output = capsys.readouterr().out
+    assert "only MQTT listens on LAN" in output
+    assert "Phone MQTT: 192.168.0.39:1883; only 192.168.0.251" in output
+    assert "ONE-SCREEN TEST" in output
+    assert "Headset connects" not in output
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--mqtt-bind", "192.168.0.39"],
+        ["--mqtt-phone-ip", "192.168.0.251"],
+        ["--mqtt-bind", "0.0.0.0", "--mqtt-phone-ip", "192.168.0.251"],
+        ["--mqtt-bind", "192.168.0.40", "--mqtt-phone-ip", "192.168.0.251"],
+        ["--mqtt-bind", "192.168.0.39", "--mqtt-phone-ip", "192.168.0.39"],
+        ["--mqtt-bind", "192.168.0.39", "--mqtt-phone-ip", "8.8.8.8"],
+        ["--mqtt-bind", "192.168.0.39", "--mqtt-phone-ip", "192.168.0.251", "--mqtt-port", "8787"],
+    ],
+)
+def test_browser_mqtt_rejects_missing_or_unsafe_addresses(extra, monkeypatch):
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["192.168.0.39"])
+    with pytest.raises(SystemExit) as error:
+        launch.main(["--packet-source", "mqtt", *extra])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--single-display-test", "--booth"],
+        ["--single-display-test", "--headless"],
+        ["--single-display-test", "--spectator-display", "1"],
+        ["--single-display-test", "--task-display", "2"],
+        ["--mqtt-bind", "192.168.0.39"],
+        ["--booth", "--mqtt-bind", "192.168.0.39"],
+    ],
+)
+def test_cli_rejects_conflicting_test_flags(args):
+    with pytest.raises(SystemExit) as error:
+        launch.main(args)
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize(
     "extra", [[], ["--lan-ip", "192.168.1.201"], ["--mqtt-phone-ip", "192.168.1.135"]]
 )
@@ -242,7 +365,10 @@ def test_booth_defaults_mqtt_with_explicit_addresses(monkeypatch):
 
 
 @pytest.mark.parametrize("fail_open", [False, True])
-def test_supervisor_owns_firewall_and_cleans_up_on_startup_failure(config, monkeypatch, fail_open):
+@pytest.mark.parametrize("booth", [False, True])
+def test_supervisor_owns_firewall_and_cleans_up_on_startup_failure(
+    config, monkeypatch, fail_open, booth
+):
     events = []
 
     class Firewall:
@@ -261,9 +387,12 @@ def test_supervisor_owns_firewall_and_cleans_up_on_startup_failure(config, monke
             events.append("close")
 
     async def check():
-        config.booth = True
+        config.booth = booth
         config.packet_source = "mqtt"
-        config.lan_ip = "192.168.1.201"
+        if booth:
+            config.lan_ip = "192.168.1.201"
+        else:
+            config.mqtt_bind = "192.168.1.201"
         config.mqtt_phone_ip = "192.168.1.135"
         sup = launch.Supervisor(config)
 
@@ -406,6 +535,159 @@ def test_nonzero_exit_restarts_only_dead_child(config):
     asyncio.run(check())
 
 
+def test_clean_browser_handoff_keeps_owned_descendants_and_healthy_page(config, monkeypatch):
+    async def check():
+        sup = supervisor(config)
+        child = add_child(sup, "task", exit_code=0)
+        child.job.owned_pids = {555, 556}
+        child.browser_pid = 555
+        sup.restart_at.update(bridge=float("inf"), spectator=float("inf"))
+
+        async def probe(observed, settings):
+            assert observed is child
+            return True, True
+
+        monkeypatch.setattr(launch, "browser_probe", probe)
+        for _ in range(2):
+            assert await sup.step()
+            assert sup.children["task"] is child and not child.job.closed
+        assert sup.generations["task"] == 0
+        assert [e["event"] for e in sup.events] == ["browser_handoff"]
+        snapshot = sup.snapshot()["children"]["task"]
+        assert snapshot["pid"] == 555
+        assert snapshot["wrapper_pid"] == child.process.pid
+        # Clean shutdown owns the full Job even though its initial process already exited.
+        await sup.close()
+        assert child.job.closed
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("exit_code,owned", [(0, set()), (1, {555})])
+def test_browser_exit_without_clean_owned_handoff_restarts(config, monkeypatch, exit_code, owned):
+    async def check():
+        sup = supervisor(config)
+        child = add_child(sup, "spectator", exit_code=exit_code)
+        child.job.owned_pids = owned
+        sup.restart_at.update(bridge=float("inf"), task=float("inf"))
+        assert await sup.step()
+        assert child.job.closed
+        assert "spectator" not in sup.children
+        assert sup.generations["spectator"] == 1
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("was_ready", [False, True])
+def test_browser_handoff_does_not_hide_dead_or_hung_page(config, monkeypatch, was_ready):
+    async def check():
+        sup = supervisor(config)
+        child = add_child(sup, "task", exit_code=0, launched=time.monotonic() - 20)
+        child.job.owned_pids = {555}  # Could be only a leftover helper process.
+        child.was_ready = was_ready
+        sup.restart_at.update(bridge=float("inf"), spectator=float("inf"))
+
+        async def probe(*_):
+            return False, False
+
+        monkeypatch.setattr(launch, "browser_probe", probe)
+        assert await sup.step()
+        assert child.job.closed
+        assert sup.generations["task"] == 1
+
+    asyncio.run(check())
+
+
+def test_handoff_browser_pid_must_be_owned_and_unambiguous():
+    assert (
+        launch.owned_browser_pid(
+            [
+                {"type": "renderer", "id": 123},
+                {"type": "browser", "id": 456},
+            ],
+            {123, 456},
+        )
+        == 456
+    )
+    for processes in (
+        [],
+        [{"type": "browser", "id": 789}],
+        [{"type": "renderer", "id": 123}],
+        [{"type": "browser", "id": 123}, {"type": "browser", "id": 456}],
+    ):
+        with pytest.raises(RuntimeError, match="owned browser"):
+            launch.owned_browser_pid(processes, {123, 456})
+
+
+def test_window_positioning_finds_handed_off_browser_but_never_foreign_window(config, monkeypatch):
+    """Exercise EnumWindows selection, not just the headless process-health path."""
+    config.single_display_test = True
+    config.headless = False
+    config.displays = launch.display_roles(displays()[:1], 0, 0, 0, single_display_test=True)
+    sup = launch.Supervisor(config)
+    child = add_child(sup, "task", exit_code=0)
+    child.job.owned_pids = {555}
+    title = launch.BROWSER_TITLES["task"]
+    windows = {
+        101: (555, [0, 0, 1560, 1080], title),
+        102: (999, [10, 10, 500, 500], title),
+        103: (555, [100, 100, 655, 618], "Microsoft Edge setup"),
+    }
+    moved = []
+
+    def enumerate_windows(callback, data):
+        for window in windows:
+            callback(window, data)
+        return True
+
+    def window_pid(window, pointer):
+        ctypes.cast(pointer, ctypes.POINTER(launch.wintypes.DWORD))[0] = windows[window][0]
+        return 1
+
+    def window_rect(window, pointer):
+        rect = ctypes.cast(pointer, ctypes.POINTER(launch.wintypes.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = windows[window][1]
+        return True
+
+    def move_window(window, x, y, width, height, repaint):
+        moved.append(window)
+        windows[window][1][:] = [x, y, x + width, y + height]
+        return True
+
+    def window_title(window, buffer, size):
+        buffer.value = windows[window][2]
+        return len(buffer.value)
+
+    user = SimpleNamespace(
+        EnumWindows=enumerate_windows,
+        GetWindowThreadProcessId=window_pid,
+        GetWindowTextW=window_title,
+        IsWindowVisible=lambda window: True,
+        GetWindowRect=window_rect,
+        MoveWindow=move_window,
+        ShowWindow=lambda *_: True,
+        SetWindowPos=lambda *_: True,
+    )
+    monkeypatch.setattr(launch.ctypes, "WinDLL", lambda *_, **__: user, raising=False)
+    monkeypatch.setattr(
+        launch.ctypes, "WINFUNCTYPE", lambda *_: lambda callback: callback, raising=False
+    )
+    assert not launch.position_window(child, config)  # First poll applies the correct bounds.
+    assert launch.position_window(child, config)  # Next poll verifies them.
+    assert moved == [101]
+    assert windows[101][1] == [0, 0, 1248, 1080]
+    assert windows[102][1] == [10, 10, 500, 500]
+    assert windows[103][1] == [100, 100, 655, 618]
+    child.job.owned_pids.clear()
+    assert not launch.position_window(child, config)
+
+
+def test_browser_window_titles_match_the_real_pages():
+    for role, title in launch.BROWSER_TITLES.items():
+        html = (launch.ROOT / "web" / role / "index.html").read_text(encoding="utf-8")
+        assert f"<title>{title}</title>" in html
+
+
 def test_clean_console_exit_is_intentional_shutdown(config):
     async def check():
         sup = supervisor(config)
@@ -478,8 +760,10 @@ def test_bridge_health_rejects_stale_foreign_pid_and_generation(config):
             await sup._health(child, time.monotonic())
             assert not child.ready
         launch.write_json(config.bridge_status, valid)
+        child.error = "previous window placement failure"
         await sup._health(child, time.monotonic())
         assert child.ready
+        assert child.error is None
 
     asyncio.run(check())
 
