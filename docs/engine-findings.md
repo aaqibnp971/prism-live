@@ -194,7 +194,7 @@ Values are effective arousal / load / readiness. The load input is held at 0.65 
 
 Arousal 0.32, cognitive_load 0.28, readiness 0.62 gives brightness 0.564 → **2,403 Hz**, density 0.558 → **pulse on and air on**, bed 0.47 and sub 0.43, both **thinner** than neutral. The script asks for 620 Hz, everything subtracted, bed and sub thicker. The body's own directions push the mapping the wrong way: falling load thins the bed and rising readiness thins the sub.
 
-Under the authority plan as first written, no segment follows the script: baseline is a neutral PSV, 2,282 Hz with pulse opening at its first 11 s boundary; load at a 0.20 ceiling moves the cutoff about 50 Hz when arousal and load rise together and air never opens (the whole reachable span at 0.20 is 1,219 to 4,272 Hz, only with arousal and load at opposite extremes); regulate ends inverted as above; resolve tapers back to 2,282 Hz with pulse on. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B (decision 3).
+Under the authority plan as first written, no segment follows the script: baseline is a neutral PSV, 2,282 Hz with pulse opening at its first 11 s boundary; load at a 0.20 ceiling moves the cutoff about 50 Hz when arousal and load rise together and air never opens (the whole reachable span at 0.20 is 1,219 to 4,272 Hz, only with arousal and load at opposite extremes); regulate ends inverted as above; resolve tapers back to 2,282 Hz with pulse on. Body-derived PSV was selected after the Week B listening comparison on 2 October 2026 (decision 3); this mismatch is therefore an accepted limit rather than hidden by a designed pose.
 
 ### Gate timing
 
@@ -239,7 +239,7 @@ CLAUDE.md was corrected on 11 September. The experience script and sound brief r
 
 1. **One scene, all four stems, coprime loops kept. No crossfades.** Closes open question 2 and makes open question 3 moot.
 2. **Air is re-scripted to fit the engine:** it gates out before pulse in one 1.5 s fade, and there is no air tail in resolve. Nothing moves out of the engine.
-3. **Body-derived versus designed-pose PSV is deferred to Week B**, to be decided by listening, not on paper. Prompt 2.5 makes the source switchable at runtime.
+3. **Body-derived versus designed-pose PSV was deferred to Week B. Body was chosen on 2 October 2026 after listening.** It is the more honest claim because the music follows the person's authority-scaled readings, with a less predictable arc accepted as the tradeoff. Prompt 2.5 keeps pose switchable for comparison and diagnosis.
 4. **prism-live owns the audio device** (CLAUDE.md hard rule 8) through a native shim: pull with `prism_render`, 62 Hz high-pass, heartbeat layer, session gain, true-peak limiter. Prompts 2.5 to 2.7 were rewritten to match.
 
 **Closed 14 September: where the `acbfd50` library gets built.** It is built from upstream `acbfd50` and committed at `vendor/lib/libprism_core.dll`. `prism_version()` returns `"0.3.0"`. The recipe, toolchain, flags and SHA-256 are in `vendor/lib/README.md`, and the build is reproducible. It came from a fresh clone at `vendor/prism-core/`, which is gitignored; `D:\ANP\prism-core` was not touched. Still no tags exist on either remote.

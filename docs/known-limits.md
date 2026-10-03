@@ -5,6 +5,34 @@ each names who has to handle it.
 
 ---
 
+## Paired rest and placement: left forearm standard (26 September 2026)
+
+The paired captures of 24 September used the same armband and phone route, on the thick part
+of the left forearm, both hands resting, no phone use, five minutes each after the same
+one-minute PPI settling period. Participants are labelled **A** and **B** only. The unchanged
+baseline gate passed **243 of 257 windows for A** and **172 of 257 for B**, compared with
+**37 of 257** in B's earlier forearm recording, subsequently reported to include phone use.
+These are overlapping 45-second windows at one-second start intervals plus the final endpoint,
+not 257 independent trials. The comparison supports a rest/fit protocol; it does not isolate
+phone use as the cause or establish which individual optical intervals are real cardiac beats.
+No threshold, filter or gate was changed.
+
+**The device's own HR number must never drive decisions.** Near the end of A's still capture,
+Polar reported roughly 72 -> 44 -> **30 bpm** while most PPI intervals remained around 800 ms;
+error estimates rose sharply. There was also one long 2445 ms interval, so this is not a claim
+that every interval stayed normal. B had brief low-rate reporting clusters too. This is evidence
+of inconsistent optical outputs, not a diagnosis of either participant. `/hr` and each PPI
+sample's `hr` remain diagnostic only: never use them for baseline, load/regulate judgement,
+PSV/confidence, wear, or start/stop decisions. Session HR is derived from accepted PPI intervals.
+
+The operating standard is now **left forearm, thick part, both hands resting; the attendant
+physically checks the fit** (`project-plan.md` §8 and `launcher.md`). The browser test's right-hand
+mouse task with the left hand resting is a different condition: movement-related degradation
+during load still needs a full live-session check. Passing at rest does not establish task or
+booth reliability. Raw captures, per-interval decisions and full comparisons remain local under
+gitignored `private-data/physiology/`; only the explicitly requested aggregate findings are
+recorded here. No physiological recording becomes a test fixture.
+
 ## Production phone PPI route: delayed measured playback (23 September 2026)
 
 This replaces prompt 2.8, **not** the separate ectopic-threshold retuning task. Optical PPI
@@ -109,6 +137,20 @@ a new baseline's heartbeat is silent for roughly its first 12 s while this visit
 fills; the surrounding field/bed and baseline capture continue normally. The final delayed tail
 is not extended past the scripted ending. These are explicit consequences of truthful delayed
 playback, not a new warm-up in the phone or a change to the session cap.
+
+**First audible heartbeat intro (29 September):** baseline holds the heartbeat
+level at −18 dBFS until the first accepted measured beat successfully handed to
+the shim is scheduled to play. The −18 → −13 ramp then spans 12 s from that
+`t_play`, not from session entry or packet arrival. The bridge issues the ramp
+one limiter latency early on its existing 5 ms control poll. Rejected/predicted
+beats and synchronously refused pushes cannot start it; a new baseline resets
+it, and stop/segment transitions cancel pending commands. The existing native
+late/full-slot checks remain authoritative: successful enqueue is not a DAC
+acknowledgement. Actual onset still depends on the device anchor and callback;
+this change does not certify hardware timing or change beat scheduling. A
+same-session device restart restores the envelope relative to its saved first
+beat, not elapsed baseline time. No-beat baselines never spend the intro ramp.
+Listening comparisons and all source physiology remain private and gitignored.
 
 **Review:** one heavy-review round of three agents, followed by regression self-checks only.
 Fixed malformed numeric PPI crashing ingestion, invalid rejected-message timestamps, synthetic
@@ -599,7 +641,12 @@ These all need hardware and cannot be verified in software:
 
 ### The PSV feed
 
-All provisional until Week B listening.
+**Week B decision, 2 October 2026:** production defaults to the body source. This is the more
+honest claim because the engine follows the person's authority-scaled readings; it does not pass
+off a designed pose as their response. The tradeoff is a less predictable arc: the filter, gates
+and gains can differ materially from the targets in `docs/experience-script.md` §2. The pose source
+remains switchable for comparison and diagnosis. `assets/scenes.json` now loads the accepted V2
+stems from gitignored `assets/stems/v2/`; a booth checkout must provision those four local files.
 
 - **The phase-aware gate plan is implemented in prompt 2.7.** A gate opens at density ≥ threshold
   + 0.01 and closes at ≤ threshold − 0.01. `bridge/phase.py` reads the shim's rendered-frame
@@ -1010,10 +1057,11 @@ pixels and clears queued beats, with the existing visible marker. Renderer unava
 shown as FIELD UNAVAILABLE rather than an invented scene. Unity must port the mapping and
 limits, not just the pictures; Quest 90 fps and optical output remain unverified.
 
-## The PSV, for Week B and for validation
+## The PSV, after the Week B selection and for validation
 
 **Handled by:** the Week B listening pass (prompt 2.5), the recorded real session, and whoever owns
-the VR handoff. `bridge/psv.py` was built and tuned on the synthetic armband only.
+the VR handoff. Body was selected as the production source on 2 October 2026. `bridge/psv.py` was
+built and tuned on the synthetic armband only.
 
 - **Every constant is provisional.** At the 4 bpm unit, the arousal scale reads +6 bpm as 0.67, +15
   as 0.85 and +37 as 0.99. Readiness confidence stops at 0.6. None of it has met a real heart.

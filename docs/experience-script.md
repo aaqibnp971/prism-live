@@ -1,4 +1,4 @@
-# **Prism Live: Experience Script v1.9**
+# **Prism Live: Experience Script v1.11**
 
 &nbsp;
 
@@ -44,6 +44,13 @@ all pre-start measurements, including late batches: its first roughly 12 s have 
 layer while this visitor's buffer fills. The bed and field continue. The ending is not extended
 to play the remaining delayed tail. This prevents a short stop/reset from replaying another
 visitor's beats; it does not move the phone's separate ~24 s startup into the session.
+
+**Heartbeat entrance, 29 September 2026.** The −18 → −13 dBFS intro runs over the
+12 s beginning at the first accepted measured beat's scheduled playback (`t_play`),
+not the first 12 s of baseline and not packet arrival. Hold −18 while waiting for
+that beat. Rejected beats, predictions and refused audio pushes do not start the
+intro. Each new baseline gets a fresh intro; leaving baseline cancels any pending
+intro in favour of the next segment's level. No segment or session is extended.
 
 &nbsp;
 
@@ -125,7 +132,9 @@ SPECTATOR SCREEN        foregrounded
 
 Timings inside a segment are written as offsets from that segment's own start (t) or end (T), never as absolute session times — regulate is adaptive, so absolute times are a lie after 2:00.
 
-**Note, 11 September 2026.** The audio arc in this section has not been validated against the engine's PSV-to-audio mapping. Read against that mapping (`docs/engine-findings.md`), regulate currently comes out inverted: at this section's own targets (arousal 0.32, cognitive_load 0.28, readiness 0.62) the engine sits at about 2,400 Hz with the `pulse` stem open and bed and sub thinner, not at 620 Hz with everything subtracted. The pulse and air gates are tied to the filter and to loop boundaries, so the air moves written below (a gradual fall in regulate, a tail in resolve) cannot be produced. Decision of 11 September: air gates out before pulse in one 1.5 s fade, and there is no air tail. Whether the engine is fed body-derived values or a designed pose per segment is decided by listening in Week B. The numbers below are unchanged until then.
+**Note, 11 September 2026.** The audio arc in this section has not been validated against the engine's PSV-to-audio mapping. Read against that mapping (`docs/engine-findings.md`), regulate currently comes out inverted: at this section's own targets (arousal 0.32, cognitive_load 0.28, readiness 0.62) the engine sits at about 2,400 Hz with the `pulse` stem open and bed and sub thinner, not at 620 Hz with everything subtracted. The pulse and air gates are tied to the filter and to loop boundaries, so the air moves written below (a gradual fall in regulate, a tail in resolve) cannot be produced. Decision of 11 September: air gates out before pulse in one 1.5 s fade, and there is no air tail.
+
+**Decision, 2 October 2026.** Production uses the body-derived PSV source with the accepted V2 stems. This is the more honest claim: the music follows the person's authority-scaled readings rather than a designed per-segment pose. The cost is a less predictable musical arc. The exact filter sweep, stem gates and level trajectory written below are experience intent, not a promise that every person's run will reproduce them. The designed-pose source remains available for comparison and diagnosis, but it is not the default.
 
 **Note, 13 September 2026.** The baseline capture is still 45 s, but its result, and with it HR\_base, arrives 2.0 to 10.6 s after the window closes. The session now holds in baseline to 56 s, when load starts on a pulse boundary, and enters load without HR\_base if it has still not come (`docs/all-prompts.md` prompts 2.4 and 2.7). Duration and Exit below describe the capture, and absolute times are unreliable from 0:45, not only after 2:00.
 
@@ -142,7 +151,7 @@ Timings inside a segment are written as offsets from that segment's own start (t
 | Regulation target | None |
 | Success threshold | Not a success gate. **Quality gate:** ≥ 35 of 45 s of clean beat data, and ≥ 30 accepted RR intervals, or the attendant re-seats the armband and restarts. |
 | **Audio** | **Material:** two stems only — bed (sustained pad, D minor, root D3 \= 146.8 Hz, 19 s loop) and sub (drone, D2 \= 73.4 Hz, high-passed 62 Hz, 17 s loop). pulse, lead, air closed. No rhythmic content, no melodic foreground, no transients above the heartbeat. **Driven by:** nothing from the PSV — authority is 0\. The only movement in 45 s is the person's own pulse. Master LP cutoff fixed at **1,400 Hz**. **Dynamic range:** −22 → −17 LUFS short-term. |
-| Per-beat layer | **Active.** This is where they first hear themselves. **Amplitude:** −18 → −13 dBFS peak, ramped up across the first 12 s so the first beat is not a surprise. **Frequency band:** 44 Hz fundamental, energy confined 36–62 Hz, roll-off 24 dB/oct above 120 Hz. Envelope 8 ms attack, decay min(220 ms, 0.55 × current RR interval) so beats never overlap. |
+| Per-beat layer | **Active once this visitor's buffered beats arrive.** This is where they first hear themselves. **Amplitude:** hold −18 dBFS peak until the first accepted measured beat's scheduled playback, then ramp −18 → −13 across the following 12 s so the first beat is not a surprise. The initial buffer-fill silence does not spend the ramp. **Frequency band:** 44 Hz fundamental, energy confined 36–62 Hz, roll-off 24 dB/oct above 120 Hz. Envelope 8 ms attack, decay min(220 ms, 0.55 × current RR interval) so beats never overlap. |
 | **Visual base frame** | Baseline base. **Driven axes:** baseline\_confidence (0.0 → 1.0) → **fog density 0.38 → 0.26**, **light intensity 0.45 → 0.62**, **horizon position 0.44 → 0.50**. baseline\_confidence is the mean confidence of arousal, cognitive\_load and readiness, divided by **0.393** and capped at 1.0. Valence is left out because its confidence is 0.0 by design, so a mean over four could never pass 0.75. 0.393 is the most the three reach during baseline, and a settled person usually reaches it by t=45 s; at slow heart rates, around 48 bpm, it tops out near 0.94 of the travel. The climb is slow for the first 20 s and fastest from 25 to 40 s: about 0.25 at t=20 s, 0.56 at 30 s, 0.95 at 40 s (docs/vr-handoff.md §9 has the full curve). The world resolves as the system learns them — the in-headset counterpart of the confidence bars climbing on the spectator screen. Hue fixed **208°**, saturation fixed **0.12**, field motion rate fixed **0.008**. heartbeat → **pulse amplitude 0.06 → 0.10**. |
 | Person does | Sits, looks around. Nothing asked of them. |
 | **Person is told** | *(attendant, before the headset goes on)* — **"Sit however you're comfortable. The low heartbeat is your measured rhythm played back after a delay, not the beat happening this instant. For the first minute you don't have to do anything at all. Just look around. It's learning what your normal looks like, so normal is exactly what we want."** *(No in-headset text.)* |
@@ -409,6 +418,8 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.7 | 22 Sep 2026 | §4: ten frames now supplied; shared browser renderer and portable mapping. Horizon coordinates are top-origin, fixed light at (0.50, 0.40), resolve opens the sky. Replaced the unsupported 95-bpm photosensitivity assurance with measured software rails and explicit 45–180-bpm/hardware limits. §5 records the supplied frame deliverable. |
 | 1.8 | 22 Sep 2026 | §4: visual-only amplitude taper from full authored amplitude at 95 bpm to zero at 120 bpm, including resolve and conservative per-beat cadence checks between state updates. No divided-rate substitute. Audio keeps every eligible scheduled beat; its primacy is why visuals give way. Retained mandatory 45–180-bpm pulse tests and whole-experience/headset safety limitations. |
 | 1.9 | 23 Sep 2026 | §0 and spoken introduction/close distinguish delayed playback of measured heartbeat intervals from the surrounding composed sound. No instantaneous-heartbeat or whole-experience "not played back" claim; spectator disclosure remains visible. |
+| 1.10 | 29 Sep 2026 | §0/§2: baseline's 12 s heartbeat intro begins at the first accepted measured beat's scheduled playback, not baseline entry. Buffer-fill silence no longer consumes the fade. Levels, beat timing and segment lengths are unchanged. |
+| 1.11 | 2 Oct 2026 | §2: body-derived PSV is the production source with the accepted V2 stems. It is the more honest claim because the music follows the person's authority-scaled readings; the accepted cost is a less predictable musical arc. Pose remains available for comparison and diagnosis. |
 
 &nbsp;
 

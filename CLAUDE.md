@@ -61,7 +61,7 @@ Four values, 0.0 to 1.0, each with its own confidence: `arousal`, `valence`, `co
 
 **`valence` confidence is exactly 0.0, always.** It is not obtainable from a pulse. This is deliberate and is a selling point, not a bug. Any code or UI that shows valence moving is wrong.
 
-**Two PSV sources, switchable at runtime.** `body`: the authority-scaled values above; authority 0 is a neutral PSV, which is not silence. `pose`: a designed effective PSV per segment, with the body moving arousal inside a range. Which one ships is decided by listening in Week B (prompt 2.5), not on paper.
+**Two PSV sources, switchable at runtime.** `body`: the authority-scaled values above; authority 0 is a neutral PSV, which is not silence. `pose`: a designed effective PSV per segment, with the body moving arousal inside a range. **Body is the production default, chosen by listening on 2 October 2026:** it is the more honest claim because the music follows the person's readings, at the cost of a less predictable arc. Pose remains a comparison and diagnostic source.
 
 ### Authority
 
@@ -164,9 +164,9 @@ Closed:
 2. Does `prism_crossfade_scene` **preserve loop playback phase** for a stem identical across two manifests? **No.** The incoming scene always starts at sample 0. Decision: one scene, no crossfades.
 3. **How long does `prism_crossfade_scene` block?** **Moot.** It is never called. `prism_load_scene` blocks once per handle at startup; prompt 2.7 measures that.
 4. Can the host **inject a per-beat audio event into the engine's output**? **No.** The heartbeat layer is mixed in prism-live's own callback, one device (hard rule 8).
+6. **Body-derived or designed-pose PSV? Body-derived.** Chosen by listening on 2 October 2026. It keeps the claim honest because the music follows the person's authority-scaled readings; the accepted cost is a less predictable musical arc. Pose remains available for comparison and diagnosis.
 7. **Where the `acbfd50` engine library gets built.** **Closed 14 Sep 2026.** It is built from upstream `acbfd50` and committed at `vendor/lib/libprism_core.dll`, with the recipe, toolchain, flags and SHA-256 in `vendor/lib/README.md`. The build is reproducible. The engine source clone at `vendor/prism-core/` is gitignored.
 
 Still open. Do not guess at these. Flag them.
 
 5. **Sensor route resolved 23 September:** Windows direct BLE is not viable for this unit/setup. Android Polar Sensor Logger sends PPI on MQTT `/ecg` (despite the topic name); `/hr` carries no RR. PPI uses blocker/error rejection, never HR or skin-contact as wear evidence. Accepted measured intervals play with a 12 s reconstructed-time buffer; they are not predicted or described as physiological real-time playback. The phone streams between visitors. See `docs/known-limits.md` and `docs/launcher.md` for measured delays, baseline timing, fixed-address private-router setup and startup warm-up. The ectopic threshold remains 12, pending its separate heavy-reviewed task.
-6. **Body-derived or designed-pose PSV?** Under body-derived values the script's regulate comes out inverted (`docs/engine-findings.md`). Decided by listening in Week B, prompt 2.5.
