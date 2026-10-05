@@ -8,6 +8,17 @@ const SESSION_ONE = "S-20260920-0001";
 const SESSION_TWO = "S-20260920-0002";
 const ZERO = { arousal: 0, valence: 0, cognitive_load: 0, readiness: 0 };
 
+function traceEvidence(overrides = {}) {
+  return {
+    at_rest_bpm: null,
+    highest_task_bpm: null,
+    after_task_bpm: null,
+    spoken_n_bpm: null,
+    average_30s: [],
+    ...overrides,
+  };
+}
+
 function state(segment, options = {}) {
   const idle = segment === "idle";
   return {
@@ -26,6 +37,7 @@ function state(segment, options = {}) {
     hr_bpm: options.hrBpm === undefined ? 82.4 : options.hrBpm,
     hr_base: options.hrBase === undefined ? 68.2 : options.hrBase,
     signal: options.signal || { contact: true, rr_accepted_pct: 0.94, baseline_quality: 0.81 },
+    trace: options.trace || traceEvidence(),
   };
 }
 
@@ -231,7 +243,20 @@ test("reading hatches use host confidence while authority is passed through unch
   }
 });
 
-function revealRun() {
+const FINAL_TRACE = traceEvidence({
+  at_rest_bpm: 76.4,
+  highest_task_bpm: 79.3,
+  after_task_bpm: 75.0,
+  spoken_n_bpm: null,
+  average_30s: [
+    { t_play: 40_000, hr_bpm: 76.4 },
+    { t_play: 40_500, hr_bpm: null },
+    { t_play: 41_000, hr_bpm: 76.8 },
+    { t_play: 41_500, hr_bpm: 77.1 },
+  ],
+});
+
+function revealRun(trace = FINAL_TRACE) {
   const model = new Spectator.SpectatorModel();
   model.onState(state("baseline", { tEngine: 10_000, elapsed: 0, hrBase: null, authority: ZERO }));
   model.onBeat(beat(1, 160.14, { tPlay: 11_000 }));
@@ -245,16 +270,16 @@ function revealRun() {
     authority: { arousal: 0.437, valence: 0, cognitive_load: 0.313, readiness: 0.127 },
   }));
   model.onBeat(beat(6, 180, { tPlay: 142_000 })); // Not a load peak.
-  model.onState(state("resolve", { seq: 4, tEngine: 216_000, elapsed: 0, authority: ZERO }));
+  model.onState(state("resolve", { seq: 4, tEngine: 216_000, elapsed: 0, authority: ZERO, trace }));
   model.onBeat(beat(7, 82.18, { tPlay: 217_000 }));
   return model;
 }
 
 test("the reveal follows host resolve remaining time, including a different nominal duration", () => {
   const model = revealRun();
-  model.onState(state("resolve", { seq: 5, tEngine: 240_999, elapsed: 24_999 }));
+  model.onState(state("resolve", { seq: 5, tEngine: 240_999, elapsed: 24_999, trace: FINAL_TRACE }));
   assert.equal(model.view().reveal, false);
-  model.onState(state("resolve", { seq: 6, tEngine: 241_000, elapsed: 25_000 }));
+  model.onState(state("resolve", { seq: 6, tEngine: 241_000, elapsed: 25_000, trace: FINAL_TRACE }));
   assert.equal(model.view().reveal, true);
   const shortened = new Spectator.SpectatorModel();
   shortened.onState(state("resolve", { nominal: 35_000, elapsed: 14_999 }));
@@ -266,84 +291,99 @@ test("the reveal follows host resolve remaining time, including a different nomi
   assert.equal(extendedRegulate.view().reveal, false);
 });
 
-test("peak is load-only; first includes settling; endpoint and N use the same displayed beats", () => {
+test("the three cards and N come only from host trace evidence, never browser beats", () => {
   const model = revealRun();
   let summary = model.view().summary;
-  assert.equal(summary.satDownAt, 160.1);
-  assert.equal(summary.peakedAt, 110.1); // Neither the 160 baseline nor 180 regulate spike.
-  assert.equal(summary.leftAt, 82.2);
-  assert.equal(summary.difference, 27.9);
+  assert.equal(summary.atRest, 76.4);
+  assert.equal(summary.highestDuringTask, 79.3);
+  assert.equal(summary.afterTask, 75.0);
+  assert.equal(summary.spokenN, null); // The host withheld it despite a 4.3 bpm card difference.
   assert.deepEqual(summary.authority, { arousal: 0.437, valence: 0, cognitive_load: 0.313, readiness: 0.127 });
   model.onBeat(beat(8, 80.14, { tPlay: 242_000 }));
-  const misleadingState = state("resolve", { seq: 5, tEngine: 243_000, elapsed: 27_000, hrBpm: 240 });
+  const misleadingState = state("resolve", { seq: 5, tEngine: 243_000, elapsed: 27_000, hrBpm: 240, trace: FINAL_TRACE });
   misleadingState.drop_bpm = 999;
   model.onState(misleadingState);
   summary = model.view().summary;
-  assert.equal(summary.leftAt, 80.1);
-  assert.equal(summary.difference, 30);
+  assert.equal(summary.afterTask, 75.0);
+  assert.equal(summary.spokenN, null);
   assert.equal(Object.hasOwn(summary, "outcome"), false);
   assert.equal(Object.hasOwn(summary, "close"), false);
   model.onBeat(beat(9, 115.16, { tPlay: 244_000 }));
-  assert.equal(model.view().summary.difference, -5.1); // No "fall" clamp or verdict.
+  assert.deepEqual(model.view().summary, summary);
 });
 
-test("delayed host boundaries classify beats by t_play, not arrival or the last segment seen", () => {
-  const model = new Spectator.SpectatorModel();
-  model.onState(state("baseline", { tEngine: 1_000, elapsed: 0, hrBase: null }));
-  model.onBeat(beat(1, 140, { tPlay: 2_000 }));
-  model.onBeat(beat(2, 100, { tPlay: 10_500 })); // Rendered before a delayed load state arrived.
-  assert.equal(model.view().summary.peakedAt, null);
-  model.onState(state("load", { seq: 2, tEngine: 11_000, elapsed: 1_000 }));
-  assert.equal(model.view().summary.peakedAt, 100);
-  model.onBeat(beat(3, 180, { tPlay: 12_000 }));
-  model.onState(state("regulate", { seq: 3, tEngine: 12_500, elapsed: 500 }));
-  assert.equal(model.view().summary.peakedAt, 100); // Exact boundary belongs to regulate.
+test("contract validation refuses a client-visible N that does not match host cards", () => {
+  assert.equal(Spectator.validState(state("resolve", { trace: traceEvidence({
+    at_rest_bpm: 70.0,
+    highest_task_bpm: 80.0,
+    after_task_bpm: 75.0,
+    spoken_n_bpm: 4.9,
+  }) })), false);
+  assert.equal(Spectator.validState(state("resolve", { trace: traceEvidence({
+    at_rest_bpm: 70.0,
+    highest_task_bpm: 80.0,
+    after_task_bpm: 75.0,
+    spoken_n_bpm: 5.0,
+  }) })), true);
+});
+
+test("the host average line shares the beat timeline and breaks on explicit null evidence", () => {
+  const raw = [{ bpm: 72, tPlay: 39_500 }, { bpm: 80, tPlay: 42_000 }];
+  const average = FINAL_TRACE.average_30s.map((point) => ({ tPlay: point.t_play, bpm: point.hr_bpm }));
+  const geometry = Spectator.traceGeometry(raw, average, 1000, 200, 12, 76.4);
+  assert.equal(geometry.points.length, 2);
+  assert.equal(geometry.averageRuns.length, 2);
+  assert.deepEqual(geometry.averageRuns.map((run) => run.length), [1, 2]);
+  for (const point of [...geometry.points, ...geometry.averageRuns.flat()]) {
+    assert.ok(point.x >= 12 && point.x <= 988);
+    assert.ok(point.y >= 12 && point.y <= 188);
+  }
 });
 
 test("reset and a new idle session freeze numbers, history and resting line until baseline", () => {
   const model = revealRun();
   const expected = model.view().summary;
-  model.onState(state("reset", { seq: 5, tEngine: 261_000, elapsed: 0, nominal: 20_000, hrBase: null, authority: ZERO }));
+  model.onState(state("reset", { seq: 5, tEngine: 261_000, elapsed: 0, nominal: 20_000, hrBase: null, authority: ZERO, trace: FINAL_TRACE }));
   const held = model.view();
   assert.deepEqual(held.summary, expected);
   assert.equal(model.onBeat(beat(8, 200, { tPlay: 262_000 })), false);
-  model.onState(state("reset", { seq: 6, tEngine: 270_000, elapsed: 9_000, nominal: 20_000, hrBpm: 200, hrBase: null }));
+  model.onState(state("reset", { seq: 6, tEngine: 270_000, elapsed: 9_000, nominal: 20_000, hrBpm: 200, hrBase: null, trace: FINAL_TRACE }));
   model.onState(state("idle", { session: SESSION_TWO, hrBase: null, hrBpm: null, authority: ZERO }));
   assert.equal(model.view().kind, "idle-trace");
   assert.deepEqual(model.view().summary, expected);
   assert.deepEqual(model.view().trace, held.trace);
   model.onState(state("baseline", { session: SESSION_TWO, seq: 2, elapsed: 0, hrBase: null, authority: ZERO }));
-  assert.equal(model.view().summary.satDownAt, null);
-  assert.equal(model.view().summary.peakedAt, null);
-  assert.equal(model.view().summary.leftAt, null);
+  assert.equal(model.view().summary.atRest, null);
+  assert.equal(model.view().summary.highestDuringTask, null);
+  assert.equal(model.view().summary.afterTask, null);
   assert.equal(model.view().summary.restingBpm, null);
   assert.deepEqual(model.view().summary.authority, ZERO);
   assert.deepEqual(model.view().trace, []);
 });
 
-test("missing load or resolve beats never produce an invented endpoint or N", () => {
+test("missing host evidence stays as dashes even when browser beats exist", () => {
   const model = new Spectator.SpectatorModel();
   model.onState(state("regulate", { elapsed: 30_000 }));
   model.onBeat(beat(1, 82));
   model.onState(state("resolve", { seq: 2, tEngine: 100_000, elapsed: 25_000 }));
   let summary = model.view().summary;
   assert.equal(summary.partialHistory, true);
-  assert.equal(summary.satDownAt, null);
-  assert.equal(summary.peakedAt, null);
-  assert.equal(summary.leftAt, null);
-  assert.equal(summary.difference, null);
+  assert.equal(summary.atRest, null);
+  assert.equal(summary.highestDuringTask, null);
+  assert.equal(summary.afterTask, null);
+  assert.equal(summary.spokenN, null);
   model.onBeat(beat(2, 75, { tPlay: 101_000 }));
   summary = model.view().summary;
-  assert.equal(summary.leftAt, 75);
-  assert.equal(summary.difference, null);
+  assert.equal(summary.afterTask, null);
+  assert.equal(summary.spokenN, null);
 });
 
-test("all beats survive a long session, including the first reading beyond 1024 samples", () => {
+test("all beats survive a long session without becoming physiological card evidence", () => {
   const model = new Spectator.SpectatorModel();
   model.onState(state("baseline", { tEngine: 1_000, elapsed: 0 }));
   for (let i = 1; i <= 1200; i += 1) model.onBeat(beat(i, i === 1 ? 150 : 72, { tPlay: 1_000 + i * 240 }));
   assert.equal(model.view().trace.length, 1200);
-  assert.equal(model.view().summary.satDownAt, 150);
+  assert.equal(model.view().summary.atRest, null);
 });
 
 test("resting reference uses only hr_base, extends autoscale and vanishes on null", () => {
@@ -361,9 +401,9 @@ test("resting reference uses only hr_base, extends autoscale and vanishes on nul
   }
   assert.equal(Spectator.referenceY(samples, null, 420), null);
   const model = revealRun();
-  model.onState(state("resolve", { seq: 5, tEngine: 241_000, elapsed: 25_000, hrBase: null }));
+  model.onState(state("resolve", { seq: 5, tEngine: 241_000, elapsed: 25_000, hrBase: null, trace: FINAL_TRACE }));
   assert.equal(model.view().summary.restingBpm, null);
-  model.onState(state("reset", { seq: 6, tEngine: 261_000, elapsed: 0, nominal: 20_000, hrBase: null }));
+  model.onState(state("reset", { seq: 6, tEngine: 261_000, elapsed: 0, nominal: 20_000, hrBase: null, trace: FINAL_TRACE }));
   model.onState(state("idle", { session: SESSION_TWO, hrBase: null }));
   assert.equal(model.view().summary.restingBpm, null);
 });
@@ -373,7 +413,7 @@ test("an interrupted active trace is partial, without rewriting a completed held
   assert.equal(model.view().summary.partialHistory, false);
   model.markInterrupted();
   assert.equal(model.view().summary.partialHistory, true);
-  model.onState(state("reset", { seq: 5, tEngine: 261_000, elapsed: 0, nominal: 20_000 }));
+  model.onState(state("reset", { seq: 5, tEngine: 261_000, elapsed: 0, nominal: 20_000, trace: FINAL_TRACE }));
   const held = model.view().summary;
   model.markInterrupted();
   assert.deepEqual(model.view().summary, held);
@@ -384,7 +424,7 @@ test("an interrupted active trace is partial, without rewriting a completed held
 
 test("a stop during the reveal is not a completed session to retain through idle", () => {
   const model = revealRun();
-  model.onState(state("resolve", { seq: 5, tEngine: 241_000, elapsed: 25_000 }));
+  model.onState(state("resolve", { seq: 5, tEngine: 241_000, elapsed: 25_000, trace: FINAL_TRACE }));
   assert.equal(model.view().reveal, true);
   model.onState(state("reset", { seq: 6, tEngine: 242_000, elapsed: 0, nominal: 3_000 }));
   assert.equal(model.view().kind, "resetting");

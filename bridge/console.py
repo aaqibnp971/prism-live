@@ -335,7 +335,7 @@ def screen_lines(view, columns=80):
         "SPACE / ENTER = button",
         "R = replay unconfirmed sound check | B = body | P = pose | Q = quit booth",
         f"PSV: {view['psv_source']} | {view['session']}",
-        "Close: read peaked-at minus left-at from the spectator trace. No verdict here.",
+        "Close: use the averaged N only when the spectator trace shows one; otherwise use close B.",
     ]
     return [part for line in lines for part in (textwrap.wrap(line, width) or [""])]
 

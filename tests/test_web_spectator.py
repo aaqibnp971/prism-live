@@ -47,6 +47,11 @@ def test_spectator_page_contains_only_live_honest_labels() -> None:
         "NOT READABLE",
         "LIVE FEED LOST • DISPLAY FROZEN",
         "YOUR MEASURED BEATS · DELAYED PLAYBACK",
+        "AT REST",
+        "HIGHEST DURING THE TASK",
+        "AFTER THE TASK",
+        "EACH ACCEPTED BEAT",
+        "30-SECOND AVERAGE",
     ):
         assert required in combined
 
@@ -61,6 +66,9 @@ def test_spectator_page_contains_only_live_honest_labels() -> None:
         "real-time",
         "simulation",
         "standalone",
+        "SAT DOWN AT",
+        "PEAKED AT",
+        "LEFT AT",
     ):
         assert forbidden.lower() not in combined.lower()
 

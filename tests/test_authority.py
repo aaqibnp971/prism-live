@@ -45,6 +45,10 @@ def state(segment, confidence, granted, elapsed=0, nominal=45_000):
         "hr_bpm": 70.0,
         "hr_base": 68.0,
         "signal": {"contact": True, "rr_accepted_pct": 1.0, "baseline_quality": 1.0},
+        "trace": {
+            "at_rest_bpm": None, "highest_task_bpm": None, "after_task_bpm": None,
+            "spoken_n_bpm": None, "average_30s": [],
+        },
     }
 
 

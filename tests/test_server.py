@@ -24,6 +24,8 @@ def idle_state(session, t_engine, seq=1):
         "psv": dict(ZERO, valence=0.5), "confidence": ZERO, "authority": ZERO,
         "hr_bpm": None, "hr_base": None,
         "signal": {"contact": True, "rr_accepted_pct": 0.0, "baseline_quality": 0.0},
+        "trace": {"at_rest_bpm": None, "highest_task_bpm": None, "after_task_bpm": None,
+                  "spoken_n_bpm": None, "average_30s": []},
     }  # fmt: skip
 
 

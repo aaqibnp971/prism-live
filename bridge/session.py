@@ -82,6 +82,7 @@ from bridge.contract import (
 from bridge.logging import SessionLog
 from bridge.psv import BaselinePhase, PsvModel
 from bridge.state import StateStream
+from bridge.trace import build_trace
 
 # The regulate success threshold.
 THRESHOLD_FLOOR_BPM = 5.0
@@ -277,11 +278,19 @@ class Session:
         *,
         now_ms: float,
         timings: Timings | None = None,
+        playback_delay_ms: float = 0.0,
     ) -> None:
         self._model = model
         self._log = log
         self._publish = publish
         self.timings = timings if timings is not None else Timings()
+        if (
+            isinstance(playback_delay_ms, bool)
+            or not isinstance(playback_delay_ms, int | float)
+            or not 0 <= playback_delay_ms <= MAX_SAFE_INT
+        ):
+            raise ValueError("playback_delay_ms must be a non-negative link-safe number")
+        self._playback_delay_ms = float(playback_delay_ms)
         self._now = _time(now_ms) or 0.0
         self._next_state_ms = self._now
         self._sent_ms: float | None = None
@@ -479,11 +488,13 @@ class Session:
             hr_base = self._baseline.hr_base_bpm if self._baseline else None
             self._regulate = _Regulate(at, hr_base, self.timings)
             self._activation_logged = False
+            self._heart_rate_activation_passed = None
         elif to == "reset":
             self._outcome = reason
             self._reset_ms = (
                 self.timings.reset_ms if reason == "completed" else self.timings.stopped_reset_ms
             )
+        self._segment_starts[to] = at
         self._segment, self._start = to, at
 
     def _end_baseline(self, to: str, at: float, reason: str, now: float) -> None:
@@ -562,16 +573,20 @@ class Session:
     def _try_activation(self, now: float, *, final: bool) -> None:
         """Load activation: HR_load >= HR_base + 6 bpm, or load's RMSSD <= 0.80 x rmssd_base."""
         r = self._regulate
-        if self._activation_logged or not r.load_known:
+        if not r.load_known:
+            return
+        hr_load = r.usable_hr_load
+        by_hr = None
+        if hr_load is not None and r.hr_base is not None:
+            by_hr = hr_load >= r.hr_base + ACTIVATION_BPM
+            self._heart_rate_activation_passed = by_hr
+        if self._activation_logged:
             return
         window = (r.start - TAIL_MS, r.start)
         rmssd, why = self._rmssd_part(window, final, "load", at_most=ACTIVATION_RMSSD_RATIO)
         if rmssd is None and why is None:
             return  # waiting for classification to pass the end of load
-        hr_load, base = r.usable_hr_load, self._baseline
-        by_hr = None
-        if hr_load is not None and r.hr_base is not None:
-            by_hr = hr_load >= r.hr_base + ACTIVATION_BPM
+        base = self._baseline
         parts = [p for p in (by_hr, rmssd) if p is not None]
         self._log.event(
             "load_activation",
@@ -660,6 +675,8 @@ class Session:
         self._baseline: Baseline | None = None
         self._regulate: _Regulate | None = None
         self._activation_logged = False
+        self._heart_rate_activation_passed: bool | None = None
+        self._segment_starts: dict[str, float] = {}
         self._return_window: tuple[float, float] | None = None
         self._result: RegulateResult | None = None
         self._log.event(
@@ -695,9 +712,29 @@ class Session:
                 estimate=estimate,
                 hr_base_bpm=baseline.hr_base_bpm if baseline else None,
                 baseline_quality=baseline.baseline_quality if baseline else 0.0,
+                trace=self._trace(now),
             )
         )
         self._sent_ms = now
+
+    def _trace(self, now: float) -> dict:
+        starts = self._segment_starts
+        resolve_start = starts.get("resolve")
+        intervals = getattr(self._model, "session_heart_intervals", ())
+        settle = getattr(self._model, "measurement_settle_ms", SETTLE_MS)
+        return build_trace(
+            intervals,
+            now_ms=now,
+            settle_ms=settle,
+            playback_delay_ms=self._playback_delay_ms,
+            baseline_start_ms=starts.get("baseline"),
+            load_start_ms=starts.get("load"),
+            regulate_start_ms=starts.get("regulate"),
+            resolve_end_ms=None
+            if resolve_start is None
+            else resolve_start + self.timings.resolve_ms,
+            heart_rate_activation_passed=self._heart_rate_activation_passed,
+        )
 
     def _lost(self, now: float) -> bool:
         last = self._model.last_trusted_beat_ms

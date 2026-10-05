@@ -109,6 +109,13 @@ class FixtureFeed:
         self.current = copy.deepcopy(
             min(matches, key=lambda m: abs(m["segment_elapsed_ms"] - elapsed))
         )
+        self.current["trace"] = {
+            "at_rest_bpm": None,
+            "highest_task_bpm": None,
+            "after_task_bpm": None,
+            "spoken_n_bpm": None,
+            "average_30s": [],
+        }
         self.current["segment_elapsed_ms"] = elapsed
         if segment == "regulate":
             self.current["t_session"] = 150_000  # screenshot comparison point, supplied by host
@@ -252,7 +259,8 @@ REVEAL = r"""(() => {
   const inside = (a,b) => a.left >= b.left-.1 && a.top >= b.top-.1 &&
     a.right <= b.right+.1 && a.bottom <= b.bottom+.1;
   const rail = document.querySelector('.reveal-authority');
-  const line = get('held-trace-line').getBBox(), box = svg.viewBox.baseVal;
+  const line = get('held-trace-line').getBBox(), average = get('held-trace-average').getBBox();
+  const box = svg.viewBox.baseVal;
   return {
     visible: !get('trace-hold').hidden,
     values: ['start','peak','end','difference'].map(k=>get('reveal-'+k).textContent),
@@ -267,6 +275,8 @@ REVEAL = r"""(() => {
       inside(rect(get('held-resting-label')),rect(svg.parentElement)),
     pathInside: line.x >= 0 && line.y >= 0 && line.x+line.width <= box.width &&
       line.y+line.height <= box.height,
+    averageInside: average.x >= 0 && average.y >= 0 &&
+      average.x+average.width <= box.width && average.y+average.height <= box.height,
     numbersFit: [...document.querySelectorAll('.reveal-numbers article')].every(card=>
       [...card.children].every(child=>inside(rect(child),rect(card)) &&
         child.scrollWidth <= child.clientWidth)),
@@ -308,21 +318,42 @@ async def check_reveal(cdp, feed, output):
     assert await cdp.evaluate("document.getElementById('trace-hold').hidden")
     feed.set_state("resolve", 25_000)
     feed.current["hr_base"] = 68.2
+    feed.current["trace"] = {
+        "at_rest_bpm": 76.4,
+        "highest_task_bpm": 79.3,
+        "after_task_bpm": 75.0,
+        "spoken_n_bpm": None,
+        "average_30s": [
+            {"t_play": 40_000, "hr_bpm": 76.4},
+            {"t_play": 40_500, "hr_bpm": None},
+            {"t_play": 41_000, "hr_bpm": 76.8},
+            {"t_play": 41_500, "hr_bpm": 77.1},
+        ],
+    }
     await cdp.until("!document.getElementById('trace-hold').hidden")
     reveal = await cdp.evaluate(REVEAL)
-    assert reveal["values"] == ["160.1", "110.1", "82.2", "27.9"], reveal
+    assert reveal["values"] == ["76.4", "79.3", "75.0", ""], reveal
     assert reveal["referenceVisible"] and reveal["referenceLabel"] == "YOUR RESTING RATE 68.2"
     assert reveal["authority"][0] == ["0.44", "43.7%"], reveal
     assert reveal["authority"][1] == ["0.00", "0%"], reveal
-    for key in ("plotInside", "pathInside", "numbersFit", "railFits", "referenceLabelInside"):
+    for key in (
+        "plotInside",
+        "pathInside",
+        "averageInside",
+        "numbersFit",
+        "railFits",
+        "referenceLabelInside",
+    ):
         assert reveal[key], (key, reveal)
     if output:
         await cdp.screenshot(output / "reveal-1920x1080.png")
     await feed.trace([80.14])
     final = await cdp.evaluate(REVEAL)
-    assert final["values"] == ["160.1", "110.1", "80.1", "30.0"]
+    assert final["values"] == ["76.4", "79.3", "75.0", ""]
+    completed_trace = copy.deepcopy(feed.current["trace"])
     feed.set_state("reset", 0)
     feed.current["hr_base"] = None
+    feed.current["trace"] = completed_trace
     await cdp.until("document.body.dataset.view === 'trace-hold'")
     feed.set_state("idle", 0, new_session=True)
     await cdp.until("document.body.dataset.view === 'idle-trace'")
@@ -348,7 +379,7 @@ async def check_reveal(cdp, feed, output):
     feed.current["hr_base"] = None
     await cdp.until("!document.getElementById('trace-hold').hidden")
     degraded = await cdp.evaluate(REVEAL)
-    assert degraded["values"] == ["72.0", "90.0", "95.0", "−5.0"], degraded
+    assert degraded["values"] == ["—", "—", "—", ""], degraded
     assert not degraded["referenceVisible"]
     assert degraded["referenceLabel"] == "" and degraded["referencePath"] == ""
     if output:

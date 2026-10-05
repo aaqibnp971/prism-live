@@ -781,13 +781,18 @@ WebSocket does not add interval-scale jitter.
 
 ## The spectator's trace and reveal (prompts 3.3, 3.5)
 
-**Handled by:** `web/spectator/`. The frozen contract carries live beat and state messages, but no
-history. The screen can therefore hold the completed trace through the 20-second reset and following
-idle only while that browser page remains open. Reloading or opening a second spectator during idle
-produces the honest cold-idle view, with no trace, rather than inventing or replaying one. A page
-opened during a session starts its trace with the next scheduled live beat, so its final held trace
-contains only the part it actually observed. Persisting or reconstructing a trace would require a
-future, explicitly versioned contract change.
+**Open review gate, 5 October:** the planned heavy review of the host-calculated cards, contract
+v1.8 and visitor reveal was interrupted by reviewer capacity before any reviewer inspected the
+change. Deterministic Python, JavaScript and real-browser tests pass, but this change still needs
+its first heavy-review round before the showing.
+
+**Handled by:** `web/spectator/`. Contract v1.8 repeats the host-calculated 30-second average
+history so far in each state, so a screen that reconnects during a session can recover that line
+and the three host cards. The thin accepted-beat line still comes from scheduled live beat messages:
+a page opened during a session starts that line with the next beat and marks it partial. The screen
+can hold both through the 20-second reset and following idle only while that browser page remains
+open. Reloading or opening a second spectator during idle produces the honest cold-idle view,
+rather than inventing or replaying the prior session.
 
 The screen judges the feed lost after **2.5 seconds without a state message**, against the host's
 fixed 2-second state cadence. It freezes the last verified view, cancels pending beat draws and puts
@@ -803,22 +808,22 @@ the same local IBM Plex fonts, independent of internet access. The browser
 regression check covers trace/card clipping, including a low endpoint of 34 BPM, and loss of state
 messages while clock replies continue. Booth-distance readability still needs an on-site check.
 
-**Trace reveal, 21 September:** the screen shows it on the first resolve state reporting at most
+**Trace reveal, updated 5 October:** the screen shows it on the first resolve state reporting at most
 20 s remaining, not on a local timer. With the frozen 2 s state cadence the reveal can appear up to
 one state interval after the threshold. No session-duration assumption or adaptive-regulate guess
-is involved. The three numbers use the plotted non-rejected beats: first baseline reading, maximum
-in **load only**, latest resolve reading. Segment membership uses `t_play` and host boundaries
-(`t_engine − segment_elapsed_ms`), so a delayed boundary can correct a provisional classification.
-The contract does not carry the earlier physiological detection timestamp; this is the displayed,
-scheduled-beat timeline. State-cadence HR, whole-session peaks and `drop_bpm` never supply N.
+is involved. The host calculates **At rest**, **Highest during the task** and **After the task** as
+30-second interval-count averages on reconstructed measurement time, with 22.5 s minimum coverage.
+After the task is fixed at regulate seconds 45–75 even when regulate extends. The last PPI burst for
+that window settles early in resolve; the card remains a dash until it does. State-cadence HR,
+single-beat extrema, playback-segment classification and `drop_bpm` never supply a card or N.
 
-The values display one decimal; N subtracts those same displayed numbers and stays signed. It does
-not choose a close or declare a result. While resolve continues, LEFT AT is labelled as updating;
-on completed reset it freezes at the final observed resolve beat. If no resolve beat was observed,
-LEFT AT and N stay unavailable. If load was not observed, its peak and N stay unavailable. Late-open
-or reconnected screens label partial history; they cannot reconstruct missing beats or guarantee a
-missing load peak. Opening after baseline also leaves SAT DOWN AT unavailable. Keep the spectator
-open and connected from baseline to photograph a whole session.
+N subtracts the displayed task-high and after-task averages, and is sent only after sustained HR
+activation and a fall of at least 3.0 bpm. Otherwise no N is rendered. The clearer average line is
+also host-calculated, on 500 ms steps, and explicitly breaks below the same coverage threshold. Its
+host-supplied `t_play` coordinates align it to the thin delayed accepted-beat line; JavaScript does
+no 12-second subtraction. A partial/reconnected browser may have an incomplete thin line while the
+host average and cards remain complete. Reloading only after the session has entered a new idle
+session still cannot recover the previous visitor's reveal.
 
 The historical authority bars show **maximum observed `state.authority`**, not current idle values,
 not inferred confidence and not a client-computed ceiling. NONE OBSERVED does not claim there was
@@ -843,7 +848,8 @@ Signal loss uses `Session.signal_lost`: 6.2 s for legacy HRM, now 10.2 s for pho
 red background over the whole console and large LOST lettering. It never triggers a console
 auto-stop. Baseline notices use only `baseline_end.outcome` and `problems`; slope quality cannot
 turn a failed gate into success. The console never reads `regulate_result` and never calculates
-or chooses a spoken close. Its reminder points to peaked-at minus left-at on the spectator trace.
+the cards or N. Its reminder says to use the host-calculated averaged N only when the spectator
+trace shows one, and to use close B otherwise.
 
 **Test and VR booth modes, clarified 21 September:** the default launcher stays in local browser
 test mode: a localhost-only bridge, `task-screen` as the task-event producer, a browser task on

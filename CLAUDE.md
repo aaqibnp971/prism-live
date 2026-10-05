@@ -145,6 +145,7 @@ Adversarial review is expensive and the budget is limited. Match it to what the 
 **No review** for documentation, renames, or config changes.
 
 Never run a second review round on the same work without asking first. If a review is interrupted, do not restart it. Commit the work and say it is unverified.
+A review round that was interrupted before any reviewer inspected the change does not count as a round.
 
 ---
 

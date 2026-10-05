@@ -174,6 +174,7 @@ class LiveLoop:
             self._publish_state,
             now_ms=self.clock(),
             timings=timings or production_timings,
+            playback_delay_ms=getattr(getattr(self.scheduler, "t", None), "buffer_ms", 0.0),
         )
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._running = False

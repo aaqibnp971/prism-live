@@ -534,18 +534,18 @@ See `docs/field-reference.md`, `docs/known-limits.md`, and VR handoff §§9, 10 
 >
 > The attendant's close reads its N off this screen: peaked at minus left at (docs/experience-script.md §3). Make that difference easy to read at a glance, from the same three numbers. Never show the session's `drop_bpm` as N.
 
-**Implemented 21 September.** The extracted v3 reveal supplies the three large IBM Plex Mono
-numbers, photograph heading and expanded trace, with corrected second-person copy and no framework
-or simulation code. It appears when the host's resolve elapsed/nominal fields report at most 20 s
-remaining. Peaked at is strictly the load-only maximum; sat down at is the first plotted baseline
-reading and left at updates with resolve beats until the completed reset freezes it. Their visible
-one-decimal subtraction is shown without a verdict. The right rail records the highest observed
-host authority per dimension, not a client ceiling; valence stays exactly zero and NOT READABLE.
-The full trace, numbers, authority history and resting reference survive reset and the new idle
-session id, clearing only on the next baseline. The resting line uses `state.hr_base` only and is
-absent when null, including degraded sessions. Missing history is not fabricated. Model and browser
-tests cover reveal timing, elevated-baseline/load-only peak, negative/missing N, null references,
-geometry and reset/idle retention. See `web/spectator/README.md` for display definitions and limits.
+**Implemented 21 September; evidence rule replaced 5 October.** The extracted v3 reveal supplies
+the three large IBM Plex Mono numbers, photograph heading and expanded trace, with corrected
+second-person copy and no framework or simulation code. It appears when the host's resolve
+elapsed/nominal fields report at most 20 s remaining. Contract v1.8 replaces the original
+single-beat cards: At rest, Highest during the task and After the task are host-calculated 30 s
+averages on reconstructed measurement time, with After fixed at regulate seconds 45–75. The host
+also supplies the coverage-broken 30 s line and shows N only after sustained HR activation and an
+averaged fall of at least 3 bpm. The browser performs no physiological or playback-buffer maths.
+The right rail records the highest observed host authority per dimension, not a client ceiling;
+valence stays exactly zero and NOT READABLE. The trace, numbers, authority history and resting
+reference survive reset and the new idle session id, clearing only on the next baseline. See
+`web/spectator/README.md` for display definitions and limits.
 
 ## 3.6 Attendant controls and crash recovery
 

@@ -5,7 +5,7 @@ through ``validate``: what the laptop sends, before it goes out, and what client
 arrives. Nothing else goes over the link (contract §4, rule 1), so an unknown type or an
 unknown field is an error, not a warning.
 
-It follows contract v1.7 (wire schema remains v1).
+It follows contract v1.8 (wire schema remains v1).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ PORT = 8787
 PATH = "/live"
 MIN_LEAD_MS = 300  # §2: t_play is at least this far in the future when a beat is sent
 STATE_INTERVAL_MS = 2000
+MAX_TRACE_POINTS = 2048
 
 SEGMENTS = ("idle", "baseline", "load", "regulate", "resolve", "reset")
 # §2: how far past segment_nominal_ms a segment can run. Baseline waits for hr_base (v1.3);
@@ -128,7 +129,7 @@ def _state(msg: dict, _direction: str) -> None:
         msg,
         "session", "seq", "t_engine", "t_session", "segment",
         "segment_elapsed_ms", "segment_nominal_ms", "psv", "confidence", "authority",
-        "hr_bpm", "hr_base", "signal",
+        "hr_bpm", "hr_base", "signal", "trace",
     )  # fmt: skip
     _session(msg)
     _count(msg, "seq")
@@ -184,6 +185,7 @@ def _state(msg: dict, _direction: str) -> None:
     for key in ("rr_accepted_pct", "baseline_quality"):
         if not _is_number(signal[key]) or not 0 <= signal[key] <= 1:
             raise ContractError(f"state: signal.{key} is a number from 0 to 1")
+    _trace(msg["trace"])
 
 
 def _clock(msg: dict, direction: str) -> None:
@@ -277,6 +279,63 @@ def _dimensions(msg: dict, key: str) -> None:
     for dim in DIMENSIONS:
         if not _is_number(value[dim]) or not 0 <= value[dim] <= 1:
             raise ContractError(f"{msg['type']}: {key}.{dim} is a number from 0 to 1")
+
+
+def _trace(value: object) -> None:
+    names = {
+        "at_rest_bpm",
+        "highest_task_bpm",
+        "after_task_bpm",
+        "spoken_n_bpm",
+        "average_30s",
+    }
+    if not isinstance(value, dict) or value.keys() != names:
+        raise ContractError(
+            "state: trace is {at_rest_bpm, highest_task_bpm, after_task_bpm, "
+            "spoken_n_bpm, average_30s}"
+        )
+    for key in ("at_rest_bpm", "highest_task_bpm", "after_task_bpm", "spoken_n_bpm"):
+        item = value[key]
+        if item is not None and (
+            not _is_number(item) or item <= 0 or round(item, 1) != item
+        ):
+            raise ContractError(f"state: trace.{key} is null or a positive one-decimal number")
+    spoken = value["spoken_n_bpm"]
+    cards = (
+        value["at_rest_bpm"],
+        value["highest_task_bpm"],
+        value["after_task_bpm"],
+    )
+    if spoken is not None:
+        if any(item is None for item in cards):
+            raise ContractError("state: trace.spoken_n_bpm requires all three cards")
+        expected = round(cards[1] - cards[2], 1)
+        if spoken < 3.0 or spoken != expected:
+            raise ContractError(
+                "state: trace.spoken_n_bpm is the displayed task-high minus after-task "
+                "value, and at least 3.0"
+            )
+    points = value["average_30s"]
+    if not isinstance(points, list) or len(points) > MAX_TRACE_POINTS:
+        raise ContractError(f"state: trace.average_30s is a list of at most {MAX_TRACE_POINTS}")
+    previous = -1
+    for point in points:
+        if not isinstance(point, dict) or point.keys() != {"t_play", "hr_bpm"}:
+            raise ContractError("state: each trace.average_30s point is {t_play, hr_bpm}")
+        t_play = point["t_play"]
+        if not _is_int(t_play) or t_play < 0 or t_play <= previous:
+            raise ContractError(
+                "state: trace.average_30s t_play values are non-negative, strictly increasing "
+                "whole milliseconds"
+            )
+        previous = t_play
+        bpm = point["hr_bpm"]
+        if bpm is not None and (
+            not _is_number(bpm) or bpm <= 0 or round(bpm, 1) != bpm
+        ):
+            raise ContractError(
+                "state: trace.average_30s hr_bpm is null or a positive one-decimal number"
+            )
 
 
 def _is_int(value: Any) -> bool:

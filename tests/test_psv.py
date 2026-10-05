@@ -103,6 +103,13 @@ def state_message(estimate: PsvEstimate, segment: str) -> dict:
             "rr_accepted_pct": signal.accepted_fraction or 0.0,
             "baseline_quality": 0.0,
         },
+        "trace": {
+            "at_rest_bpm": None,
+            "highest_task_bpm": None,
+            "after_task_bpm": None,
+            "spoken_n_bpm": None,
+            "average_30s": [],
+        },
     }
 
 

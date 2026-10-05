@@ -200,7 +200,7 @@ The narrative job of this segment is that the crowd watches confidence build as 
 | Entry | Load complete |
 | Exit | Success threshold met, or duration elapsed |
 | Adaptive extension | Up to **\+30 s** if the threshold has not been met. Hard cap, protects booth throughput. With no HR\_base, after a degraded baseline, there is no threshold to wait for, and regulate runs a plain 75 s. |
-| Timeout branch | Proceed to resolve anyway. The trace reports honestly. The close follows the visible fall on the trace screen, not the timeout (§3). |
+| Timeout branch | Proceed to resolve anyway. The trace reports honestly. Close A still requires the sustained heart-rate activation and averaged-return evidence in §3; a timeout is not itself a verdict. |
 | Authority ceilings | arousal 1.0 · valence 1.0 · cognitive\_load 1.0 · readiness 1.0. Confidence is the only limiter. |
 | **Regulation target** | **Primary: arousal, direction DOWN, target value 0.32.** **Secondary: cognitive\_load, direction DOWN, target value 0.28.** Held: readiness target 0.62 (up, but confidence will be moderate so it acts weakly, which is honest). valence target 0.50 — no authority, it will not move, and that is the point. |
 | **Success threshold** | Let rise \= HR\_load − HR\_base (from §2 LOAD). **Regulated when any 20 s rolling window has mean HR ≤ HR\_load − max(5 bpm, 0.5 × rise).** Floor of 5 bpm so a person who barely activated still has a reachable bar. Secondary, recorded not gating: RMSSD returns to ≥ 0.95 × baseline. |
@@ -251,24 +251,40 @@ Four variants, one spine. Only Beat 1 changes.
 
 |  | It moved | It did not move |
 | :---- | :---- | :---- |
-| **Investor** | "Your rate came down about **\[N\]** beats from where the task put it. Nobody scripted that — the system read each batch as it arrived and adjusted to the measurements. The heartbeat played those measured intervals after a delay. What's on the screen is the record, not an invented curve." | "Your trace is close to flat, and the system said so. It never claimed a change it couldn't measure — you can see the confidence on that dimension stayed where it was. That's the behaviour we build for. In a car or a classroom, a system that overstates what it's reading is worse than no system at all." |
-| **Student** | "That line's your heart rate. It went up when the task got hard, and it came back down after. The low heartbeat replayed your measured intervals after a delay; the surrounding sound was composed during your session, not a playlist." | "Your line's pretty flat, which happens plenty. That's the honest result and the system reported it — it didn't get much purchase on you today and it didn't pretend otherwise. The interesting part is that it knew." |
+| **Investor** | "Your rate came down about **\[N\]** beats from where the task put it. Nobody scripted that — the system read each batch as it arrived and adjusted to the measurements. The heartbeat played those measured intervals after a delay. What's on the screen is the record, not an invented curve." | "The averaged trace did not show a clear sustained rise and return, so I'm not putting a number on it." |
+| **Student** | "That line's your heart rate. It went up when the task got hard, and it came back down after. The low heartbeat replayed your measured intervals after a delay; the surrounding sound was composed during your session, not a playlist." | "The averaged trace did not show a clear sustained rise and return, so I'm not putting a number on it." |
 
 &nbsp;
 
-**\[N\]** is the visible fall on the trace screen: **peaked at minus left at** (prompt 3.5), read live. It is never the session's `drop_bpm`, which is HR\_load minus the lowest 20 s window, a different number. **The close follows N alone.** 3 bpm or more takes the "It moved" close (close A). Under 3 bpm takes the "It did not move" close (close B), whatever the threshold logic decided and whether regulate timed out. The state machine produces no verdict; the attendant reads N off the screen.
+The three cards are **At rest**, **Highest during the task** and **After the task**, each marked as
+a 30-second average. The host calculates them from accepted, non-bootstrap intervals on the
+reconstructed measurement timeline, never from delayed playback time. Every average is
+`60,000 × interval count ÷ sum of the intervals`, needs at least 22.5 s of accepted coverage,
+and displays one decimal place. Missing evidence shows a dash; no neighbouring window is ever
+substituted.
 
-**Definition, 21 September:** **Peaked at is the highest heart rate during the load segment only, not the whole session.** A person may sit down elevated from the exhibition floor and settle through baseline; that settling is not a response to the task. Close A says "from where the task put it", so only load contributes to its peak. **Sat down at stays the first reading**, honestly showing that settling. **Left at is the latest plotted resolve reading**, updating until the session ends and then held with the trace through reset and idle. The screen uses non-rejected scheduled beats, classified against host segment boundaries, for all three numbers. It displays one decimal place and subtracts those same displayed peak and endpoint numbers for N; a negative N stays negative. Missing readings show a dash, never an invented zero. No on-screen verdict or choice of close is produced.
+- **At rest** is baseline seconds 15–45, skipping the unstable arrival period.
+- **Highest during the task** is the highest eligible 30 s rolling average wholly inside load,
+  evaluated every 500 ms. It cannot be inflated by a single fast beat or baseline settling.
+- **After the task** is fixed at regulate seconds 45–75. It does not move when regulate extends:
+  a longer run must not let the screen choose whichever later window happened to look best.
 
-**Delayed-playback caveat, 23 September:** the existing screen classifies those beats by `t_play`,
-so "during load" currently means the **load playback window**, not an exact measurement window.
-The peak caption makes this explicit. Buffered PPI can cross a segment edge before it plays; the
-MQTT samples and frozen beat contract contain no per-beat acquisition timestamp. Do not infer that
-a boundary-adjacent plotted beat was measured in that same segment, subtract a guessed delay in
-the client, or describe the trace as instantaneous. The load-only peak and visible N rule are
-unchanged; exact acquisition-segment attribution is a limitation, not a new on-screen decision.
+The last intervals for the fixed ending window arrive early in resolve because measured PPI is
+buffered. The host waits for them and sends the final number before the trace reveal; until then
+the card is a dash. The browser does no buffer subtraction and never calculates a card.
 
-**Both closes need a rewrite. Not rewritten yet (14 September).** Measured on synthetic sessions in the design critique of 13 September, against the closes as they were chosen until 14 September, by the threshold logic with close B on a timeout:
+**\[N\]** is Highest during the task minus After the task, using those same displayed one-decimal
+values. It is shown only when the sustained heart-rate activation test passed and the averaged
+fall is at least 3.0 bpm. Otherwise no N is shown and the attendant uses close B. It is never the
+session's `drop_bpm`, which is HR\_load minus the lowest 20 s regulate window. Regulate outcome,
+timeout and RMSSD activation do not manufacture a spoken heart-rate number.
+
+The trace keeps a thin line labelled **each accepted beat** and adds a clearer **30-second
+average** line. The host calculates that line with the same formula and coverage rule; it breaks
+where evidence is thin. Its plotting coordinates already include the playback delay, so the
+browser displays them without guessing the buffer.
+
+**Why this replaced the old close (resolved 5 October):** measured on synthetic sessions in the design critique of 13 September, against the closes as they were chosen until 14 September, by the threshold logic with close B on a timeout:
 
 - **Close A's first clause asserts a rise that 13 % of regulated runs never had.** "It went up when the task got hard" (student), and "from where the task put it" (investor), are said to people who never met the load activation test: 107 of 818 regulated sessions, with simulated load rises of 0 to 20 bpm.
 - **Close B tells 95 % of timeouts that their trace is flat, when it fell a median 5.9 bpm.** "Your trace is close to flat" and "Your line's pretty flat" are said over a visible fall of 3 bpm or more: 94 of 99 timeouts with a simulated load rise of 10 to 20 bpm. Counting the rise-6 sessions of the same sweep, it is 181 of 249 (73 %), median 4.3 bpm.
@@ -420,6 +436,7 @@ Also true and worth knowing before authoring: the engine is **mono float32 end t
 | 1.9 | 23 Sep 2026 | §0 and spoken introduction/close distinguish delayed playback of measured heartbeat intervals from the surrounding composed sound. No instantaneous-heartbeat or whole-experience "not played back" claim; spectator disclosure remains visible. |
 | 1.10 | 29 Sep 2026 | §0/§2: baseline's 12 s heartbeat intro begins at the first accepted measured beat's scheduled playback, not baseline entry. Buffer-fill silence no longer consumes the fade. Levels, beat timing and segment lengths are unchanged. |
 | 1.11 | 2 Oct 2026 | §2: body-derived PSV is the production source with the accepted V2 stems. It is the more honest claim because the music follows the person's authority-scaled readings; the accepted cost is a less predictable musical arc. Pose remains available for comparison and diagnosis. |
+| 1.12 | 5 Oct 2026 | §3: replaced single-beat start/peak/end cards with host-calculated 30 s averages on reconstructed measurement time. Ending is fixed at regulate 45–75 s even when regulate extends. N appears only after sustained HR activation and an averaged fall of at least 3 bpm; otherwise close B makes no numerical claim. Added the host-generated coverage-broken 30 s line over the labelled accepted-beat trace. |
 
 &nbsp;
 

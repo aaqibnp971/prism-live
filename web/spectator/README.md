@@ -74,21 +74,18 @@ data to the production page.
 Resolve reveals the panel on the first host state with `segment_nominal_ms − segment_elapsed_ms`
 at or below 20,000. The local clock never starts it; the 2 s host cadence bounds its timing precision.
 
-- SAT DOWN AT: first plotted baseline reading, including an elevated arrival rate.
-- PEAKED AT: maximum plotted rate **in load only**, never baseline, regulate or resolve.
-- LEFT AT: most recent plotted resolve beat, labelled as updating until the completed reset.
-- PEAKED AT − LEFT AT: subtract those same one-decimal displayed values. Negative values stay
-  negative. There is no threshold colour, outcome, recommended close or `drop_bpm` substitution.
+- AT REST: baseline seconds 15–45, as a host-calculated 30-second average.
+- HIGHEST DURING THE TASK: highest eligible host-calculated 30-second window wholly in load.
+- AFTER THE TASK: regulate seconds 45–75, fixed even when regulate extends.
+- AVERAGED FALL / spoken N: supplied by the host only after sustained HR activation and a fall of
+  at least 3 bpm. Withheld N is hidden, not replaced by `drop_bpm` or a browser verdict.
 
-The trace retains all session beats, not a rolling 1,024-point tail. Only scheduled, non-rejected
-beats supply its values; 2 s state HR messages do not add samples or replace extrema. Host boundary
-times classify beats by `t_play`, including a boundary message arriving after a beat was plotted.
-With buffered PPI this is the delayed **playback** segment, not an exact acquisition segment.
-The peak's caption says `YOUR LOAD SEGMENT · PLAYBACK TIME`; a measured beat near a segment edge
-can play in the next segment. The frozen beat contract carries no acquisition timestamp, and the
-phone's MQTT samples do not provide one either. The load-only peak and N calculations are not
-silently redefined or adjusted by a guessed delay; exact measurement-segment attribution remains
-unavailable to this client.
+The thin trace retains all scheduled, non-rejected session beats observed by this browser, not a
+rolling 1,024-point tail, and is labelled `EACH ACCEPTED BEAT`. The clearer 30-second line and every
+card arrive in `state.trace`, already calculated by the host from accepted non-bootstrap intervals
+on reconstructed measurement time. Null average points break the line where coverage is below
+22.5 seconds. The host also supplies each point's playback plotting coordinate; the browser never
+guesses or subtracts the PPI buffer. State `hr_bpm` does not add trace samples or replace a card.
 The history rail records the maximum observed host authority on each dimension. Its label describes
 history, not current idle authority; valence remains NOT READABLE with exactly zero confidence and
 authority. No authority or confidence is inferred by this page.
@@ -99,9 +96,10 @@ The axis includes the resting line as well as every beat so neither falls outsid
 
 A completed 20 s reset freezes the whole summary, trace and resting reference. Idle's new session
 id does not overwrite them; the next baseline clears all of them. A stopped/failed 3 s reset does
-not present a completed result. A screen opened late or disconnected mid-session cannot backfill:
-it marks PARTIAL TRACE, uses only observed readings and shows a dash for missing first/load/resolve
-readings or N. Opening after baseline cannot supply SAT DOWN AT. Reloading in idle remains cold.
+not present a completed result. A screen opened late or disconnected mid-session cannot backfill
+the thin beat line and marks it PARTIAL TRACE, but the repeated host average/card evidence can be
+recovered on the next state. Reloading in idle remains cold because the new session does not carry
+the prior visitor's reveal.
 
 ## Ambient field mirror (3.4)
 

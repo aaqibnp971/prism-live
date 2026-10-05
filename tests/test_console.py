@@ -298,7 +298,7 @@ def test_failed_gate_never_uses_slope_quality_as_success_and_next_baseline_clear
         log.close()
 
 
-def test_console_never_reads_regulate_result_or_offers_a_close_verdict():
+def test_console_never_reads_regulate_result_and_uses_the_host_trace_close_rule():
     class NoVerdict:
         segment = "resolve"
         session = "S-20260921-0001"
@@ -312,7 +312,8 @@ def test_console_never_reads_regulate_result_or_offers_a_close_verdict():
     bridge = StubBridge()
     bridge.session = NoVerdict()
     text = "\n".join(screen_lines(AttendantConsole(bridge).snapshot()))
-    assert "peaked-at minus left-at" in text
+    assert "averaged N only when the spectator trace shows one" in text
+    assert "use close B" in text
     assert "drop_bpm" not in text
 
 

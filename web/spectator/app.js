@@ -334,19 +334,23 @@
       ? `${view.trace.length} BEATS SHOWN`
       : "WAITING FOR YOUR FIRST BEAT";
     elements.traceEmpty.hidden = view.trace.length > 0;
-    renderTrace("live", view.trace, 1_000, 210, readings.restingBpm);
+    renderTrace("live", view.trace, view.summary.average30s, 1_000, 210, readings.restingBpm);
   }
 
   function renderReveal(view, held) {
     const summary = view.summary;
-    elements.revealStart.textContent = preciseBpm(summary.satDownAt);
-    elements.revealPeak.textContent = preciseBpm(summary.peakedAt);
-    elements.revealEnd.textContent = preciseBpm(summary.leftAt);
-    elements.revealEquation.textContent = `${preciseBpm(summary.peakedAt)} − ${preciseBpm(summary.leftAt)} = `;
-    elements.revealDifference.textContent = preciseBpm(summary.difference);
+    elements.revealStart.textContent = preciseBpm(summary.atRest);
+    elements.revealPeak.textContent = preciseBpm(summary.highestDuringTask);
+    elements.revealEnd.textContent = preciseBpm(summary.afterTask);
+    const showN = summary.spokenN !== null;
+    elements.revealDifferencePanel.hidden = !showN;
+    elements.revealEquation.textContent = showN
+      ? `${preciseBpm(summary.highestDuringTask)} − ${preciseBpm(summary.afterTask)} = `
+      : "";
+    elements.revealDifference.textContent = showN ? preciseBpm(summary.spokenN) : "";
     elements.revealStatus.textContent = (summary.partialHistory ? "PARTIAL TRACE · MISSING SESSION HISTORY · " : "") +
       (held ? "YOUR SESSION TRACE · HELD UNTIL THE NEXT BASELINE" : "YOUR SESSION TRACE · STILL RECORDING");
-    elements.revealEndNote.textContent = held ? "YOUR FINAL OBSERVED RESOLVE BEAT" : "YOUR LATEST RESOLVE BEAT · UPDATING";
+    elements.revealEndNote.textContent = "REGULATE 45–75 S · 30-SECOND AVERAGE";
     elements.revealEmpty.hidden = view.trace.length > 0;
     for (const key of Spectator.DIMENSIONS) {
       const authority = summary.authority[key]; // Observed maximum, never a client ceiling.
@@ -355,25 +359,30 @@
       target.bar.style.width = `${authority * 100}%`;
       if (target.status) target.status.textContent = authority > 0 ? "HAD AUTHORITY" : "NONE OBSERVED";
     }
-    renderTrace("held", view.trace, 1_000, 420, summary.restingBpm);
+    renderTrace("held", view.trace, summary.average30s, 1_000, 420, summary.restingBpm);
   }
 
   function preciseBpm(value) {
     return value === null ? "—" : value.toFixed(1).replace("-", "−");
   }
 
-  function renderTrace(which, trace, width, height, restingBpm = null) {
+  function renderTrace(which, trace, average, width, height, restingBpm = null) {
     const target = which === "held" ? elements.heldTrace : elements.liveTrace;
-    const scale = Spectator.traceScale(trace, restingBpm);
-    const points = Spectator.tracePoints(trace, width, height, 12, restingBpm);
+    const geometry = Spectator.traceGeometry(trace, average, width, height, 12, restingBpm);
+    const scale = geometry.scale;
+    const points = geometry.points;
     const path = points.length
       ? points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ")
       : "";
+    const averagePath = geometry.averageRuns.map((run) =>
+      run.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
+    ).join(" ");
     target.line.setAttribute("d", path);
     target.glow.setAttribute("d", path);
+    target.average.setAttribute("d", averagePath);
     target.maximum.textContent = scale ? Math.round(scale.maximum) : "—";
     target.minimum.textContent = scale ? Math.round(scale.minimum) : "—";
-    const referenceY = Spectator.referenceY(trace, restingBpm, height);
+    const referenceY = Spectator.referenceY(trace, restingBpm, height, 12, average);
     target.restingReference.toggleAttribute("hidden", referenceY === null);
     target.restingLabel.hidden = referenceY === null;
     if (referenceY !== null) {
@@ -465,6 +474,7 @@
     return {
       line: required(`${prefix}-trace-line`),
       glow: required(`${prefix}-trace-glow`),
+      average: required(`${prefix}-trace-average`),
       end: required(`${prefix}-trace-end`),
       maximum: required(`${prefix}-trace-max`),
       minimum: required(`${prefix}-trace-min`),
@@ -535,6 +545,7 @@
       revealEnd: required("reveal-end"),
       revealEndNote: required("reveal-end-note"),
       revealDifference: required("reveal-difference"),
+      revealDifferencePanel: required("reveal-difference-panel"),
       revealEquation: required("reveal-equation"),
       revealStatus: required("reveal-status"),
       revealEmpty: required("reveal-empty"),

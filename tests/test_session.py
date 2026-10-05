@@ -68,6 +68,24 @@ def test_a_whole_session_walks_every_segment_and_each_ends_on_its_deadline(tmp_p
     assert run.session.segment == "idle" and run.session.session == "S-20260913-0002"
 
 
+def test_completed_state_carries_host_averages_and_activation_gated_spoken_n(tmp_path):
+    run = live(tmp_path, REGULATED)
+    completed = next(m for m in first_session(run) if m["segment"] == "reset")
+    trace = completed["trace"]
+    assert trace["at_rest_bpm"] is not None
+    assert trace["highest_task_bpm"] is not None
+    assert trace["after_task_bpm"] is not None
+    assert trace["spoken_n_bpm"] == round(
+        trace["highest_task_bpm"] - trace["after_task_bpm"], 1
+    )
+    assert trace["spoken_n_bpm"] >= 3.0
+    assert trace["average_30s"]
+    assert all(
+        a["t_play"] < b["t_play"]
+        for a, b in zip(trace["average_30s"], trace["average_30s"][1:], strict=False)
+    )
+
+
 def test_state_goes_out_every_2_s_and_at_every_boundary_with_the_segment_clock(tmp_path):
     run = live(tmp_path, EXTENDS)
     states = first_session(run)

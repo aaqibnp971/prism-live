@@ -34,6 +34,17 @@ STATE = {
     "hr_bpm": 96.2,
     "hr_base": 71.0,
     "signal": {"contact": True, "rr_accepted_pct": 0.94, "baseline_quality": 0.81},
+    "trace": {
+        "at_rest_bpm": 71.0,
+        "highest_task_bpm": 80.4,
+        "after_task_bpm": 74.2,
+        "spoken_n_bpm": 6.2,
+        "average_30s": [
+            {"t_play": 43120, "hr_bpm": 72.1},
+            {"t_play": 43620, "hr_bpm": None},
+            {"t_play": 44120, "hr_bpm": 72.4},
+        ],
+    },
 }
 PONG = {"type": "clock", "v": 1, "role": "pong", "t_client_sent": 40219, "t_engine": 184001}
 PING = {"type": "clock", "v": 1, "role": "ping", "t_client_sent": 40219}
@@ -173,6 +184,31 @@ def test_heart_rates_may_be_unknown():
     validate(with_(STATE, hr_bpm=None, hr_base=None), "out")
     with pytest.raises(ContractError):
         validate(with_(STATE, hr_bpm=0), "out")
+
+
+def test_trace_cards_and_average_line_are_exact_host_evidence():
+    validate(
+        with_(
+            STATE,
+            trace__at_rest_bpm=None,
+            trace__highest_task_bpm=None,
+            trace__after_task_bpm=None,
+            trace__spoken_n_bpm=None,
+            trace__average_30s=[],
+        ),
+        "out",
+    )
+    with pytest.raises(ContractError, match="one-decimal"):
+        validate(with_(STATE, trace__at_rest_bpm=71.04), "out")
+    with pytest.raises(ContractError, match="requires all three"):
+        validate(with_(STATE, trace__at_rest_bpm=None), "out")
+    with pytest.raises(ContractError, match="at least 3.0"):
+        validate(with_(STATE, trace__spoken_n_bpm=2.9), "out")
+    with pytest.raises(ContractError, match="strictly increasing"):
+        validate(with_(STATE, trace__average_30s=[
+            {"t_play": 1000, "hr_bpm": 70.0},
+            {"t_play": 1000, "hr_bpm": 70.1},
+        ]), "out")
 
 
 @pytest.mark.parametrize(

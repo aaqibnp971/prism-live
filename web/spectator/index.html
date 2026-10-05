@@ -45,14 +45,14 @@
             <p class="signal-line"><span id="signal-quality">—</span></p>
           </section>
           <section id="live-trace-card" class="trace-card" aria-labelledby="live-trace-title">
-            <header class="trace-heading"><h2 id="live-trace-title">YOUR HEART, BEAT BY BEAT</h2><span><span id="live-trace-min">—</span> – <span id="live-trace-max">—</span> BPM</span></header>
+            <header class="trace-heading"><h2 id="live-trace-title">YOUR HEART TRACE</h2><span class="trace-legend">THIN · EACH ACCEPTED BEAT&nbsp;&nbsp; BRIGHT · 30-SECOND AVERAGE&nbsp;&nbsp; <span id="live-trace-min">—</span> – <span id="live-trace-max">—</span> BPM</span></header>
             <div class="trace-frame">
               <svg id="live-trace-svg" class="trace-svg" viewBox="0 0 1000 210" preserveAspectRatio="none" role="img" aria-label="Your measured heart rate trace, shown on the delayed playback timeline">
                 <defs><clipPath id="live-plot-clip"><rect x="0" y="0" width="1000" height="210" /></clipPath></defs>
                 <g class="plot-content" clip-path="url(#live-plot-clip)">
                   <g class="trace-grid" aria-hidden="true"><path d="M0 12H1000 M0 105H1000 M0 198H1000" /></g>
                   <g id="live-resting-reference" hidden><path id="live-resting-line" class="resting-reference" /></g>
-                  <path id="live-trace-glow" class="trace-line trace-line--glow" /><path id="live-trace-line" class="trace-line" /><circle id="live-trace-end" class="trace-end" r="5" hidden />
+                  <path id="live-trace-glow" class="trace-line trace-line--glow" /><path id="live-trace-line" class="trace-line trace-line--beats" /><path id="live-trace-average" class="trace-line trace-line--average" /><circle id="live-trace-end" class="trace-end" r="5" hidden />
                 </g>
               </svg>
               <p id="live-resting-label" class="resting-label" hidden></p>
@@ -106,20 +106,20 @@
             <header class="reveal-heading"><h2 id="held-title">YOUR FOUR MINUTES</h2><p>PHOTOGRAPH THIS</p></header>
             <p id="reveal-status" class="reveal-status">YOUR SESSION TRACE</p>
             <div class="reveal-numbers">
-              <article><h3>SAT DOWN AT</h3><div><output id="reveal-start">—</output><span>BPM</span></div><p>YOUR FIRST READING</p></article>
-              <article><h3>PEAKED AT</h3><div><output id="reveal-peak">—</output><span>BPM</span></div><p>YOUR LOAD SEGMENT · PLAYBACK TIME</p></article>
-              <article class="reveal-ending"><h3>LEFT AT</h3><div><output id="reveal-end">—</output><span>BPM</span></div><p id="reveal-end-note">YOUR LATEST RESOLVE BEAT</p></article>
+              <article><h3>AT REST</h3><div><output id="reveal-start">—</output><span>BPM</span></div><p>BASELINE 15–45 S · 30-SECOND AVERAGE</p></article>
+              <article><h3>HIGHEST DURING THE TASK</h3><div><output id="reveal-peak">—</output><span>BPM</span></div><p>HIGHEST LOAD WINDOW · 30-SECOND AVERAGE</p></article>
+              <article class="reveal-ending"><h3>AFTER THE TASK</h3><div><output id="reveal-end">—</output><span>BPM</span></div><p id="reveal-end-note">REGULATE 45–75 S · 30-SECOND AVERAGE</p></article>
             </div>
-            <div class="reveal-difference"><h3>PEAKED AT − LEFT AT</h3><p><span id="reveal-equation">— − — = </span><output id="reveal-difference">—</output> <span>BPM</span></p></div>
+            <div id="reveal-difference-panel" class="reveal-difference" hidden><h3>AVERAGED FALL · SPOKEN N</h3><p><span id="reveal-equation"></span><output id="reveal-difference"></output> <span>BPM</span></p></div>
             <div class="held-trace-card">
-            <div class="trace-heading"><span>YOUR HEART, BEAT BY BEAT</span><span><span id="held-trace-min">—</span> – <span id="held-trace-max">—</span> BPM</span></div>
+            <div class="trace-heading"><span>YOUR HEART TRACE</span><span class="trace-legend">THIN · EACH ACCEPTED BEAT&nbsp;&nbsp; BRIGHT · 30-SECOND AVERAGE&nbsp;&nbsp; <span id="held-trace-min">—</span> – <span id="held-trace-max">—</span> BPM</span></div>
             <div class="trace-frame">
               <svg id="held-trace-svg" class="trace-svg" viewBox="0 0 1000 420" preserveAspectRatio="none" role="img" aria-label="Your session heart rate trace">
                 <defs><clipPath id="held-plot-clip"><rect x="0" y="0" width="1000" height="420" /></clipPath></defs>
                 <g class="plot-content" clip-path="url(#held-plot-clip)">
                   <g class="trace-grid"><path d="M0 12H1000 M0 210H1000 M0 408H1000" /></g>
                   <g id="held-resting-reference" hidden><path id="held-resting-line" class="resting-reference" /></g>
-                  <path id="held-trace-glow" class="trace-line trace-line--glow" /><path id="held-trace-line" class="trace-line" /><circle id="held-trace-end" class="trace-end" r="5" hidden />
+                  <path id="held-trace-glow" class="trace-line trace-line--glow" /><path id="held-trace-line" class="trace-line trace-line--beats" /><path id="held-trace-average" class="trace-line trace-line--average" /><circle id="held-trace-end" class="trace-end" r="5" hidden />
                 </g>
               </svg>
               <p id="held-resting-label" class="resting-label" hidden></p>

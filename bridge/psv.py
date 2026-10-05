@@ -309,6 +309,9 @@ class PsvModel:
         self._cleaner = IntervalCleaner()
         self._clean: deque[HrvInterval] = deque()  # HRV-clean intervals, for RMSSD
         self._trusted: deque[tuple[float, float]] = deque()  # (t_beat, rr_ms), for heart rate
+        # The two-minute deque above is enough for live PSV, but the reveal needs the whole visit.
+        # This contains the identical accepted, non-bootstrap evidence, never raw/rejected PPI.
+        self._session_trusted: list[tuple[float, float]] = []
         self._reported: deque[tuple[float, bool]] = deque()  # (arrival, accepted)
         self._last_arrival: float | None = None
         self._last_t_beat = -math.inf
@@ -333,10 +336,11 @@ class PsvModel:
         t = _num(t_ms, *TIME_RANGE_MS)
         if t is None:
             return False
+        self._visit_start = t
+        self._session_trusted.clear()
         if self.measured_ppi:
             # Transport keeps its freshness evidence, but a new visitor must not inherit
             # the previous visitor's displayed HR, acceptance or HRV history.
-            self._visit_start = t
             self._trusted.clear()
             self._wire_rr.clear()
             self._reported.clear()
@@ -351,6 +355,8 @@ class PsvModel:
     def reset(self) -> None:
         """Between visitors: forget the session, keep the armband's history."""
         self._start_session(None)
+        self._visit_start = None
+        self._session_trusted.clear()
 
     def mark_baseline_degraded(self) -> bool:
         """No hr_base in time. Terminal for the session: a result that arrives later is ignored."""
@@ -514,6 +520,16 @@ class PsvModel:
         return HeartRateWindow(bpm, covered, count)
 
     @property
+    def session_heart_intervals(self) -> tuple[tuple[float, float], ...]:
+        """Accepted, non-bootstrap intervals for the current visit, in measurement time.
+
+        Unlike ``_trusted``, this history is not pruned at two minutes.  It exists only so the
+        host can calculate the trace reveal; it is cleared when the visit resets and no raw
+        physiological values are written anywhere new.
+        """
+        return tuple(self._session_trusted)
+
+    @property
     def last_trusted_beat_ms(self) -> float | None:
         """Newest accepted, non-bootstrap reconstructed beat; no PPI wear inference."""
         if self.measured_ppi:
@@ -590,6 +606,8 @@ class PsvModel:
                 self._wire_rr.append(interval.rr_ms)
                 if not interval.bootstrap:
                     self._trusted.append((interval.t_beat, interval.rr_ms))
+                    if self._visit_start is not None and interval.t_beat >= self._visit_start:
+                        self._session_trusted.append((interval.t_beat, interval.rr_ms))
         self._last_arrival = now
 
         classified = self._cleaner.add(fed)

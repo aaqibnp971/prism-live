@@ -23,6 +23,7 @@ import math
 
 from bridge.authority import authority
 from bridge.psv import BaselinePhase, PsvEstimate
+from bridge.trace import empty_trace
 
 
 class StateStream:
@@ -46,6 +47,7 @@ class StateStream:
         estimate: PsvEstimate,
         hr_base_bpm: float | None,
         baseline_quality: float,
+        trace: dict | None = None,
     ) -> dict:
         """The next state message. Validate it (server.publish does) before it goes out."""
         if segment == "resolve" and not self._in_resolve:
@@ -91,6 +93,7 @@ class StateStream:
                 if degraded
                 else round(min(1.0, max(0.0, _finite(baseline_quality))), 3),
             },
+            "trace": empty_trace() if trace is None else trace,
         }
 
 

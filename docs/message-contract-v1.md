@@ -1,6 +1,8 @@
-# Prism Live: Message Contract v1.7
+# Prism Live: Message Contract v1.8
 
-**Status:** FROZEN as of 10 September 2026. Clarifications through v1.7 (23 September 2026) add or remove no fields; the schema version `v` is still `1`. v1.7 deprecates contact as wear evidence and documents delayed measured PPI playback.
+**Status:** FROZEN as of 10 September 2026. v1.8 (5 October 2026) adds the
+host-calculated trace evidence required by the approved close; both browser clients and the host
+change together. The schema version `v` remains `1` because no deployed external client exists.
 **Owner:** Ridhwan
 **Supersedes:** Project Plan v1 §11
 
@@ -94,7 +96,18 @@ Sent every **2000 ms**, and additionally at every segment boundary.
   "authority":  { "arousal": 0.88, "valence": 0.00, "cognitive_load": 0.71, "readiness": 0.63 },
   "hr_bpm": 96.2,
   "hr_base": 71.0,
-  "signal": { "contact": true, "rr_accepted_pct": 0.94, "baseline_quality": 0.81 }
+  "signal": { "contact": true, "rr_accepted_pct": 0.94, "baseline_quality": 0.81 },
+  "trace": {
+    "at_rest_bpm": 71.0,
+    "highest_task_bpm": 80.4,
+    "after_task_bpm": 74.2,
+    "spoken_n_bpm": 6.2,
+    "average_30s": [
+      { "t_play": 43120, "hr_bpm": 72.1 },
+      { "t_play": 43620, "hr_bpm": null },
+      { "t_play": 44120, "hr_bpm": 72.4 }
+    ]
+  }
 }
 ```
 
@@ -110,6 +123,41 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | `hr_bpm` | Current heart rate. `null` before the first accepted interval |
 | `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended. **A degraded session keeps it `null` to the end:** when the baseline result does not come within 12 s of the baseline window closing, load starts without it, and every later `state` in that session sends `hr_base` `null` and `signal.baseline_quality` 0.0 |
 | `signal` | `contact` is a deprecated diagnostic, **never wear evidence**. Legacy HRM may forward its bit; unknown/unreliable contact (including all Verity Sense PPI) sends `false`. Neither value may label the armband worn or unworn, or gate PPI confidence. `baseline_quality` is 0.0 through baseline and its hold, and takes the baseline result's value from the first `load` message. Nothing uses it during baseline: the baseline visual is driven by confidence (VR handoff §9) |
+| `trace` | Host-calculated evidence for the trace reveal. Its exact rules are below. Clients display it and never derive, substitute or reclassify these values. |
+
+#### Host-calculated trace evidence
+
+`trace.at_rest_bpm`, `trace.highest_task_bpm` and `trace.after_task_bpm` are nullable,
+one-decimal heart rates. Every eligible window uses accepted, non-bootstrap intervals on their
+**reconstructed measurement timeline**, never their delayed playback time:
+
+```
+mean bpm = 60,000 * interval count / sum(interval milliseconds)
+```
+
+Every 30 s window requires at least 22.5 s of interval coverage. If it does not have that
+coverage, its value is `null`; the host never substitutes a neighbouring window.
+
+- `at_rest_bpm` is baseline seconds 15–45.
+- `highest_task_bpm` is the highest eligible 30 s window wholly inside load, with candidate
+  window ends on the 500 ms grid anchored to load entry.
+- `after_task_bpm` is always regulate seconds 45–75. A regulate extension never moves this
+  window to a more favourable endpoint.
+- `spoken_n_bpm` is `highest_task_bpm - after_task_bpm`, subtracting the displayed one-decimal
+  values. It is non-null only when all three cards exist, the sustained heart-rate activation
+  test passed, and the fall is at least 3.0 bpm. Otherwise it is `null` and no N is shown.
+
+The host waits until the source-specific packet-settlement interval has passed each window end.
+In particular, `after_task_bpm` stays `null` until the last intervals from regulate second 75
+have arrived. With measured PPI that occurs early in resolve, before the reveal at resolve T−20 s.
+
+`trace.average_30s` is the host-generated 30 s average line. It uses the same estimator and
+22.5 s coverage rule at 500 ms steps. Each point has exactly `t_play` and `hr_bpm`. A null
+`hr_bpm` is an explicit line break for insufficient coverage. The calculation window ends on
+reconstructed measurement time; `t_play` is that end shifted by the source's host-known playback
+buffer so it overlays the scheduled beat trace. The browser uses this supplied coordinate and
+must not subtract or guess a buffer. Points are strictly increasing and the complete history so
+far is repeated in each state, allowing a reconnecting spectator to recover the averaged line.
 
 **Segment ceilings**, applied laptop-side before sending:
 
@@ -218,6 +266,13 @@ gitignored storage; they are never committed fixtures or required test inputs.
 
 ## Changelog
 
+v1.8 (5 October 2026): `state` adds the required `trace` object. The host now owns all three
+30-second card averages, the activation-gated spoken N and the coverage-broken 30-second average
+line. Calculations use reconstructed measurement time; clients receive plot coordinates and do
+no playback-buffer arithmetic. The fixed ending window is regulate seconds 45–75, even when
+regulate extends. Both browser clients and the host update together; wire `v` remains `1` because
+there is no deployed external v1 client.
+
 v1.7 (23 September 2026): no schema change. The MQTT PPI route schedules accepted measured
 intervals with a 12 s reconstructed-time buffer; it never creates interpolated replacement
 beats. `rr_ms` remains the original measured interval, even across a rejected or skipped beat;
@@ -235,3 +290,5 @@ baseline when accepted-only gate and `hr_base` are available by the unchanged ho
 | 1.4 | 13 Sep 2026 | Three gaps made explicit, as implemented in `bridge/session.py` (prompt 2.4). No field added or removed; `v` stays `1`. §2 `state`: idle sends `segment_nominal_ms` 0, having no length. Reset lasts 20 s after a completed session and 3 s after a stop or a failed baseline gate, with `segment_nominal_ms` to match, and the session id changes when it ends. |
 | 1.5 | 14 Sep 2026 | Two gaps made explicit, as implemented in `bridge/session.py` and `bridge/contract.py`. No field added or removed; `v` stays `1`. §2 `state`: idle sends `segment_elapsed_ms` 0 as well as `segment_nominal_ms` 0. `signal.baseline_quality` is 0.0 through baseline and its hold, and nothing uses it there. |
 | 1.6 | 14 Sep 2026 | One wording brought up to date. No field added or removed; `v` stays `1`. §2 `state`: `t_session` counts from when start fires, which is when baseline begins, as `bridge/session.py` already does. The old wording, "since the attendant pressed start", predates the attendant console's countdown (prompt 2.7), from when the press and the start were the same moment. The countdown of up to 11 s now sits before start fires, is not part of the session, and sends `idle`. |
+| 1.7 | 23 Sep 2026 | No schema change. Documented buffered measured-PPI playback and deprecated `signal.contact` as wear evidence. |
+| 1.8 | 5 Oct 2026 | Added host-owned `state.trace`: three fixed 30 s averages, activation-gated spoken N, and the host-calculated 30 s average line. Wire `v` stays `1`; host and both browser clients update together before deployment. |

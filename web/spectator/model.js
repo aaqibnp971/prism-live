@@ -14,7 +14,7 @@
   "use strict";
 
   const VERSION = 1;
-  const BUILD = "3.5.0";
+  const BUILD = "3.5.1";
   const STATE_STALE_MS = 2_500;
   const FULL_RESET_MS = 20_000;
   const REVEAL_REMAINING_MS = 20_000;
@@ -39,7 +39,7 @@
       this.heldTrace = null;
       this.heldSession = null;
       this.heldSummary = null;
-      this.boundaries = [];
+      this.hostTrace = emptyTrace();
       this.restingBpm = null;
       this.authorityHistory = Object.fromEntries(DIMENSIONS.map((key) => [key, 0]));
       this.partialHistory = false;
@@ -70,17 +70,10 @@
       }
 
       if (this.traceSession === message.session && (TRACE_SEGMENTS.has(message.segment) || message.segment === "reset")) {
-        if (this.boundaries.length === 0) {
+        if (this.trace.length === 0) {
           this.partialHistory = message.segment !== "baseline" || message.segment_elapsed_ms > 0;
         }
-        if (this.boundaries.at(-1)?.segment !== message.segment) {
-          // Classify by scheduled play time against HOST boundaries, not packet arrival or a
-          // guessed nominal timeline. A delayed boundary can correct a beat's classification.
-          this.boundaries.push(Object.freeze({
-            segment: message.segment,
-            start: message.t_engine - message.segment_elapsed_ms,
-          }));
-        }
+        this.hostTrace = copyTraceSummary(message.trace);
         if (TRACE_SEGMENTS.has(message.segment)) {
           this.restingBpm = message.hr_base; // Null clears it; never substitute first/average HR.
           for (const key of DIMENSIONS) {
@@ -97,11 +90,12 @@
         message.segment === "reset" &&
         message.segment_nominal_ms === FULL_RESET_MS &&
         this.traceSession === message.session &&
-        this.trace.length > 0 &&
-        this.heldSession !== message.session
+        (this.trace.length > 0 || this.hostTrace.average30s.length > 0)
       ) {
-        this.heldTrace = copyTrace(this.trace);
+        if (this.heldSession !== message.session) this.heldTrace = copyTrace(this.trace);
         this.heldSession = message.session;
+        // PPI evidence can finish settling during reset. Keep taking the host's completed
+        // average line and cards; never recalculate them from the frozen browser beat history.
         this.heldSummary = this.#summary();
       }
       return true;
@@ -127,7 +121,7 @@
           seq: message.seq,
         }),
       );
-      // Retain the entire host session, not a rolling window that loses "sat down at".
+      // Retain the entire host session for the labelled accepted-beat line.
       return true;
     }
 
@@ -181,22 +175,16 @@
     }
 
     #summary() {
-      // Numbers describe the plotted, non-rejected beats, not the 2 s state HR or drop_bpm.
-      // A high baseline/regulate reading must NEVER inflate the task's peak.
-      const segmentAt = (t) => this.boundaries.filter((b) => b.start <= t)
-        .sort((a, b) => a.start - b.start).at(-1)?.segment;
-      const load = this.trace.filter((sample) => segmentAt(sample.tPlay) === "load");
-      const resolve = this.trace.filter((sample) => segmentAt(sample.tPlay) === "resolve");
-      const first = this.trace[0];
-      // If the screen joined after baseline, the person's first reading is unknown.
-      const satDownAt = first && segmentAt(first.tPlay) === "baseline" ? shownBpm(first.bpm) : null;
-      const peakedAt = load.length ? shownBpm(Math.max(...load.map((sample) => sample.bpm))) : null;
-      const leftAt = resolve.length ? shownBpm(resolve.at(-1).bpm) : null;
+      // The host owns every physiological calculation. These values already use reconstructed
+      // measurement time, accepted non-bootstrap intervals and the fixed windows in contract
+      // v1.8. The browser neither subtracts the playback buffer nor derives a fallback.
+      const trace = this.hostTrace;
       return Object.freeze({
-        satDownAt, peakedAt, leftAt,
-        // Subtract the SAME one-decimal numbers on screen. No threshold, clamp or verdict.
-        difference: peakedAt === null || leftAt === null ? null :
-          (Math.round(peakedAt * 10) - Math.round(leftAt * 10)) / 10,
+        atRest: trace.atRestBpm,
+        highestDuringTask: trace.highestTaskBpm,
+        afterTask: trace.afterTaskBpm,
+        spokenN: trace.spokenNBpm,
+        average30s: copyTrace(trace.average30s),
         restingBpm: this.restingBpm,
         authority: Object.freeze({ ...this.authorityHistory }),
         partialHistory: this.partialHistory,
@@ -207,7 +195,7 @@
       this.trace = [];
       this.traceSession = session;
       this.lastBeatSeq = 0;
-      this.boundaries = [];
+      this.hostTrace = emptyTrace();
       this.restingBpm = null;
       this.authorityHistory = Object.fromEntries(DIMENSIONS.map((key) => [key, 0]));
       this.partialHistory = false;
@@ -278,12 +266,8 @@
     );
   }
 
-  function shownBpm(value) {
-    return Math.round(value * 10) / 10;
-  }
-
-  function traceScale(samples, restingBpm = null) {
-    const values = samples
+  function traceScale(samples, restingBpm = null, average = []) {
+    const values = [...samples, ...average]
       .map((sample) => (typeof sample === "number" ? sample : sample?.bpm))
       .filter((value) => finite(value) && value > 0);
     if (finite(restingBpm) && restingBpm > 0) values.push(restingBpm);
@@ -340,9 +324,39 @@
     );
   }
 
-  function referenceY(samples, restingBpm, height, inset = 12) {
+  function traceGeometry(samples, average, width, height, inset = 12, restingBpm = null) {
+    const scale = traceScale(samples, restingBpm, average);
+    const timed = [...samples, ...average].filter((sample) => finiteNonNegative(sample?.tPlay));
+    if (scale === null || timed.length === 0 || !(width > 2 * inset) || !(height > 2 * inset)) {
+      return Object.freeze({ points: Object.freeze([]), averageRuns: Object.freeze([]), scale });
+    }
+    const first = Math.min(...timed.map((sample) => sample.tPlay));
+    const last = Math.max(...timed.map((sample) => sample.tPlay));
+    const duration = Math.max(1, last - first);
+    const bpmSpan = scale.maximum - scale.minimum;
+    const point = (sample) => Object.freeze({
+      x: inset + clamp((sample.tPlay - first) / duration, 0, 1) * (width - 2 * inset),
+      y: inset + (1 - clamp((sample.bpm - scale.minimum) / bpmSpan, 0, 1)) * (height - 2 * inset),
+      quality: sample.quality,
+    });
+    const points = samples.filter((sample) => finite(sample?.bpm) && sample.bpm > 0).map(point);
+    const runs = [];
+    let run = [];
+    for (const sample of average) {
+      if (!(finite(sample?.bpm) && sample.bpm > 0)) {
+        if (run.length) runs.push(Object.freeze(run));
+        run = [];
+      } else {
+        run.push(point(sample));
+      }
+    }
+    if (run.length) runs.push(Object.freeze(run));
+    return Object.freeze({ points: Object.freeze(points), averageRuns: Object.freeze(runs), scale });
+  }
+
+  function referenceY(samples, restingBpm, height, inset = 12, average = []) {
     if (!(finite(restingBpm) && restingBpm > 0) || !(height > 2 * inset)) return null;
-    const scale = traceScale(samples, restingBpm);
+    const scale = traceScale(samples, restingBpm, average);
     return inset + (1 - (restingBpm - scale.minimum) / (scale.maximum - scale.minimum)) * (height - 2 * inset);
   }
 
@@ -375,7 +389,8 @@
       message.authority.valence === 0 &&
       nullablePositive(message.hr_bpm) &&
       nullablePositive(message.hr_base) &&
-      validSignal(message.signal)
+      validSignal(message.signal) &&
+      validTrace(message.trace)
     );
   }
 
@@ -437,6 +452,36 @@
     );
   }
 
+  function validTrace(trace) {
+    const keys = ["after_task_bpm", "at_rest_bpm", "average_30s", "highest_task_bpm", "spoken_n_bpm"];
+    if (
+      trace === null ||
+      typeof trace !== "object" ||
+      Object.keys(trace).sort().join("|") !== keys.join("|") ||
+      ![trace.at_rest_bpm, trace.highest_task_bpm, trace.after_task_bpm, trace.spoken_n_bpm]
+        .every(nullableOneDecimalPositive) ||
+      !Array.isArray(trace.average_30s) ||
+      trace.average_30s.length > 2048
+    ) return false;
+    if (trace.spoken_n_bpm !== null) {
+      if ([trace.at_rest_bpm, trace.highest_task_bpm, trace.after_task_bpm].some((value) => value === null)) return false;
+      if (trace.spoken_n_bpm < 3 || trace.spoken_n_bpm !== Math.round((trace.highest_task_bpm - trace.after_task_bpm) * 10) / 10) return false;
+    }
+    let previous = -1;
+    for (const point of trace.average_30s) {
+      if (
+        point === null ||
+        typeof point !== "object" ||
+        Object.keys(point).sort().join("|") !== "hr_bpm|t_play" ||
+        !whole(point.t_play) ||
+        point.t_play <= previous ||
+        !nullableOneDecimalPositive(point.hr_bpm)
+      ) return false;
+      previous = point.t_play;
+    }
+    return true;
+  }
+
   function copyState(message) {
     return Object.freeze({
       ...message,
@@ -444,6 +489,33 @@
       confidence: Object.freeze({ ...message.confidence }),
       authority: Object.freeze({ ...message.authority }),
       signal: Object.freeze({ ...message.signal }),
+      trace: Object.freeze({
+        ...message.trace,
+        average_30s: Object.freeze(message.trace.average_30s.map((point) => Object.freeze({ ...point }))),
+      }),
+    });
+  }
+
+  function emptyTrace() {
+    return Object.freeze({
+      atRestBpm: null,
+      highestTaskBpm: null,
+      afterTaskBpm: null,
+      spokenNBpm: null,
+      average30s: Object.freeze([]),
+    });
+  }
+
+  function copyTraceSummary(trace) {
+    return Object.freeze({
+      atRestBpm: trace.at_rest_bpm,
+      highestTaskBpm: trace.highest_task_bpm,
+      afterTaskBpm: trace.after_task_bpm,
+      spokenNBpm: trace.spoken_n_bpm,
+      average30s: Object.freeze(trace.average_30s.map((point) => Object.freeze({
+        tPlay: point.t_play,
+        bpm: point.hr_bpm,
+      }))),
     });
   }
 
@@ -453,6 +525,10 @@
 
   function nullablePositive(value) {
     return value === null || (finite(value) && value > 0);
+  }
+
+  function nullableOneDecimalPositive(value) {
+    return value === null || (finite(value) && value > 0 && Math.round(value * 10) / 10 === value);
   }
 
   function finiteNonNegative(value) {
@@ -485,6 +561,7 @@
     linkState,
     segmentProgress,
     tracePoints,
+    traceGeometry,
     traceScale,
     referenceY,
     validBeat,
