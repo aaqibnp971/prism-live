@@ -13,7 +13,7 @@ namespace Prism
     public class PrismTask : MonoBehaviour
     {
         [Tooltip("On: one glowing dot to catch (no decoys). Off: the team's split task with decoys.")]
-        public bool simpleDot = true;
+        public bool simpleDot = false;
         public Shader glowShader;
 
         [Header("Ramp (provisional, tune without recompiling)")]

@@ -299,7 +299,6 @@ GameObject:
   - component: {fileID: 263048203}
   - component: {fileID: 263048204}
   - component: {fileID: 263048206}
-  - component: {fileID: 263048205}
   - component: {fileID: 263048208}
   - component: {fileID: 263048209}
   m_Layer: 0
@@ -341,20 +340,6 @@ MonoBehaviour:
   diffuseLight: {fileID: 0}
   viewWidthDegrees: 100
   viewHeightDegrees: 90
---- !u!114 &263048205
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 263048200}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bceb1bb4ecb61884284c553d0e49b953, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismHaptics
-  strength: 0.35
-  tapSeconds: 0.06
 --- !u!114 &263048206
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -367,7 +352,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f995b956b612a8e4da90f2444fe379a3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismTask
-  simpleDot: 1
+  simpleDot: 0
   glowShader: {fileID: 4800000, guid: 4cb1f3411dd87be4685d4bf2c0501e7e, type: 3}
   dwellStartMs: 900
   dwellEndMs: 420
@@ -433,9 +418,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 070300e0399e2894ca61f84486d8a938, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismLink
-  laptopIp: 192.168.0.47
+  laptopIp: 127.0.0.1
   port: 8787
-  offlinePreview: 1
+  offlinePreview: 0
   previewSpeed: 1
   status: starting
   segment: '-'
