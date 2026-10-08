@@ -121,7 +121,8 @@ Shader "Prism/Sky"
                 float3 base = baseField(a, b, uv);
                 float3 r = linearRGB(field(a, b, uv, base, 0.0));
                 float3 delta = max(0.0, linearRGB(field(a, b, uv, base, 1.0)) - r);
-                float cap = min(b.y * lum(linearRGB(base)), .09);
+                // the 0.22 rail is repeated here so no caller can exceed it
+                float cap = min(min(b.y, .22) * lum(linearRGB(base)), .09);
                 float scale = min(1.0, cap / max(1e-12, lum(delta)));
                 rest += b.w * r; candidate += b.w * (r + delta * scale); budget += b.w * cap;
             }

@@ -39,33 +39,42 @@ namespace Prism
         // reference canvas in pixels; this width makes the fog stripes wrap seamlessly behind you
         const float RefHeight = 1080f;
         const float RefWidth = 1909.93f;
-        const float Rise = 0.09f, Fall = 0.18f;
-        const float MaxPulse = 0.22f;
-        const double LateOnset = 0.045;     // onsets first seen later than this never flash
-        const double MinBeatGap = 60.0 / 180.0;
+        const float MaxPulse = (float)PrismPulseSafety.MaxAmplitude;
 
         Material sky;
         FieldTokens current, previous;
         float blend = 1f;                   // weight of `current`
-        float drift, env;
-        double beatStart = double.NegativeInfinity;
-        readonly List<double> beats = new List<double>();
-        bool frozen;
+        float drift;
+        // Every decision about the pulse lives in PrismPulseSafety.cs, where it is tested.
+        readonly PrismPulseView pulse = new PrismPulseView();
 
         public FieldTokens Current => current;
 
-        /// Goes up by one each time a heartbeat pulse starts (PrismSound listens to this).
-        public int BeatCount { get; private set; }
+        /// Goes up by one each time a heartbeat pulse starts.
+        public int BeatCount => pulse.BeatCount;
 
-        /// Current heartbeat envelope 0..1 (other visuals pulse with it).
-        public float PulseEnvelope => env;
+        /// Current heartbeat envelope 0..1.
+        public float PulseEnvelope => (float)pulse.Envelope;
+
+        /// The pulse amplitude actually allowed on screen now: the state's amplitude capped by
+        /// the active beat's own rate, 0 when there is no beat. Other visuals must use this,
+        /// never Current.pulse.
+        public float PulseAmplitude => (float)pulse.Amplitude;
+
+        /// Amplitude times envelope, at most 0.22: the only number a shader may brighten by.
+        public float PulseGain => (float)pulse.Gain;
 
         /// Freeze the last picture (connection lost). Clears future beats.
         public bool Frozen
         {
-            get => frozen;
-            set { frozen = value; if (value) beats.Clear(); }
+            get => pulse.Frozen;
+            set => pulse.Frozen = value;
         }
+
+        /// Tell the pulse what the laptop's latest state says: session, segment, time left in
+        /// the segment and that state's own pulse amplitude before any easing.
+        public void SetPulseContext(string session, string segment, float remainingMs, float statePulse) =>
+            pulse.OnState(session, segment, remainingMs, statePulse);
 
 #if UNITY_EDITOR
         void Reset() => OnValidate();
@@ -115,29 +124,20 @@ namespace Prism
         /// 0 → old palette, 1 → new palette. Host-driven: segment_elapsed_ms / 10000.
         public void SetBlend(float w) => blend = Mathf.Clamp01(w);
 
-        /// Schedule a pulse at a local time (Time.realtimeSinceStartupAsDouble seconds).
-        public void ScheduleBeat(double localTime)
+        /// Offer one beat message for a pulse at a local time (Time.realtimeSinceStartupAsDouble
+        /// seconds). Late, rejected, duplicate, wrong-session and too-fast beats never flash.
+        public bool ScheduleBeat(string session, long seq, string quality, double rrMs, double hrBpm,
+                                 double localTime)
         {
-            if (frozen) return;
-            double now = Time.realtimeSinceStartupAsDouble;
-            if (localTime < now) return;                                    // already late: drop
-            if (beats.Count > 0 && localTime - beats[beats.Count - 1] < MinBeatGap) return;
-            if (localTime - beatStart < MinBeatGap) return;
-            beats.Add(localTime);
+            double nowMs = Time.realtimeSinceStartupAsDouble * 1000.0;
+            return pulse.OnBeat(session, seq, quality, rrMs, hrBpm, localTime * 1000.0, nowMs);
         }
 
         void Update()
         {
-            if (!frozen)
+            if (!pulse.Frozen)
             {
-                double now = Time.realtimeSinceStartupAsDouble;
-                while (beats.Count > 0 && beats[0] <= now)
-                {
-                    double s = beats[0];
-                    beats.RemoveAt(0);
-                    if (now - s <= LateOnset) { beatStart = s; BeatCount++; }  // envelopes never add
-                }
-                env = Envelope((float)(now - beatStart));
+                pulse.Tick(Time.realtimeSinceStartupAsDouble * 1000.0, current.pulse);
 
                 float dt = Mathf.Min(Time.unscaledDeltaTime, 0.1f);        // no catch-up jumps
                 drift += Mathf.Lerp(previous.motion, current.motion, blend) * dt;
@@ -145,21 +145,16 @@ namespace Prism
             Push();
         }
 
-        static float Envelope(float x)
-        {
-            if (x < 0f || x >= Rise + Fall) return 0f;
-            if (x < Rise) return 0.5f - 0.5f * Mathf.Cos(Mathf.PI * x / Rise);
-            return 0.5f + 0.5f * Mathf.Cos(Mathf.PI * (x - Rise) / Fall);
-        }
-
         void Push()
         {
             FieldTokens a = Clamp(previous), b = Clamp(current);
+            // One capped amplitude for both palettes: a dissolve never keeps the old segment's pulse.
+            a.pulse = b.pulse = Mathf.Clamp(PulseAmplitude, 0f, MaxPulse);
             sky.SetVector("_A0", new Vector4(a.fog, a.light, a.hue, a.sat));
             sky.SetVector("_B0", new Vector4(a.horizon, a.pulse, a.motion, 1f - blend));
             sky.SetVector("_A1", new Vector4(b.fog, b.light, b.hue, b.sat));
             sky.SetVector("_B1", new Vector4(b.horizon, b.pulse, b.motion, blend));
-            sky.SetFloat("_Env", env);
+            sky.SetFloat("_Env", PulseEnvelope);
             // one drift unit = one view height, wrapped to the 40-pixel stripe period (as the web renderer)
             float px = drift * RefHeight;
             sky.SetFloat("_DriftPx", ((px % 40f) + 40f) % 40f);
@@ -188,30 +183,31 @@ namespace Prism
     public static class PrismMapping
     {
         static float L(float a, float b, float x) => Mathf.Lerp(a, b, Mathf.Clamp01(x));
-        static float R(float hr) => Mathf.Clamp01((hr - 62f) / 33f);
+        // Pulse amplitude: the authored 62..95 bpm range, then the taper to zero at 120 bpm.
+        static float P(string segment, float hr) => (float)PrismPulseSafety.PulseAmplitude(segment, hr, 0.0);
 
         /// B = baseline confidence 0–1. hr <= 0 means unknown (no pulse).
         public static FieldTokens Baseline(float B, float hr) => new FieldTokens(
             L(.38f, .26f, B), L(.45f, .62f, B), 208f, .12f, L(.44f, .50f, B),
-            hr > 0 ? L(.06f, .10f, R(hr)) : 0f, .008f);
+            P("baseline", hr), .008f);
 
         /// A, C = effective arousal and cognitive load (0.5 + (psv − 0.5) × authority).
         public static FieldTokens Load(float A, float C, float hr) => new FieldTokens(
             L(.20f, .30f, C), L(.70f, 1.05f, A), L(214f, 202f, A), L(.16f, .30f, A), .50f,
-            hr > 0 ? L(.10f, .16f, R(hr)) : 0f, L(.010f, .004f, C));
+            P("load", hr), L(.010f, .004f, C));
 
         public static FieldTokens Regulate(float A, float C, float hr) => new FieldTokens(
             L(.58f, .34f, A), L(.38f, .95f, A), L(24f, 46f, A), L(.14f, .30f, C), L(.44f, .56f, C),
-            hr > 0 ? L(.08f, .16f, R(hr)) : 0f, L(.008f, .030f, A));
+            P("regulate", hr), L(.008f, .030f, A));
 
         /// ease 0 → 1 from regulate's last tokens to the fixed resolve look.
         public static FieldTokens Resolve(FieldTokens entry, float ease, float remainingMs)
         {
-            float fade = Mathf.Cos(Mathf.PI / 2f * Mathf.Clamp01((3000f - remainingMs) / 3000f));
+            // No heart rate is known here, so no pulse: PrismLink.Resolve is the path in use.
             return new FieldTokens(
                 L(entry.fog, .44f, ease), L(entry.light, .50f, ease), L(entry.hue, 30f, ease),
                 L(entry.sat, .14f, ease), L(.44f, .58f, (20000f - remainingMs) / 8000f),
-                remainingMs <= 0f ? 0f : .08f * fade, L(entry.motion, .006f, ease));
+                0f, L(entry.motion, .006f, ease));
         }
     }
 }

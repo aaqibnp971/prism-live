@@ -154,8 +154,6 @@ namespace Prism
             warpMat.SetFloat("_Len", 0.3f + speed * 0.45f);        // faster = longer streaks
             warpMat.SetFloat("_Width", streakWidth);
             warpMat.SetFloat("_Density", density);
-            warpMat.SetFloat("_Env", field.PulseEnvelope);
-            warpMat.SetFloat("_Pulse", c.pulse);
             warpMat.SetFloat("_Twist", twist);
             warpMat.SetFloat("_Spin", spin);
             warpMat.SetFloat("_CurveAmp", curveAmount);
@@ -166,8 +164,8 @@ namespace Prism
 
             spaceMat.SetVector("_Tint", new Vector4(tint.r, tint.g, tint.b, 1f));
             spaceMat.SetFloat("_Bright", brightness);
-            spaceMat.SetFloat("_Env", field.PulseEnvelope);
-            spaceMat.SetFloat("_Pulse", c.pulse);
+            // The heartbeat brightens only the glow ahead, never the streaks (flashing-light rule).
+            spaceMat.SetFloat("_PulseGain", field.PulseGain);
         }
 
         void BuildMesh()

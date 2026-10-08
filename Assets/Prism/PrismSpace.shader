@@ -18,7 +18,8 @@ Shader "Prism/Space"
             #include "UnityCG.cginc"
 
             float4 _Tint;       // linear colour from the current mood
-            float _Bright, _Env, _Pulse;
+            float _Bright;
+            float _PulseGain;   // heartbeat amplitude x envelope, 0..0.22 (PrismPulseSafety.PulseGain)
 
             struct appdata { float4 vertex : POSITION; UNITY_VERTEX_INPUT_INSTANCE_ID };
             struct v2f { float4 pos : SV_POSITION; float3 dir : TEXCOORD0; UNITY_VERTEX_OUTPUT_STEREO };
@@ -49,8 +50,16 @@ Shader "Prism/Space"
                 // soft glow where the streaks come from (straight ahead)
                 float c = saturate(d.z);
                 float glow = pow(c, 6.0) * 0.10 + pow(c, 30.0) * 0.18;
-                glow *= 1.0 + min(_Pulse * _Env * 1.5, 0.3);
-                col += _Tint.rgb * glow * _Bright;
+                float3 glowC = _Tint.rgb * glow * _Bright;
+                col += glowC;
+
+                // Heartbeat, under the flashing-light rules (PrismPulseSafety.LuminanceIncrease):
+                // only this glow brightens, by at most _PulseGain (<= 0.22) of its own light and
+                // never more than 0.09 linear luminance. The night floor, the stars, the streaks
+                // and everything behind the viewer stay exactly as they are.
+                float glowL = dot(glowC, float3(0.2126, 0.7152, 0.0722));
+                float gain = clamp(_PulseGain, 0.0, 0.22);
+                col += glowC * (min(glowL * gain, 0.09) / max(glowL, 1e-6));
 
                 // faint fixed stars
                 float3 cell = floor(d * 140.0);

@@ -19,7 +19,9 @@ Shader "Prism/Warp"
             #pragma target 3.0
             #include "UnityCG.cginc"
 
-            float _Travel, _Span, _Far, _Len, _Width, _Density, _Env, _Pulse;
+            // No heartbeat input here on purpose. The streaks fill the whole view, and the
+            // flashing-light rule forbids a full-field pulse; only PrismSpace's glow may brighten.
+            float _Travel, _Span, _Far, _Len, _Width, _Density;
             float _Twist, _Spin, _CurveAmp, _CurveK, _RingArc, _RingBright;
             float4 _Color;
 
@@ -81,9 +83,8 @@ Shader "Prism/Warp"
                 float fade = smoothstep(_Far, _Far * 0.55, z) * smoothstep(-8.0, -1.0, z);
                 float visible = v.p.w <= _Density ? 1.0 : 0.0;
                 float along = ring ? _RingBright : lerp(1.0, 0.04, v.uv.y);
-                float beat = 1.0 + min(_Pulse * _Env * 1.5, 0.3);
 
-                o.col = _Color * (fade * visible * along * beat);
+                o.col = _Color * (fade * visible * along);
                 o.pos = mul(UNITY_MATRIX_P, float4(vp, 1.0));
                 o.side = v.uv.x;
                 return o;

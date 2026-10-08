@@ -15,7 +15,7 @@ namespace Prism
     public class LinkMsg
     {
         public string type, session, quality, segment, role;
-        public int v;
+        public int v, seq;
         public double t_play, t_engine, t_client_sent, segment_elapsed_ms, segment_nominal_ms;
         public float rr_ms, hr_bpm;
         public Dims psv, confidence, authority;
@@ -116,8 +116,7 @@ namespace Prism
             try { await socket.ConnectAsync(new Uri(Url), cts.Token); }
             catch (Exception e) { status = "error: " + e.Message; Lost(); return; }
 
-            open = true;
-            field.Frozen = false;
+            open = true;                                  // the picture stays frozen until a state arrives
             status = "connected";
             SendText("{\"type\":\"hello\",\"v\":1,\"client\":\"quest\",\"build\":\"" + Application.version + "\"}");
             SendPing();
@@ -207,9 +206,11 @@ namespace Prism
 
         void Beat(LinkMsg m)
         {
-            if (!haveOffset || m.quality == "rejected") return;
+            if (!haveOffset) return;
             double tLocalMs = m.t_play - offset;          // t_play on the laptop clock → our clock
-            field.ScheduleBeat(tLocalMs / 1000.0);        // dropped inside if already late
+            // PrismField decides whether it may flash: late, rejected, duplicate, wrong-session
+            // and too-fast beats never do (PrismPulseSafety.cs).
+            field.ScheduleBeat(m.session, m.seq, m.quality, m.rr_ms, m.hr_bpm, tLocalMs / 1000.0);
         }
 
         void State(LinkMsg m)
@@ -244,6 +245,7 @@ namespace Prism
             float A = 0.5f + ((m.psv != null ? m.psv.arousal : 0.5f) - 0.5f) * aA;
             float C = 0.5f + ((m.psv != null ? m.psv.cognitive_load : 0.5f) - 0.5f) * aC;
             float hr = m.hr_bpm;                          // null arrives as 0 = unknown = no pulse
+            float remainingMs = (float)(m.segment_nominal_ms - m.segment_elapsed_ms);
 
             FieldTokens t;
             switch (m.segment)
@@ -261,12 +263,18 @@ namespace Prism
                     lastAuthA = aA; lastAuthC = aC;
                     break;
                 case "resolve":
-                    t = Resolve(aA, aC, hr, (float)(m.segment_nominal_ms - m.segment_elapsed_ms));
+                    t = Resolve(aA, aC, hr, remainingMs);
                     break;
                 default:                                   // idle / reset: calm, no pulse
                     t = PrismMapping.Baseline(0f, 0f);
                     break;
             }
+
+            // The pulse follows this state at once (its amplitude is not eased, so a drop is
+            // never delayed), and only a fresh state ends a freeze: after a reconnect nothing
+            // pulses on what was known before the link dropped.
+            field.SetPulseContext(m.session, m.segment, remainingMs, t.pulse);
+            if (field.Frozen) field.Frozen = false;
 
             // ease from what is on screen now to the new report over 250 ms
             float k = Mathf.Clamp01((Time.unscaledTime - easeStart) / EaseSeconds);
@@ -283,14 +291,13 @@ namespace Prism
             float rC = haveResolveEntry && entryAuthC > 0f ? Mathf.Clamp01(aC / entryAuthC) : 0f;
             FieldTokens e = haveResolveEntry ? resolveEntry : new FieldTokens(.44f, .50f, 30f, .14f, .44f, 0f, .006f);
 
-            float fade = Mathf.Cos(Mathf.PI / 2f * Mathf.Clamp01((3000f - remainingMs) / 3000f));
             return new FieldTokens(
                 .44f + (e.fog - .44f) * rA,
                 .50f + (e.light - .50f) * rA,
                 30f + (e.hue - 30f) * rA,
                 .14f + (e.sat - .14f) * rC,
                 Mathf.Lerp(.44f, .58f, Mathf.Clamp01((20000f - remainingMs) / 8000f)),
-                hr > 0f && remainingMs > 0f ? .08f * fade : 0f,
+                (float)PrismPulseSafety.PulseAmplitude("resolve", hr, remainingMs),   // taper and final fade
                 .006f + (e.motion - .006f) * rA);
         }
 
@@ -303,7 +310,7 @@ namespace Prism
         static readonly string[] PSeg = { "idle", "baseline", "load", "regulate", "resolve" };
         static readonly float[] PLen = { 4f, 45f, 75f, 75f, 45f };
         float pClock, pNextState;
-        int pSession;
+        int pSession, pBeatSeq;
         double pNextBeat;
 
         void Preview()
@@ -345,7 +352,12 @@ namespace Prism
             double now = Time.realtimeSinceStartupAsDouble;
             if (hr <= 0f) { pNextBeat = now + 0.3; return; }
             if (pNextBeat < now) pNextBeat = now + 0.3;
-            if (pNextBeat - now <= 0.3) { field.ScheduleBeat(pNextBeat); pNextBeat += 60.0 / hr; }
+            if (pNextBeat - now <= 0.3)
+            {
+                // the pretend beats pass the same flashing-light gate as real ones
+                field.ScheduleBeat("PREVIEW-" + pSession, ++pBeatSeq, "ok", 60000.0 / hr, hr, pNextBeat);
+                pNextBeat += 60.0 / hr;
+            }
         }
 
         static double Median(List<double> xs)
