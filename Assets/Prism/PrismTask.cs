@@ -31,6 +31,10 @@ namespace Prism
         public float targetSizeM = 0.16f;
 
         const float LoadDurationMs = 75000f;
+        // The headset cannot know in advance when the laptop will change to load (baseline is
+        // held past its nominal 45 s), so the lead-in runs from the laptop's actual change:
+        // these first seconds of load count down, and the task begins when they end.
+        const float LeadInMs = 3000f;
 
         PrismLink link;
         Transform head;
@@ -57,7 +61,7 @@ namespace Prism
         float lineUntil = -1f;
         string lastSegment = "";
         bool shownResolveLine;
-        float baselineEndAt = -1f, loadTextUntil = -1f, flashUntil = -1f;
+        float loadTextUntil = -1f, flashUntil = -1f;
 
 #if UNITY_EDITOR
         void Reset() => OnValidate();
@@ -111,12 +115,12 @@ namespace Prism
 
             if (state.segment != lastSegment)
             {
-                if (state.segment == "load") loadTextUntil = Time.unscaledTime + 3f;
+                // shown for 3 s once the lead-in countdown has finished
+                if (state.segment == "load")
+                    loadTextUntil = Time.unscaledTime + Mathf.Max(0f, LeadInMs - (float)state.segment_elapsed_ms) / 1000f + 3f;
                 shownResolveLine = false;
                 lastSegment = state.segment;
             }
-            // countdown 3-2-1 into the game is timed locally from the laptop's report
-            baselineEndAt = state.segment == "baseline" && remaining > 0f ? Time.unscaledTime + remaining / 1000f : -1f;
             // Text 2: at T-20 s in resolve
             if (state.segment == "resolve" && remaining <= 20000f && !shownResolveLine)
             {
@@ -148,9 +152,10 @@ namespace Prism
             string text = "";
             float size = 0.02f;
             if (lineUntil > 0f) text = line.text;
-            else if (baselineEndAt > 0f && baselineEndAt - t <= 3.2f && baselineEndAt - t > 0f)
+            else if (InLeadIn(PrismLink.ClientNowMs))
             {
-                text = Mathf.CeilToInt(baselineEndAt - t).ToString();   // 3, 2, 1
+                // 3, 2, 1 from the laptop's change to load; it ends as the task begins
+                text = Mathf.Clamp(Mathf.CeilToInt((LeadInMs - ElapsedAt(PrismLink.ClientNowMs)) / 1000f), 1, 3).ToString();
                 size = 0.06f;
             }
             else if (lastSegment == "load" && t < loadTextUntil) text = "Follow the light.";
@@ -166,7 +171,9 @@ namespace Prism
             session = sess; misses = 0; ClearRound();
             angleDeg = Mathf.Clamp(-8f, -motionLimitDeg, motionLimitDeg); direction = 1f;
             anchorClientMs = now; anchorElapsedMs = e; lastTickClientMs = now;
-            nextSplitElapsedMs = Mathf.Min(LoadDurationMs, e + Ramp(e).split);
+            // the first split comes one interval after the task begins, not after the countdown starts
+            float begins = Mathf.Max(e, LeadInMs);
+            nextSplitElapsedMs = Mathf.Min(LoadDurationMs, begins + Ramp(begins).split);
             ClearHover();
 
             // the task is laid out around where the person is facing now
@@ -187,6 +194,9 @@ namespace Prism
             active = false; complete = false; paused = false; session = null;
             ClearRound(); ClearHover();
         }
+
+        /// True for the first seconds of load, before the task's first object appears.
+        bool InLeadIn(double now) => active && ElapsedAt(now) < LeadInMs;
 
         float ElapsedAt(double now) =>
             paused ? anchorElapsedMs
@@ -235,6 +245,7 @@ namespace Prism
             AdvanceMotion(deltaMs / 1000f, (before + after) / 2f);
 
             if (elapsed >= LoadDurationMs) { active = false; complete = true; ClearRound(); ClearHover(); return; }
+            if (elapsed < LeadInMs) return;                  // counting down: nothing to catch yet
 
             Interact(now, elapsed, Hovered());
             if (elapsed >= nextSplitElapsedMs)
@@ -354,7 +365,7 @@ namespace Prism
 
         void Draw()
         {
-            bool show = active && !paused;
+            bool show = active && !paused && !InLeadIn(PrismLink.ClientNowMs);
             mover.SetActive(show);
             reticle.SetActive(show);
             reticleFill.SetActive(show && dwellProgress > 0f);
