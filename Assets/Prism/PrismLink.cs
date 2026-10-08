@@ -45,7 +45,8 @@ namespace Prism
 
         /// Raised on the main thread for every state message (the attention task listens).
         public event Action<LinkMsg> StateReceived;
-        public bool IsOpen => open;
+        /// True only while the laptop is both connected and still sending states.
+        public bool IsOpen => open && !stale;
         public static double ClientNowMs => Time.realtimeSinceStartupAsDouble * 1000.0;
 
         /// Send one JSON message to the laptop (used for task_event).
@@ -63,13 +64,17 @@ namespace Prism
         }
 
         const float EaseSeconds = 0.25f;   // smooth the 2 s state steps, never extrapolate
+        // The laptop sends a state every 2 s. A socket can stay open while nothing arrives (WiFi
+        // dropped, laptop stalled), so silence freezes the picture exactly as a lost link does,
+        // as the browser screens do (2.5 s). A long silence drops the socket and reconnects.
+        const float StateStaleSeconds = 2.5f, StaleReconnectSeconds = 8f;
 
         PrismField field;
         ClientWebSocket ws;                               // built into .NET, no extra package
         CancellationTokenSource cts;
         readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
-        bool open;
-        float nextPing, reconnectAt = -1f;
+        bool open, stale;
+        float nextPing, reconnectAt = -1f, lastStateAt;
         GameObject marker;
 
         // clock sync (contract §2 clock): median of last 9, discard rtt > max(2 × median rtt, 4 ms)
@@ -117,6 +122,8 @@ namespace Prism
             catch (Exception e) { status = "error: " + e.Message; Lost(); return; }
 
             open = true;                                  // the picture stays frozen until a state arrives
+            stale = false;
+            lastStateAt = Time.unscaledTime;
             status = "connected";
             SendText("{\"type\":\"hello\",\"v\":1,\"client\":\"quest\",\"build\":\"" + Application.version + "\"}");
             SendPing();
@@ -142,6 +149,7 @@ namespace Prism
         {
             if (reconnectAt > 0f) return;
             open = false;
+            stale = false;
             field.Frozen = true;                          // freeze the last picture, drop future beats
             if (!status.StartsWith("error")) status = "disconnected";
             reconnectAt = Time.unscaledTime + 2f;
@@ -150,7 +158,23 @@ namespace Prism
         void Update()
         {
             if (offlinePreview) Preview();
-            if (marker) marker.SetActive(!open);
+            else if (open)
+            {
+                float quiet = Time.unscaledTime - lastStateAt;
+                if (!stale && quiet > StateStaleSeconds)
+                {
+                    stale = true;                         // freeze, show the marker, pause the task
+                    field.Frozen = true;
+                    status = "frozen: no state from the laptop for " + StateStaleSeconds + " s";
+                }
+                if (stale && quiet > StaleReconnectSeconds)
+                {
+                    status = "error: the laptop went silent, reconnecting";
+                    try { ws?.Abort(); } catch (Exception) { }
+                    Lost();
+                }
+            }
+            if (marker) marker.SetActive(!IsOpen);
 
             if (open && !offlinePreview && Time.unscaledTime >= nextPing) SendPing();
 
@@ -183,7 +207,10 @@ namespace Prism
             {
                 case "clock": if (m.role == "pong") Pong(m); break;
                 case "beat": Beat(m); break;
-                case "state": State(m); StateReceived?.Invoke(m); break;
+                case "state":
+                    lastStateAt = Time.unscaledTime;
+                    if (stale) { stale = false; status = "connected"; }
+                    State(m); StateReceived?.Invoke(m); break;
             }
         }
 
