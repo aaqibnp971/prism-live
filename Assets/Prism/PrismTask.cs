@@ -33,7 +33,8 @@ namespace Prism
         const float LoadDurationMs = 75000f;
         // The headset cannot know in advance when the laptop will change to load (baseline is
         // held past its nominal 45 s), so the lead-in runs from the laptop's actual change:
-        // these first seconds of load count down, and the task begins when they end.
+        // these first seconds of load show the one instruction line, and the task begins when
+        // they end.
         const float LeadInMs = 3000f;
 
         PrismLink link;
@@ -61,7 +62,7 @@ namespace Prism
         float lineUntil = -1f;
         string lastSegment = "";
         bool shownResolveLine;
-        float loadTextUntil = -1f, flashUntil = -1f;
+        float flashUntil = -1f;
 
 #if UNITY_EDITOR
         void Reset() => OnValidate();
@@ -115,9 +116,6 @@ namespace Prism
 
             if (state.segment != lastSegment)
             {
-                // shown for 3 s once the lead-in countdown has finished
-                if (state.segment == "load")
-                    loadTextUntil = Time.unscaledTime + Mathf.Max(0f, LeadInMs - (float)state.segment_elapsed_ms) / 1000f + 3f;
                 shownResolveLine = false;
                 lastSegment = state.segment;
             }
@@ -152,13 +150,9 @@ namespace Prism
             string text = "";
             float size = 0.02f;
             if (lineUntil > 0f) text = line.text;
-            else if (InLeadIn(PrismLink.ClientNowMs))
-            {
-                // 3, 2, 1 from the laptop's change to load; it ends as the task begins
-                text = Mathf.Clamp(Mathf.CeilToInt((LeadInMs - ElapsedAt(PrismLink.ClientNowMs)) / 1000f), 1, 3).ToString();
-                size = 0.06f;
-            }
-            else if (lastSegment == "load" && t < loadTextUntil) text = "Follow the light.";
+            // Text 1: the 3 s before the task starts, one line, then it clears. No digits: only
+            // the two approved lines ever appear in the headset (vr-handoff section 11).
+            else if (InLeadIn(PrismLink.ClientNowMs)) text = "Follow the half that's still moving.";
 
             if (lineUntil < 0f) line.text = text;
             line.characterSize = size;
