@@ -46,6 +46,31 @@ def test_firewall_creation_and_removal_are_exact_and_owned(monkeypatch):
     assert not rule.attempted
 
 
+def test_headset_link_rule_keeps_the_same_exact_scope(monkeypatch):
+    scripts = []
+    rule = mqtt_firewall.MqttFirewall(
+        "192.168.0.125",
+        "192.168.0.150",
+        Path("python.exe"),
+        port=8787,
+        name_prefix="PrismQuestLink-",
+        display_name="Prism Quest link (temporary)",
+    )
+    monkeypatch.setattr(mqtt_firewall, "_powershell", lambda s: scripts.append(s) or "{}")
+    monkeypatch.setattr(mqtt_firewall, "_python_image", lambda _: Path("C:/Python/python.exe"))
+    rule.open()
+    assert rule.name.startswith("PrismQuestLink-")
+    for term in (
+        "-LocalAddress '192.168.0.125'",
+        "-RemoteAddress '192.168.0.150'",
+        "-LocalPort 8787",
+        "-Protocol TCP",
+        "-DisplayName 'Prism Quest link (temporary)'",
+        "-Program",
+    ):
+        assert term in scripts[0]
+
+
 def test_failed_firewall_setup_still_permits_owned_cleanup(monkeypatch):
     rule = mqtt_firewall.MqttFirewall("192.168.1.201", "192.168.1.135", Path("python.exe"))
     scripts = []

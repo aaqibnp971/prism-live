@@ -441,11 +441,14 @@ async def check(browser, output=None, reference=REFERENCE):
         try:
             port_file = working / "profile/DevToolsActivePort"
             deadline = time.monotonic() + 20
-            while not port_file.exists():
+            while True:
+                # The file can exist while the browser still holds it open or empty.
+                with contextlib.suppress(OSError, IndexError, ValueError):
+                    port = int(port_file.read_text().splitlines()[0])
+                    break
                 if time.monotonic() > deadline:
                     raise RuntimeError("Browser failed to open its local debugging port")
                 await asyncio.sleep(0.1)
-            port = int(port_file.read_text().splitlines()[0])
 
             def targets():
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=5) as reply:

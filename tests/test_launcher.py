@@ -410,6 +410,129 @@ def test_supervisor_owns_firewall_and_cleans_up_on_startup_failure(
     assert events == (["open", "close"] if fail_open else ["open", "step", "close"])
 
 
+def test_headset_test_uses_fake_heart_quest_input_and_no_browser_task(config):
+    config.headset_test = True
+    config.headless = False
+    config.console_input = "terminal"
+    config.displays = launch.display_roles(displays()[:1], 0, None, 0, headset_test=True)
+    assert config.roles == ("bridge", "spectator")
+    assert not config.browser_task and "task" not in config.displays
+    assert launch.role_bounds(config, "spectator") == (0, 0, 1248, 1080)
+    assert launch.role_bounds(config, "console") == (1248, 0, 672, 1080)
+    command = launch.bridge_command(config, 0)
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--task-event-client") + 1] == "quest"
+    assert command[command.index("--packet-source") + 1] == "synthetic"
+    assert "--console-fullscreen" not in command
+    browser = launch.browser_command(config, "spectator", Path("spectator-private"))
+    assert "--kiosk" not in browser and browser[-1].startswith("--app=")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(browser[-1][6:]).query)
+    assert query["ws"] == ["ws://127.0.0.1:8787/live"] and query["tiled"] == ["1"]
+    with pytest.raises(ValueError, match="not enabled"):
+        launch.browser_command(config, "task", Path("must-not-open"))
+    config.lan_ip = "192.168.8.20"
+    command = launch.bridge_command(config, 0)
+    assert command[command.index("--host") + 1] == "192.168.8.20"
+    # A browser task display is never shared with the spectator outside the explicit modes.
+    with pytest.raises(ValueError, match="own display"):
+        launch.display_roles(displays(), 0, 0, 0, headset_test=True)
+
+
+@pytest.mark.parametrize("lan", [False, True])
+def test_headset_test_cli_is_localhost_unless_both_lan_addresses_are_given(
+    lan, monkeypatch, capsys
+):
+    settings = []
+
+    class FakeSupervisor:
+        def __init__(self, config):
+            settings.append(config)
+
+        async def run(self):
+            pass
+
+    def local_addresses():
+        assert lan, "A localhost headset test must not discover or bind any LAN adapter"
+        return ["192.168.8.20"]
+
+    monkeypatch.setattr(launch, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launch, "local_lan_addresses", local_addresses)
+    monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
+    monkeypatch.setattr(launch, "list_displays", lambda: displays()[:1])
+    launch.main(
+        ["--python", sys.executable, "--headset-test"]
+        + (["--lan-ip", "192.168.8.20", "--quest-ip", "192.168.8.31"] if lan else [])
+    )
+    config = settings[0]
+    output = capsys.readouterr().out
+    assert config.headset_test and not config.booth and not config.browser_task
+    assert config.packet_source == "synthetic"
+    assert set(config.displays) == {"console", "spectator"}
+    assert "HEADSET TEST" in output
+    if lan:
+        assert (config.bind_host, config.quest_ip) == ("192.168.8.20", "192.168.8.31")
+        assert "ws://192.168.8.20:8787/live" in output and "only 192.168.8.31" in output
+    else:
+        assert config.bind_host == "127.0.0.1" and config.quest_ip is None
+        assert "ws://127.0.0.1:8787/live" in output and "No LAN listener" in output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--headset-test", "--booth"],
+        ["--headset-test", "--single-display-test"],
+        ["--headset-test", "--task-display", "0"],
+        ["--headset-test", "--packet-source", "mqtt"],
+        ["--headset-test", "--lan-ip", "192.168.8.20"],
+        ["--headset-test", "--quest-ip", "192.168.8.31"],
+        ["--headset-test", "--lan-ip", "192.168.8.20", "--quest-ip", "192.168.8.20"],
+        ["--headset-test", "--lan-ip", "192.168.8.20", "--quest-ip", "8.8.8.8"],
+        ["--quest-ip", "192.168.8.31"],
+    ],
+)
+def test_headset_test_cli_rejects_mixed_or_incomplete_flags(args):
+    with pytest.raises(SystemExit) as error:
+        launch.main(args)
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("lan", [False, True])
+def test_headset_test_firewall_exists_only_for_the_lan_link(config, monkeypatch, lan):
+    events = []
+
+    class Firewall:
+        name = "owned-test-rule"
+        scope = None
+
+        def __init__(self, local_ip, remote_ip, python, *, port, name_prefix, display_name):
+            assert (local_ip, remote_ip, port) == ("192.168.8.20", "192.168.8.31", 8787)
+            assert name_prefix == "PrismQuestLink-"
+
+        def open(self):
+            events.append("open")
+
+        def close(self):
+            events.append("close")
+
+    async def check():
+        config.headset_test = True
+        if lan:
+            config.lan_ip, config.quest_ip = "192.168.8.20", "192.168.8.31"
+        sup = launch.Supervisor(config)
+
+        async def stop():
+            events.append("step")
+            return False
+
+        monkeypatch.setattr(sup, "step", stop)
+        await sup.run()
+
+    monkeypatch.setattr(launch, "MqttFirewall", Firewall)
+    asyncio.run(check())
+    assert events == (["open", "step", "close"] if lan else ["step"])
+
+
 def test_cancelled_firewall_setup_waits_for_os_command_before_cleanup(config, monkeypatch):
     began, finish = threading.Event(), threading.Event()
     events = []

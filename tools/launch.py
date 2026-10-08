@@ -112,13 +112,16 @@ def display_roles(
     spectator: int,
     *,
     single_display_test: bool = False,
+    headset_test: bool = False,
 ) -> dict[str, Display]:
     if single_display_test and not (console == task == spectator):
         raise ValueError("Single-display testing must tile all three roles on the console display")
     requested = {"console": console, "spectator": spectator}
     if task is not None:
         requested["task"] = task
-    if not single_display_test and spectator in (console, task):
+    # Headset testing has no browser task, so its spectator preview may sit beside the console.
+    shared = single_display_test or (headset_test and task is None)
+    if not shared and spectator in (console, task):
         raise ValueError("The spectator needs its own display; do not hide the console or task.")
     available = {display.index: display for display in displays}
     if any(index not in available for index in requested.values()):
@@ -140,6 +143,11 @@ def role_bounds(config: Config, role: str) -> tuple[int, int, int, int]:
         y = display.y if role == "console" else display.y + console_height
         height = console_height if role == "console" else display.height - console_height
         return display.x + task_width, y, display.width - task_width, height
+    if config.headset_tiled and role in ("spectator", "console"):
+        preview_width = round(display.width * 0.65)
+        if role == "spectator":
+            return display.x, display.y, preview_width, display.height
+        return display.x + preview_width, display.y, display.width - preview_width, display.height
     shared = (
         config.browser_task and config.displays["task"].index == config.displays["console"].index
     )
@@ -177,7 +185,9 @@ class Config:
     headless: bool = False
     booth: bool = False
     single_display_test: bool = False
+    headset_test: bool = False
     lan_ip: str | None = None
+    quest_ip: str | None = None
     packet_source: str = "synthetic"
     mqtt_bind: str | None = None
     mqtt_phone_ip: str | None = None
@@ -194,15 +204,32 @@ class Config:
     health_timeout: float = HEALTH_TIMEOUT
 
     @property
+    def quest_input(self) -> bool:
+        """The headset is the one task-event producer: booth mode and headset testing."""
+        return self.booth or self.headset_test
+
+    @property
     def browser_task(self) -> bool:
-        return not self.booth
+        return not self.quest_input
 
     @property
     def roles(self) -> tuple[str, ...]:
-        return ("bridge", "spectator") if self.booth else ROLES
+        return ("bridge", "spectator") if self.quest_input else ROLES
+
+    @property
+    def headset_tiled(self) -> bool:
+        """Headset testing on one screen: spectator preview left, console right."""
+        return (
+            self.headset_test
+            and not self.headless
+            and self.displays["spectator"].index == self.displays["console"].index
+        )
 
     @property
     def bind_host(self) -> str:
+        if self.headset_test:
+            # Localhost for Unity Play mode on this laptop; a LAN address only when asked.
+            return self.lan_ip or "127.0.0.1"
         if not self.booth:
             return "127.0.0.1"
         if self.lan_ip is None:
@@ -231,7 +258,7 @@ def bridge_command(config: Config, generation: int) -> list[str]:
         "--host",
         config.bind_host,
         "--task-event-client",
-        "quest" if config.booth else "task-screen",
+        "quest" if config.quest_input else "task-screen",
         "--port",
         str(config.port),
         "--log-dir",
@@ -273,7 +300,7 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
     if role not in config.roles or role == "bridge":
         raise ValueError(f"Browser role {role!r} is not enabled in this mode")
     query: dict[str, str | float] = {"ws": f"ws://{config.bind_host}:{config.port}/live"}
-    if config.single_display_test:
+    if config.single_display_test or config.headset_tiled:
         query["tiled"] = "1"
     if role == "task":
         fraction = (
@@ -313,8 +340,10 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
         return command + ["--headless=new", "--disable-gpu", "--window-size=1920,1080", url]
     x, y, width, height = role_bounds(config, role)
     command += [f"--window-position={x},{y}", f"--window-size={width},{height}"]
-    if config.single_display_test or (
-        role == "task" and config.displays["task"].index == config.displays["console"].index
+    if (
+        config.single_display_test
+        or config.headset_tiled
+        or (role == "task" and config.displays["task"].index == config.displays["console"].index)
     ):
         return command + [f"--app={url}"]
     return command + ["--kiosk", url, "--edge-kiosk-type=fullscreen"]
@@ -870,6 +899,7 @@ class Supervisor:
             "headless": self.config.headless,
             "browser_task": self.config.browser_task,
             "booth": self.config.booth,
+            "headset_test": self.config.headset_test,
             "single_display_test": self.config.single_display_test,
             "packet_source": self.config.packet_source,
             "mqtt_firewall": self.firewall.scope if self.firewall is not None else None,
@@ -902,17 +932,31 @@ class Supervisor:
     async def run(self) -> None:
         self._acquire()
         try:
+            purpose = ""
             if self.config.packet_source == "mqtt":
+                purpose = "MQTT"
                 self.firewall = MqttFirewall(
                     self.config.mqtt_bind_host,
                     self.config.mqtt_phone_ip,
                     self.config.python,
                     port=self.config.mqtt_port,
                 )
+            elif self.config.headset_test and self.config.lan_ip is not None:
+                # Same narrow scope as the phone's rule: one Quest address, one port.
+                purpose = "headset link"
+                self.firewall = MqttFirewall(
+                    self.config.lan_ip,
+                    self.config.quest_ip,
+                    self.config.python,
+                    port=self.config.port,
+                    name_prefix="PrismQuestLink-",
+                    display_name="Prism Quest link (temporary)",
+                )
+            if self.firewall is not None:
                 # Print before creation: even interruption during setup leaves a named,
                 # owned rule whose emergency cleanup command is visible to the operator.
                 print(
-                    f"Temporary MQTT firewall: {self.firewall.name}. "
+                    f"Temporary {purpose} firewall: {self.firewall.name}. "
                     "Removed on normal shutdown; after a forced supervisor kill use "
                     f'Remove-NetFirewallRule -Name "{self.firewall.name}"',
                     flush=True,
@@ -973,7 +1017,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Own router only: LAN + Quest input + full console, no browser task",
     )
-    parser.add_argument("--lan-ip", help="Booth router's local IPv4 adapter; requires --booth")
+    parser.add_argument(
+        "--headset-test",
+        action="store_true",
+        help="Fake heart, Quest task input, no browser task; localhost unless --lan-ip",
+    )
+    parser.add_argument(
+        "--lan-ip",
+        help="Own router's local IPv4 adapter; requires --booth or --headset-test",
+    )
+    parser.add_argument(
+        "--quest-ip",
+        help="Headset's IPv4 on your own router; required with --headset-test --lan-ip",
+    )
     parser.add_argument(
         "--mqtt-bind",
         help="Explicit laptop LAN IPv4 for real MQTT browser tests; trusted Wi-Fi only",
@@ -1030,8 +1086,31 @@ def main(argv: list[str] | None = None) -> None:
             raise ValueError(
                 "--task-display is testing only; booth mode never opens a browser task"
             )
-        if args.lan_ip is not None and not args.booth:
-            raise ValueError("--lan-ip requires --booth; testing stays on localhost")
+        if args.lan_ip is not None and not (args.booth or args.headset_test):
+            raise ValueError(
+                "--lan-ip requires --booth or --headset-test; browser testing stays on localhost"
+            )
+        if args.headset_test:
+            if args.booth or args.single_display_test or args.task_display is not None:
+                raise ValueError(
+                    "--headset-test is its own mode: no --booth, --single-display-test "
+                    "or --task-display"
+                )
+            if args.packet_source == "mqtt":
+                raise ValueError("--headset-test uses the fake heart; use --booth for the armband")
+            if (args.lan_ip is None) != (args.quest_ip is None):
+                raise ValueError(
+                    "A LAN headset test needs both --lan-ip (this laptop) and --quest-ip "
+                    "(the headset); give neither for Unity Play mode on localhost"
+                )
+            if args.quest_ip is not None:
+                private_ipv4(args.quest_ip)
+                if args.quest_ip == args.lan_ip:
+                    raise ValueError("Laptop and headset must have different addresses")
+                if not 1024 <= args.port <= 65535:
+                    raise ValueError("A LAN headset test needs a port between 1024 and 65535")
+        elif args.quest_ip is not None:
+            raise ValueError("--quest-ip requires --headset-test")
         packet_source = args.packet_source or ("mqtt" if args.booth else "synthetic")
         mqtt_bind = None
         if packet_source == "mqtt":
@@ -1069,7 +1148,13 @@ def main(argv: list[str] | None = None) -> None:
             headless=args.headless,
             booth=args.booth,
             single_display_test=args.single_display_test,
-            lan_ip=select_lan_address(args.lan_ip) if args.booth else None,
+            headset_test=args.headset_test,
+            lan_ip=(
+                select_lan_address(args.lan_ip)
+                if args.booth or (args.headset_test and args.lan_ip is not None)
+                else None
+            ),
+            quest_ip=args.quest_ip,
             packet_source=packet_source,
             mqtt_bind=mqtt_bind,
             mqtt_phone_ip=args.mqtt_phone_ip,
@@ -1087,16 +1172,40 @@ def main(argv: list[str] | None = None) -> None:
                 list_displays(),
                 args.console_display,
                 (args.console_display if args.task_display is None else args.task_display)
-                if not args.booth
+                if config.browser_task
                 else None,
                 args.spectator_display
                 if args.spectator_display is not None
-                else (args.console_display if args.single_display_test else 1),
+                else (
+                    args.console_display
+                    if args.single_display_test or args.headset_test
+                    else 1
+                ),
                 single_display_test=args.single_display_test,
+                headset_test=args.headset_test,
             )
         else:
             print("HEADLESS RECOVERY DIAGNOSTIC — display placement is not tested.", flush=True)
-        if config.booth:
+        if config.headset_test:
+            print(
+                "HEADSET TEST: fake heart (no armband), no browser task; "
+                "the headset is the only task producer.",
+                flush=True,
+            )
+            if config.lan_ip is None:
+                print(
+                    f"Unity Play mode on this laptop connects to ws://127.0.0.1:{config.port}/live "
+                    "(client: quest). No LAN listener.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Quest connects to ws://{config.bind_host}:{config.port}/live "
+                    f"(client: quest); the firewall admits only {config.quest_ip}. "
+                    "Own router only — NEVER venue WiFi.",
+                    flush=True,
+                )
+        elif config.booth:
             print("BOOTH MODE: own router only — NEVER venue WiFi.", flush=True)
             print(
                 f"Headset connects to ws://{config.bind_host}:{config.port}/live (client: quest)",

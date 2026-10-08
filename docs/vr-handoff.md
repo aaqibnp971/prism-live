@@ -4,6 +4,57 @@
 **From:** Ridhwan
 **Date:** 24 September 2026
 
+## Quick start: connect the headset app to the laptop (8 October 2026)
+
+The laptop runs the Prism engine and all audio. The Unity app only connects to it over
+WiFi through `PrismLink`. Headset test mode gives it a fake heart and no browser task, so the
+headset is the only task producer. Details: `docs/launcher.md`, "Headset test mode".
+
+**1. Start the laptop.** From `C:\ANP\prism-live`, one of:
+
+```powershell
+# Unity Play mode on this same laptop (ordinary PowerShell, nothing on the network)
+.venv\Scripts\python.exe -m tools.launch --headset-test
+
+# The real Quest over WiFi (Administrator PowerShell, your own router only)
+.venv\Scripts\python.exe -m tools.launch --headset-test --lan-ip 192.168.0.125 --quest-ip <headset address>
+```
+
+`192.168.0.125` was this laptop's address on 8 October; it is not reserved, so check it with
+`ipconfig` each time. The headset's address is in its Settings, under WiFi, in the connected
+network's details. The second command admits only that one address through the firewall and
+removes the rule when you press Q.
+
+**2. Confirm the sound check.** Listen, then press Space once in the console window to confirm
+you heard it. Nothing can start before that.
+
+**3. Set PrismLink in Unity** (the object carrying `PrismLink` in `SampleScene`):
+
+| Field | Value |
+|---|---|
+| Laptop Ip | `127.0.0.1` with the first command; `192.168.0.125` with the second, in Play mode and on the Quest alike |
+| Port | `8787` |
+| Offline Preview | **Unticked.** As delivered it is ticked, and the app then never contacts the laptop |
+
+**4. Press Play, or build and run on the Quest.** Once it is connected you should see:
+
+- In the Inspector: Status `connected`, Segment `idle`, a Heart Rate near 68, and a Clock
+  Offset Ms that settles within a few seconds. The red dot below your view is gone.
+- On the laptop: the spectator preview on the left, the console on the right, labelled
+  `SYNTHETIC INPUT - NO ARMBAND`.
+- Press Space on the console to start. After a countdown of up to 11 s the Segment goes
+  `baseline` (56 s), `load` (75 s, the task appears in the headset), `regulate`, `resolve`,
+  then `reset`. The field pulses with the heartbeat you hear from the laptop.
+
+**If the red dot stays:** Status shows the reason. Check that Offline Preview is unticked, the
+address matches the command you ran, both devices are on the same WiFi, and the launcher is
+still running. Do not connect the headset app to the default browser test launch
+(`tools.launch` with no option): the laptop there accepts task events only from the browser
+task, and closes the headset's connection at its first one.
+
+**Known difference, not yet fixed in Unity:** the headset counts 3, 2, 1 at 45 s, but the laptop
+holds baseline to 56 s, so the task starts about 11 s after the countdown ends.
+
 **Phone-route update, 23 September:** the host now receives optical PPI through Android
 Polar Sensor Logger and local MQTT. Beat `t_play` is delayed playback, not acquisition time;
 keep Unity audio/visual alignment on it and never reconstruct a supposedly current beat.

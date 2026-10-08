@@ -93,6 +93,39 @@ narrow temporary firewall exception below; it does not add a WebSocket/Quest fir
 If a Quest connection needs an allowance, scope that separately to the own-router adapter and
 Quest address, rather than accepting Windows' broad "allow Python" prompt.
 
+## Headset test mode
+
+For developing the Unity app against the real laptop side without an armband or a booth:
+
+```powershell
+.venv\Scripts\python.exe -m tools.launch --headset-test
+.venv\Scripts\python.exe -m tools.launch --headset-test --lan-ip 192.168.0.125 --quest-ip 192.168.0.150
+```
+
+Both use the synthetic heart, labelled `SYNTHETIC INPUT - NO ARMBAND`, select `quest` as the
+one task-event producer and open **no browser task**. On one screen the spectator preview
+takes the left 65% and the attendant console the right 35%, both windowed; pass
+`--spectator-display 1` to give the spectator its own screen instead. The sound check and the
+attendant button work as in every other mode.
+
+- **Without addresses** the WebSocket listens on `127.0.0.1` only, for Unity Play mode on the
+  same laptop. No LAN listener, no firewall rule, no elevation.
+- **With `--lan-ip` and `--quest-ip`** (both or neither) it listens on that one local RFC1918
+  address, for the real Quest. Run it from **Administrator PowerShell**: the launcher creates a
+  uniquely named `PrismQuestLink-<id>` inbound rule with the same scope as the phone's rule
+  below, TCP only, the exact headset source address, the exact laptop address and WebSocket
+  port, the selected interface, its current profile and this Python image, and removes only
+  that rule on Q, Ctrl+C or a startup failure. The addresses above are examples. Unity Play
+  mode on the laptop must then use the LAN address too, because nothing listens on localhost.
+
+The rule is the only restriction on who can reach the WebSocket: unlike the MQTT relay, the
+server does not itself refuse other source addresses, and an existing broader exception for
+Python is neither audited nor changed. Own router only, never venue WiFi. `--headset-test`
+refuses `--booth`, `--single-display-test`, `--task-display` and MQTT input; use `--booth` for
+the armband. The launcher does not start, supervise or prove a connection from the headset.
+The real firewall rule has not been exercised on hardware yet; the scope is covered by mocked
+tests only.
+
 ## Phone and router runbook (replacement for direct laptop BLE / prompt 2.8)
 
 **Fit and posture standard (26 September).** The attendant fits the armband on the **thick part of the left forearm** and physically checks the fit before starting. Both hands rest in the lap; no phone use by the participant. Keep the left arm resting for the whole experience. For the browser task test, only the right hand moves to the mouse during load; both hands rest again in regulate and resolve. Fit checking remains the attendant's responsibility even when packets are flowing. Neither Polar's reported HR nor its skin-contact flag verifies a good fit or wear.

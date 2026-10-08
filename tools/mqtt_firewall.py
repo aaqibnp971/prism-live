@@ -33,7 +33,7 @@ def _powershell(script: str):
     )
     if result.returncode:
         raise RuntimeError(
-            "Scoped MQTT firewall operation failed. Run the launcher in Administrator "
+            "Scoped firewall operation failed. Run the launcher in Administrator "
             f"PowerShell; do not disable the firewall. {result.stderr.strip()}"
         )
     return result.stdout.strip()
@@ -71,16 +71,28 @@ def _python_image(python: Path) -> Path:
 
 
 class MqttFirewall:
-    def __init__(self, local_ip: str, phone_ip: str, python: Path, *, port=1883):
+    def __init__(
+        self,
+        local_ip: str,
+        phone_ip: str,
+        python: Path,
+        *,
+        port=1883,
+        name_prefix="PrismPolarMqtt-",
+        display_name="Prism Polar MQTT (temporary)",
+    ):
+        # The headset test link reuses this exact scope for its one WebSocket peer:
+        # phone_ip is then the Quest's address and port the WebSocket port.
         self.local_ip = private_ipv4(local_ip)
         self.phone_ip = private_ipv4(phone_ip)
         if self.local_ip == self.phone_ip:
-            raise ValueError("Laptop and phone must have different fixed addresses")
+            raise ValueError("Laptop and remote device must have different fixed addresses")
         if not 1024 <= port <= 65535:
-            raise ValueError("MQTT port must be between 1024 and 65535")
+            raise ValueError("Firewall rule port must be between 1024 and 65535")
         self.port = port
         self.python = python.resolve()
-        self.name = "PrismPolarMqtt-" + uuid.uuid4().hex
+        self.display_name = display_name
+        self.name = name_prefix + uuid.uuid4().hex
         self.owner = "prism-live launcher temporary rule " + uuid.uuid4().hex
         self.attempted = False
         self.scope = None
@@ -105,7 +117,7 @@ if ($network.Count -ne 1) {{ throw 'MQTT interface must have exactly one network
 $category = $network[0].NetworkCategory.ToString()
 $profile = if ($category -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ $category }}
 if ($profile -notin @('Private', 'Public', 'Domain')) {{ throw 'Unsupported firewall profile' }}
-New-NetFirewallRule -Name {_literal(self.name)} -DisplayName 'Prism Polar MQTT (temporary)' `
+New-NetFirewallRule -Name {_literal(self.name)} -DisplayName {_literal(self.display_name)} `
     -Description {_literal(self.owner)} -Direction Inbound -Action Allow -Enabled True `
     -Protocol TCP -LocalAddress {_literal(self.local_ip)} -LocalPort {self.port} `
     -RemoteAddress {_literal(self.phone_ip)} -InterfaceAlias $adapter[0].InterfaceAlias `
