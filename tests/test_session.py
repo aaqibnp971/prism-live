@@ -850,3 +850,54 @@ def test_the_schedule_says_when_each_segment_can_end(tmp_path):
 
 def test_the_session_never_takes_a_packet():
     assert not [name for name in dir(Session) if "packet" in name.lower()]
+
+CARDS = ("at_rest_bpm", "highest_task_bpm", "after_task_bpm")
+
+
+def test_trace_values_once_published_never_change_within_a_session(tmp_path):
+    for spec in (REGULATED, EXTENDS, STAYS_HIGH):
+        run = live(tmp_path / spec.replace(":", "_").replace(",", "+"), spec)
+        cards, points = {}, {}
+        for state in first_session(run):
+            trace = state["trace"]
+            for key in CARDS:
+                if trace[key] is not None:
+                    assert cards.setdefault(key, trace[key]) == trace[key], (spec, key)
+            for point in trace["average_30s"]:
+                assert points.setdefault(point["t_play"], point["hr_bpm"]) == point["hr_bpm"]
+                assert point["t_play"] <= state["t_engine"]
+        assert set(cards) == set(CARDS), spec
+
+
+def test_spoken_n_never_appears_without_heart_rate_activation(tmp_path):
+    run = live(tmp_path, FLAT)
+    states = first_session(run)
+    assert all(state["trace"]["spoken_n_bpm"] is None for state in states)
+    completed = next(m for m in states if m["segment"] == "reset")
+    assert all(completed["trace"][key] is not None for key in CARDS)  # the cards still show
+    (activation,) = run.events("load_activation")
+    assert activation["by_hr"] is False
+
+
+def test_the_next_visitor_starts_with_an_empty_trace_and_gets_their_own_cards(tmp_path):
+    spec = REGULATED + ",90:120,90-110:75,110-90:120"
+    run = live(tmp_path, spec, start_s=(10.0, 330.0))
+    sessions = []
+    for state in run.states():
+        if state["segment"] != "idle" and state["session"] not in sessions:
+            sessions.append(state["session"])
+    first_id, second_id = sessions[:2]
+    first = [m for m in run.states() if m["session"] == first_id]
+    second = [m for m in run.states() if m["session"] == second_id and m["segment"] != "idle"]
+    began = second[0]["t_engine"]
+    assert second[0]["segment"] == "baseline" and began >= 330_000
+    for state in second:
+        trace = state["trace"]
+        if state["segment"] == "baseline" and state["segment_elapsed_ms"] < 30_000:
+            assert trace == {**dict.fromkeys(CARDS), "spoken_n_bpm": None, "average_30s": []}
+        assert all(point["t_play"] > began for point in trace["average_30s"])
+        if state["segment"] in ("baseline", "load"):
+            assert trace["highest_task_bpm"] is None and trace["spoken_n_bpm"] is None
+    rested = next(m["trace"]["at_rest_bpm"] for m in second if m["trace"]["at_rest_bpm"])
+    earlier = next(m["trace"]["at_rest_bpm"] for m in first if m["trace"]["at_rest_bpm"])
+    assert earlier < 75 < rested  # 68 bpm for the first visitor, 90 for the second

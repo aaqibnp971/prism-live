@@ -82,7 +82,7 @@ from bridge.contract import (
 from bridge.logging import SessionLog
 from bridge.psv import BaselinePhase, PsvModel
 from bridge.state import StateStream
-from bridge.trace import build_trace
+from bridge.trace import TraceBuilder
 
 # The regulate success threshold.
 THRESHOLD_FLOOR_BPM = 5.0
@@ -679,6 +679,7 @@ class Session:
         self._segment_starts: dict[str, float] = {}
         self._return_window: tuple[float, float] | None = None
         self._result: RegulateResult | None = None
+        self._trace_builder = TraceBuilder()  # a visitor's trace never outlives their session
         self._log.event(
             "session_start",
             t_engine=self._now,
@@ -722,7 +723,7 @@ class Session:
         resolve_start = starts.get("resolve")
         intervals = getattr(self._model, "session_heart_intervals", ())
         settle = getattr(self._model, "measurement_settle_ms", SETTLE_MS)
-        return build_trace(
+        return self._trace_builder.build(
             intervals,
             now_ms=now,
             settle_ms=settle,

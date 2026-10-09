@@ -781,10 +781,50 @@ WebSocket does not add interval-scale jitter.
 
 ## The spectator's trace and reveal (prompts 3.3, 3.5)
 
-**Open review gate, 5 October:** the planned heavy review of the host-calculated cards, contract
-v1.8 and visitor reveal was interrupted by reviewer capacity before any reviewer inspected the
-change. Deterministic Python, JavaScript and real-browser tests pass, but this change still needs
-its first heavy-review round before the showing.
+**Review, 9 October:** the heavy review of the host-calculated cards, contract v1.8 and the
+visitor reveal ran as one round of three agents (host maths and timeline; wire contract and
+screen; tests, by experiment), followed by regression self-checks only. No wrong arithmetic was
+found: the cards matched hand calculations and, on clean sessions of both packet paths, ground
+truth within 0.1 bpm. Fixed:
+
+- **A previous visitor's numbers could reappear.** A spectator page that missed the next
+  visitor's whole baseline (an outage of about a minute) and then saw that visitor stopped showed
+  the earlier visitor's cards and N again. The hold is now dropped at the first sign of any later
+  session, and a reset shows a hold only for its own session.
+- **Published values could change.** The host recalculated the whole trace on every state, so a
+  burst arriving after its settlement interval revised points, and in principle a card, already
+  sent. Values are now final once published (contract v1.9). The same change removes a 55 to
+  60 ms recalculation every 2 s late in a session from the loop that schedules beats.
+- **A fully watched session could be labelled partial** when its first beat came more than one
+  state after baseline began, which is every measured-PPI session. It is now decided once.
+- **The reveal vanished at reset on a page that drew no beat** of its own (opened or reconnected
+  late), although the host's cards and average line were complete. It is now held.
+- **Tests.** Session-level tests now pin that published values never change, that N never appears
+  without heart-rate activation, that the next visitor starts empty with their own cards, and the
+  exact window edges, the 500 ms grid, the 2.9 / 3.0 fall and the one-decimal subtraction.
+
+Left as limits, not fixed:
+
+- **Legacy one-second HRM path only (synthetic tests, never the booth):** when notifications
+  keep arriving without RR intervals for several seconds, `bridge/beat_scheduler.py` lets the
+  reconstructed timeline fall behind real time for the rest of the session. Windows then measure
+  the wrong period and a real gap no longer shows as missing coverage; cards were up to about
+  1.4 bpm and the line up to 7.2 bpm off in the reviewer's runs. The measured-PPI path re-anchors
+  and gave nulls for the same dropouts. This is a beat-scheduler defect, wants its own
+  heavy-reviewed change, and matters to anyone reading numbers from a synthetic run with faults.
+- **Window edges sit on reconstructed time,** which the reviewer measured about 0.4 s (legacy)
+  and 1.3 to 1.9 s (synthetic PPI) behind the generator's true beat times. With heart rate
+  changing steeply across a window edge that made N read 0.1 to 1.4 bpm high. The PPI offset is
+  the scheduler's 2 s anchor assumption; which is nearer the armband is not known.
+- **A very fast fall across regulate second 45** (24 bpm in 5 s) had its first intervals rejected
+  by the 20 % median test, leaving After the task and N empty where a value existed. Falls over
+  10 s or more were unaffected.
+- **Coverage is slightly stricter than the gap alone:** an interval that straddles a gap does
+  not count toward the 22.5 s, so a gap of about 6.5 to 7 s can already null a window.
+- **A page that missed an entire session** and reconnects in the following idle still shows the
+  session before it; nothing on the wire says a session was skipped.
+- **Not exercised by this round:** `app.js` in a browser beyond the existing browser check, real
+  captures, and a session-level PPI test asserting card values end to end.
 
 **Handled by:** `web/spectator/`. Contract v1.8 repeats the host-calculated 30-second average
 history so far in each state, so a screen that reconnects during a session can recover that line

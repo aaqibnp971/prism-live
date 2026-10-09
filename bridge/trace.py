@@ -99,14 +99,7 @@ def build_trace(
     if load_start_ms is not None and regulate_start_ms is not None:
         load_end = regulate_start_ms
         if now_ms >= load_end + settle_ms:
-            highest: float | None = None
-            end = load_start_ms + WINDOW_MS
-            while end <= load_end + 1e-6:
-                candidate = _eligible_bpm(heart_rate_window(chosen, end - WINDOW_MS, end))
-                if candidate is not None and (highest is None or candidate > highest):
-                    highest = candidate
-                end += STEP_MS
-            trace["highest_task_bpm"] = highest
+            trace["highest_task_bpm"] = _highest_task_bpm(chosen, load_start_ms, load_end)
 
     if regulate_start_ms is not None:
         after_start = regulate_start_ms + AFTER_TASK_WINDOW[0]
@@ -116,18 +109,7 @@ def build_trace(
                 heart_rate_window(chosen, after_start, after_end)
             )
 
-    at_rest = trace["at_rest_bpm"]
-    task_high = trace["highest_task_bpm"]
-    after = trace["after_task_bpm"]
-    if (
-        heart_rate_activation_passed is True
-        and at_rest is not None
-        and task_high is not None
-        and after is not None
-    ):
-        fall = round(task_high - after, 1)
-        if fall >= SPOKEN_N_MIN_BPM:
-            trace["spoken_n_bpm"] = fall
+    trace["spoken_n_bpm"] = _spoken_n(trace, heart_rate_activation_passed)
 
     latest_end = min(now_ms - settle_ms, now_ms - playback_delay_ms)
     if resolve_end_ms is not None:
@@ -146,6 +128,114 @@ def build_trace(
         end += STEP_MS
     trace["average_30s"] = points
     return trace
+
+
+class TraceBuilder:
+    """One session's ``state.trace``, built forward and never revised.
+
+    ``build_trace`` recomputes the whole history from whatever intervals exist now. Run on
+    every state message that costs tens of milliseconds late in a session, on the loop that
+    schedules beats, and a burst arriving after its settlement interval silently changes
+    numbers already published. This holds each card from the moment it is first decided, null
+    included, and each average-line point from the moment it is first published. With every
+    interval inside its settlement interval the two give identical results.
+    """
+
+    _UNDECIDED = object()
+
+    def __init__(self) -> None:
+        self._cards: dict[str, object] = dict.fromkeys(
+            ("at_rest_bpm", "highest_task_bpm", "after_task_bpm"), self._UNDECIDED
+        )
+        self._points: list[dict[str, int | float | None]] = []
+        self._next_end: float | None = None
+
+    def build(
+        self,
+        intervals: Iterable[HeartInterval],
+        *,
+        now_ms: float,
+        settle_ms: float,
+        playback_delay_ms: float,
+        baseline_start_ms: float | None,
+        load_start_ms: float | None,
+        regulate_start_ms: float | None,
+        resolve_end_ms: float | None,
+        heart_rate_activation_passed: bool | None,
+    ) -> dict:
+        trace = empty_trace()
+        if baseline_start_ms is None:
+            return trace
+        chosen = tuple(intervals)
+
+        baseline_end = baseline_start_ms + BASELINE_WINDOW[1]
+        if self._cards["at_rest_bpm"] is self._UNDECIDED and now_ms >= baseline_end + settle_ms:
+            self._cards["at_rest_bpm"] = _eligible_bpm(
+                heart_rate_window(chosen, baseline_start_ms + BASELINE_WINDOW[0], baseline_end)
+            )
+        if (
+            self._cards["highest_task_bpm"] is self._UNDECIDED
+            and load_start_ms is not None
+            and regulate_start_ms is not None
+            and now_ms >= regulate_start_ms + settle_ms
+        ):
+            self._cards["highest_task_bpm"] = _highest_task_bpm(
+                chosen, load_start_ms, regulate_start_ms
+            )
+        if self._cards["after_task_bpm"] is self._UNDECIDED and regulate_start_ms is not None:
+            after_end = regulate_start_ms + AFTER_TASK_WINDOW[1]
+            if now_ms >= after_end + settle_ms:
+                self._cards["after_task_bpm"] = _eligible_bpm(
+                    heart_rate_window(chosen, regulate_start_ms + AFTER_TASK_WINDOW[0], after_end)
+                )
+        for key, value in self._cards.items():
+            trace[key] = None if value is self._UNDECIDED else value
+        trace["spoken_n_bpm"] = _spoken_n(trace, heart_rate_activation_passed)
+
+        latest_end = min(now_ms - settle_ms, now_ms - playback_delay_ms)
+        if resolve_end_ms is not None:
+            latest_end = min(latest_end, resolve_end_ms - playback_delay_ms)
+        if self._next_end is None:
+            self._next_end = baseline_start_ms + WINDOW_MS
+        while self._next_end <= latest_end + 1e-6:
+            window = heart_rate_window(chosen, self._next_end - WINDOW_MS, self._next_end)
+            self._points.append(
+                {
+                    "t_play": round(self._next_end + playback_delay_ms),
+                    "hr_bpm": _eligible_bpm(window),
+                }
+            )
+            self._next_end += STEP_MS
+        trace["average_30s"] = [dict(point) for point in self._points]
+        return trace
+
+
+def _highest_task_bpm(
+    intervals: tuple[HeartInterval, ...], load_start_ms: float, load_end_ms: float
+) -> float | None:
+    highest: float | None = None
+    end = load_start_ms + WINDOW_MS
+    while end <= load_end_ms + 1e-6:
+        candidate = _eligible_bpm(heart_rate_window(intervals, end - WINDOW_MS, end))
+        if candidate is not None and (highest is None or candidate > highest):
+            highest = candidate
+        end += STEP_MS
+    return highest
+
+
+def _spoken_n(trace: dict, heart_rate_activation_passed: bool | None) -> float | None:
+    """Displayed task-high minus displayed after-task, only after HR activation and a fall of
+    at least 3.0 bpm, and only with all three cards."""
+    task_high, after = trace["highest_task_bpm"], trace["after_task_bpm"]
+    if (
+        heart_rate_activation_passed is not True
+        or trace["at_rest_bpm"] is None
+        or task_high is None
+        or after is None
+    ):
+        return None
+    fall = round(task_high - after, 1)
+    return fall if fall >= SPOKEN_N_MIN_BPM else None
 
 
 def _eligible_bpm(window: HeartRateWindow) -> float | None:

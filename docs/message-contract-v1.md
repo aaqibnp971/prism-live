@@ -1,6 +1,7 @@
-# Prism Live: Message Contract v1.8
+# Prism Live: Message Contract v1.9
 
-**Status:** FROZEN as of 10 September 2026. v1.8 (5 October 2026) adds the
+**Status:** FROZEN as of 10 September 2026. v1.9 (9 October 2026) only makes two properties
+of the trace explicit (see the changelog). v1.8 (5 October 2026) adds the
 host-calculated trace evidence required by the approved close; both browser clients and the host
 change together. The schema version `v` remains `1` because no deployed external client exists.
 **Owner:** Ridhwan
@@ -159,6 +160,12 @@ buffer so it overlays the scheduled beat trace. The browser uses this supplied c
 must not subtract or guess a buffer. Points are strictly increasing and the complete history so
 far is repeated in each state, allowing a reconnecting spectator to recover the averaged line.
 
+**Published values are final (v1.9).** A card, once sent non-null, and an `average_30s` point,
+once sent, never change for the rest of that session, even if a burst arrives after its
+settlement interval. A card decided as `null` stays `null`. `spoken_n_bpm` follows the cards.
+`average_30s` holds at most **2048** points; a production session of up to 281 s produces about
+480. Every session starts with all four values `null` and an empty line.
+
 **Segment ceilings**, applied laptop-side before sending:
 
 | Segment | arousal | valence | cognitive_load | readiness |
@@ -291,4 +298,5 @@ baseline when accepted-only gate and `hr_base` are available by the unchanged ho
 | 1.5 | 14 Sep 2026 | Two gaps made explicit, as implemented in `bridge/session.py` and `bridge/contract.py`. No field added or removed; `v` stays `1`. §2 `state`: idle sends `segment_elapsed_ms` 0 as well as `segment_nominal_ms` 0. `signal.baseline_quality` is 0.0 through baseline and its hold, and nothing uses it there. |
 | 1.6 | 14 Sep 2026 | One wording brought up to date. No field added or removed; `v` stays `1`. §2 `state`: `t_session` counts from when start fires, which is when baseline begins, as `bridge/session.py` already does. The old wording, "since the attendant pressed start", predates the attendant console's countdown (prompt 2.7), from when the press and the start were the same moment. The countdown of up to 11 s now sits before start fires, is not part of the session, and sends `idle`. |
 | 1.7 | 23 Sep 2026 | No schema change. Documented buffered measured-PPI playback and deprecated `signal.contact` as wear evidence. |
+| 1.9 | 9 Oct 2026 | No schema change; `v` stays `1`. Two properties of `state.trace` made explicit after its heavy review: published cards and `average_30s` points are final within a session (the host no longer recalculates history), and the 2048-point limit both validators already enforced is written down. |
 | 1.8 | 5 Oct 2026 | Added host-owned `state.trace`: three fixed 30 s averages, activation-gated spoken N, and the host-calculated 30 s average line. Wire `v` stays `1`; host and both browser clients update together before deployment. |

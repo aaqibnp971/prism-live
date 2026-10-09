@@ -57,22 +57,31 @@
         message.segment === "baseline" &&
         (previous?.segment !== "baseline" || previous.session !== message.session);
 
-      if (enteringBaseline) {
-        // The host, not a client timer, declares the next visitor. This is the one point where the
-        // trace held through idle is cleared (prompt 3.5).
+      if (
+        this.heldSession !== null &&
+        this.heldSession !== message.session &&
+        (enteringBaseline || (message.segment !== "idle" && message.segment !== "baseline"))
+      ) {
+        // The host, not a client timer, declares the next visitor: the trace held through idle
+        // is cleared when the next baseline begins (prompt 3.5). A screen that missed that
+        // baseline (a long outage) clears it at the first later sign of another session, so a
+        // previous visitor's numbers can never reappear under a later visitor's reset.
         this.heldTrace = null;
         this.heldSession = null;
         this.heldSummary = null;
+      }
+
+      if (enteringBaseline) {
         this.#startTrace(message.session);
+        // Decided once, here: a baseline first seen after it began has history missing.
+        this.partialHistory = message.segment_elapsed_ms > 0;
       } else if (TRACE_SEGMENTS.has(message.segment) && this.traceSession !== message.session) {
         // A screen opened mid-session has no past samples to invent; it starts with the next beat.
         this.#startTrace(message.session);
+        this.partialHistory = true;
       }
 
       if (this.traceSession === message.session && (TRACE_SEGMENTS.has(message.segment) || message.segment === "reset")) {
-        if (this.trace.length === 0) {
-          this.partialHistory = message.segment !== "baseline" || message.segment_elapsed_ms > 0;
-        }
         this.hostTrace = copyTraceSummary(message.trace);
         if (TRACE_SEGMENTS.has(message.segment)) {
           this.restingBpm = message.hr_base; // Null clears it; never substitute first/average HR.
@@ -135,15 +144,17 @@
       const state = this.state;
       if (state === null) return waitingView();
 
+      // A hold exists whenever a completed session left host evidence, even if this page drew
+      // no beat of its own (opened or reconnected late): the host's cards and average line stay.
       if (state.segment === "idle") {
-        if (this.heldTrace?.length) {
+        if (this.heldSession !== null) {
           return passiveView("idle-trace", state, this.heldTrace, this.heldSession, this.heldSummary);
         }
         return passiveView("idle-cold", state, [], null);
       }
 
       if (state.segment === "reset") {
-        if (this.heldTrace?.length) {
+        if (this.heldSession === state.session) {
           return passiveView("trace-hold", state, this.heldTrace, this.heldSession, this.heldSummary);
         }
         return passiveView("resetting", state, [], null);

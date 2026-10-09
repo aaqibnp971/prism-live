@@ -432,3 +432,69 @@ test("a stop during the reveal is not a completed session to retain through idle
   model.onState(state("idle", { session: SESSION_TWO }));
   assert.equal(model.view().kind, "idle-cold");
 });
+
+test("a previous visitor's held reveal never resurfaces under a later visitor's session", () => {
+  const SESSION_THREE = "S-20260920-0003";
+  const cards = traceEvidence({
+    at_rest_bpm: 70.0, highest_task_bpm: 88.5, after_task_bpm: 80.0, spoken_n_bpm: 8.5,
+    average_30s: [{ t_play: 40_000, hr_bpm: 70.0 }],
+  });
+  for (const later of ["load", "regulate", "resolve", "reset"]) {
+    const model = new Spectator.SpectatorModel();
+    model.onState(state("baseline", { elapsed: 0 }));
+    model.onBeat(beat(1, 68));
+    model.onState(state("reset", { seq: 2, elapsed: 0, nominal: 20_000, trace: cards }));
+    model.onState(state("idle", { session: SESSION_TWO, seq: 1 }));
+    assert.equal(model.view().summary.spokenN, 8.5); // held through idle, as designed
+
+    // The screen misses the next visitor's whole baseline (a long outage), then sees them.
+    model.onState(state(later, { session: SESSION_TWO, seq: 30, elapsed: 500, nominal: 3_000 }));
+    model.onState(state("reset", { session: SESSION_TWO, seq: 31, elapsed: 0, nominal: 3_000 }));
+    let view = model.view();
+    assert.equal(view.kind, "resetting", later);
+    assert.equal(view.summary, null, later);
+    model.onState(state("idle", { session: SESSION_THREE, seq: 1 }));
+    view = model.view();
+    assert.equal(view.kind, "idle-cold", later);
+    assert.equal(view.summary, null, later);
+  }
+});
+
+test("a fully watched session is not labelled partial because its first beat came late", () => {
+  const model = new Spectator.SpectatorModel();
+  model.onState(state("idle"));
+  model.onState(state("baseline", { seq: 2, elapsed: 0 }));
+  // With measured PPI the first beat plays about 12 s into baseline: several states, no beat.
+  for (let seq = 3; seq < 9; seq++) model.onState(state("baseline", { seq, elapsed: (seq - 2) * 2_000 }));
+  assert.equal(model.view().summary.partialHistory, false);
+  model.onBeat(beat(1, 68));
+  model.onState(state("load", { seq: 9, elapsed: 0, nominal: 75_000 }));
+  assert.equal(model.view().summary.partialHistory, false);
+
+  const late = new Spectator.SpectatorModel();
+  late.onState(state("baseline", { elapsed: 6_000 })); // page opened after baseline began
+  assert.equal(late.view().summary.partialHistory, true);
+  const mid = new Spectator.SpectatorModel();
+  mid.onState(state("regulate", { elapsed: 0, nominal: 75_000 }));
+  assert.equal(mid.view().summary.partialHistory, true);
+});
+
+test("a page that drew no beat still holds the host's cards and average through reset and idle", () => {
+  const cards = traceEvidence({
+    at_rest_bpm: 70.0, highest_task_bpm: 88.5, after_task_bpm: 80.0, spoken_n_bpm: 8.5,
+    average_30s: [{ t_play: 40_000, hr_bpm: 70.0 }, { t_play: 40_500, hr_bpm: null }],
+  });
+  const model = new Spectator.SpectatorModel();
+  model.onState(state("resolve", { elapsed: 30_000, nominal: 45_000, trace: cards }));
+  model.onState(state("reset", { seq: 2, elapsed: 0, nominal: 20_000, trace: cards }));
+  let view = model.view();
+  assert.equal(view.kind, "trace-hold");
+  assert.deepEqual(view.trace, []);
+  assert.equal(view.summary.spokenN, 8.5);
+  assert.equal(view.summary.average30s.length, 2);
+  assert.equal(view.summary.partialHistory, true);
+  model.onState(state("idle", { session: SESSION_TWO, seq: 1 }));
+  view = model.view();
+  assert.equal(view.kind, "idle-trace");
+  assert.equal(view.summary.highestDuringTask, 88.5);
+});
