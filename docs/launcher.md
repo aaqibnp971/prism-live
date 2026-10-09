@@ -264,6 +264,24 @@ diagnostic bypasses this human interlock and is not a booth launch path.
 
 ## The attendant button
 
+### Start rule: a settling minute, then a heart rate that has stopped falling (9 October)
+
+**Do not arm a start until the visitor has sat still for a full minute and the console's heart
+rate has stopped falling.** The console shows `HEART RATE: 84 bpm | 30 s ago: 96 bpm` from the
+host's own state (accepted intervals, never Polar's separate HR number) and repeats the rule
+while idle. Wait until the two numbers are within a few beats of each other.
+
+Why it matters: the baseline's quality score falls to 0 when heart rate drifts by about 12 bpm
+per minute or more across the 45-second capture, roughly 9 bpm over the window. That score
+multiplies arousal and readiness confidence for **the rest of the session**, so a visitor who is
+still coming down from the hall when baseline starts gets a session in which the heart has no
+authority at all. Cognitive load cannot carry it: its evidence ends with the task, a few
+seconds into regulate. This was seen in headset test session S-20261008-0008 with the synthetic
+heart, which loops a four-minute profile; a start pressed on its down-ramp does the same.
+
+The console displays and reminds; it does not judge, block or delay a start, and the session
+decides nothing from this line. It is the attendant's call, alongside the fit check.
+
 With the attendant terminal focused, Space or Enter is the same single button:
 
 - Before the first session: confirm the completed sound check; a separate next press arms.

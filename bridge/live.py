@@ -184,6 +184,7 @@ class LiveLoop:
         self._completed: list[SessionMetrics] = []
         self._completed_event: asyncio.Event | None = None
         self.sound_check: SoundCheckGate | None = None
+        self.last_state: dict | None = None
 
     @property
     def completed_metrics(self) -> tuple[SessionMetrics, ...]:
@@ -398,6 +399,7 @@ class LiveLoop:
             self.session_gain.on_state(msg)
         if self.heartbeat is not None:
             self.heartbeat.on_state(msg)
+        self.last_state = msg  # read-only, for the attendant console's heart-rate line
         return self.publish(msg)
 
     def _publish_beat(self, event: BeatEvent) -> None:

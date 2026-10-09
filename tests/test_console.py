@@ -431,3 +431,31 @@ def test_final_alignment_window_yields_so_a_cancel_can_interrupt(tmp_path):
         log.close()
 
     asyncio.run(scenario())
+
+
+def test_start_rule_and_host_heart_rate_are_shown_before_a_start_without_a_verdict():
+    bridge = StubBridge()
+    console = AttendantConsole(bridge)
+    text = "\n".join(screen_lines(console.snapshot(), 160))
+    assert "START RULE" in text and "stopped falling" in text
+    assert "HEART RATE" not in text  # no state yet: nothing invented
+
+    for t, hr in ((2_000, 96.4), (16_000, 90.0), (32_000, 84.2)):
+        bridge.last_state = {"t_engine": t, "hr_bpm": hr}
+        view = console.snapshot()
+    text = "\n".join(screen_lines(view, 160))
+    assert "HEART RATE: 84 bpm | 30 s ago: 96 bpm" in text
+    assert view["action"] == "ARM START" and bridge.starts == 0  # shown, never enforced
+    for verdict in ("SETTLED", "READY", "OK TO START", "TOO EARLY"):
+        assert verdict not in text
+
+    # Too little history, an unknown rate and a restarted bridge never borrow an old reading.
+    fresh = AttendantConsole(bridge)
+    assert "30 s ago: not known yet" in "\n".join(screen_lines(fresh.snapshot(), 160))
+    bridge.last_state = {"t_engine": 34_000, "hr_bpm": None}
+    assert "HEART RATE" not in "\n".join(screen_lines(console.snapshot(), 160))
+    bridge.last_state = {"t_engine": 36_000, "hr_bpm": 80.0}
+    assert "30 s ago: not known yet" in "\n".join(screen_lines(console.snapshot(), 160))
+
+    bridge.session.segment = "load"  # the rule is for the moment before a start only
+    assert "START RULE" not in "\n".join(screen_lines(console.snapshot(), 160))

@@ -20,8 +20,10 @@ import sys
 import textwrap
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
+from bridge.contract import STATE_INTERVAL_MS
 from bridge.live import LiveLoop
 from bridge.logging import SessionLog
 from bridge.phase import SAMPLE_RATE
@@ -32,6 +34,14 @@ SOUND_CHECK_ATTACK_MS = 500.0
 SOUND_CHECK_HOLD_S = 2.5
 SOUND_CHECK_RELEASE_MS = 500.0
 SOUND_CHECK_TAIL_S = 0.1
+HEART_RATE_LOOKBACK_MS = 30_000
+# A baseline taken while heart rate is still falling scores quality 0, and that multiplies the
+# heart's confidence, so its authority, for the rest of the session (docs/known-limits.md).
+# The console shows the rate and leaves the judgement to the attendant; it computes no verdict.
+START_RULE = (
+    "START RULE: let the visitor settle for a full minute. Arm only once this heart rate has "
+    "stopped falling; a heart still falling during baseline gets no say for the whole session."
+)
 
 
 class ConsoleLog(SessionLog):
@@ -130,6 +140,26 @@ class AttendantConsole:
         self.start_task: asyncio.Task | None = None
         self.sound_check_task: asyncio.Task | None = None
         self.fault: Exception | None = None
+        # (t_engine, hr_bpm) from the host's own state messages, for the start rule's display.
+        self.heart_rates: deque[tuple[float, float]] = deque()
+
+    def _heart_rate(self):
+        """Current state heart rate and the one about 30 s earlier. Display only: no verdict."""
+        state = getattr(self.bridge, "last_state", None)
+        if not state or state.get("hr_bpm") is None:
+            self.heart_rates.clear()  # an unknown rate is never bridged by an old one
+            return None, None
+        t, hr = state["t_engine"], state["hr_bpm"]
+        if not self.heart_rates or t > self.heart_rates[-1][0]:
+            self.heart_rates.append((t, hr))
+        elif t < self.heart_rates[-1][0]:  # the bridge restarted: T_engine began again
+            self.heart_rates.clear()
+            self.heart_rates.append((t, hr))
+        while self.heart_rates[0][0] < t - HEART_RATE_LOOKBACK_MS - 2 * STATE_INTERVAL_MS:
+            self.heart_rates.popleft()
+        earlier = self.heart_rates[0]
+        settled = t - earlier[0] >= HEART_RATE_LOOKBACK_MS - STATE_INTERVAL_MS
+        return hr, earlier[1] if settled else None
 
     @property
     def armed(self):
@@ -264,7 +294,10 @@ class AttendantConsole:
             if source_status == "synthetic"
             else "POLAR SENSOR LOGGER / MQTT / MEASURED PPI, BUFFERED PLAYBACK"
         )
+        hr_now, hr_earlier = self._heart_rate()
         return {
+            "hr_bpm": hr_now,
+            "hr_earlier_bpm": hr_earlier,
             "state": state,
             "action": action,
             "session": session.session,
@@ -322,6 +355,14 @@ def screen_lines(view, columns=80):
         lines += ["ACCEPTED BEATS PRESENT - NOT A WEAR CHECK", ""]
     if view["restart_notice"]:
         lines += [view["restart_notice"], ""]
+    if view.get("hr_bpm") is not None:
+        earlier = view.get("hr_earlier_bpm")
+        lines += [
+            f"HEART RATE: {view['hr_bpm']:.0f} bpm | 30 s ago: "
+            + ("not known yet" if earlier is None else f"{earlier:.0f} bpm")
+        ]
+    if view["state"] in ("IDLE", "COUNTDOWN"):
+        lines += [START_RULE, ""]
     lines += [f"STATE: {view['state']}", f"NEXT PRESS: {view['action']}"]
     if view["countdown_s"] is not None:
         lines += [f"START IN {view['countdown_s']:.1f} s", "Outside the session and its cap."]
