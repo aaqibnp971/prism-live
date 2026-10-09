@@ -82,7 +82,7 @@ A **four-minute seated experience**. One person at a time.
 
 They put on a heart rate armband and a VR headset, sit in a chair, and the system reads their pulse and composes sound and visuals from it. They hear **their measured beat intervals played back after a delay** as a low thump. The Android phone supplies batched PPI, and the laptop buffers accepted beats rather than predict a replacement rhythm. Any measured speeding or slowing is retained; neither a rate change nor instantaneous playback is promised. Preserve this delay disclosure in participant-facing Unity copy too.
 
-At the end they see a line: their heart rate across the whole four minutes.
+At the end they see a line: their heart rate across the whole four minutes. It is drawn on the spectator screen, not in the headset.
 
 The point is that nobody has to take anything on faith. They felt it.
 
@@ -387,7 +387,7 @@ A `task_event` message for every `split`, `lock`, `miss` and `abandon`, with dwe
 There are only two lines of text in the entire four minutes.
 
 - **3 seconds before the task starts**, one line, then it clears: *"Follow the half that's still moving."*
-- **At T−20 s in resolve**, as the trace draws: *"This is your heart rate, from the moment you sat down."*
+- **At T−20 s in resolve**, as the trace draws on the spectator screen: *"Your heart rate is on the screen outside."* (Changed 9 October 2026: the headset draws no trace, so the earlier line, *"This is your heart rate, from the moment you sat down."*, pointed at nothing the person could see.)
 
 Nothing else. No menus, no HUD, no instructions, no progress bars. Everything else the person needs to know is said out loud by the attendant before the headset goes on.
 
