@@ -976,6 +976,21 @@ class Supervisor:
             await self.close()
 
 
+def failure_report(error: BaseException) -> str:
+    """The error and every earlier one it interrupted, first cause first.
+
+    Shutdown runs in a finally block, so a failure there used to replace the error
+    that caused the shutdown and the operator saw only the less useful of the two.
+    """
+    chain: list[BaseException] = []
+    while error is not None and error not in chain:
+        chain.append(error)
+        # "raise ... from" already folds its cause into the message; follow only an
+        # error that was interrupted by this one.
+        error = None if error.__suppress_context__ else error.__context__
+    return "\nThen, while shutting down: ".join(str(item) for item in reversed(chain))
+
+
 def local_lan_addresses() -> list[str]:
     """Local RFC1918 IPv4 adapters; do not contact an internet service to discover an IP."""
     private_ranges = tuple(
@@ -1231,7 +1246,7 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError) as error:
-        parser.exit(2, f"Launcher: {error}\n")
+        parser.exit(2, f"Launcher: {failure_report(error)}\n")
 
 
 if __name__ == "__main__":

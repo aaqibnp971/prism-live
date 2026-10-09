@@ -1134,3 +1134,17 @@ def test_bridge_stall_watchdog_includes_cached_status_freshness(config, monkeypa
             assert child.ready
 
     asyncio.run(check())
+
+
+def test_failure_report_keeps_the_first_cause_when_shutdown_also_fails():
+    from tools.launch import failure_report
+
+    try:
+        try:
+            raise RuntimeError("no network profile on the adapter")
+        finally:
+            raise RuntimeError("cleanup failed")
+    except RuntimeError as error:
+        report = failure_report(error)
+    assert report.index("no network profile") < report.index("cleanup failed")
+    assert failure_report(ValueError("alone")) == "alone"

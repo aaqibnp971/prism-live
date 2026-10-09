@@ -15,26 +15,50 @@ from pathlib import Path
 
 from bridge.mqtt_broker import private_ipv4
 
+# The firewall cmdlets alone took over 20 s on the booth laptop on 9 October 2026.
+POWERSHELL_TIMEOUT_S = 120
+
 
 def _literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _powershell(script: str):
+def _powershell(script: str, action: str = "changing the temporary firewall rule"):
     if os.name != "nt":
         raise RuntimeError("Automatic MQTT firewall management requires Windows")
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+    advice = (
+        "Run the launcher in Administrator PowerShell; do not disable the firewall or "
+        "widen the rule."
     )
-    if result.returncode:
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=POWERSHELL_TIMEOUT_S,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired as error:
         raise RuntimeError(
-            "Scoped firewall operation failed. Run the launcher in Administrator "
-            f"PowerShell; do not disable the firewall. {result.stderr.strip()}"
+            f"Scoped firewall operation failed while {action}: PowerShell did not finish "
+            f"within {POWERSHELL_TIMEOUT_S} s, so the rule's state is unknown. {advice}"
+        ) from error
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"Scoped firewall operation failed while {action}: PowerShell could not be "
+            f"run ({type(error).__name__}: {error}). {advice}"
+        ) from error
+    if result.returncode:
+        # The operator needs PowerShell's own words: the cause is rarely elevation alone.
+        said = "\n".join(
+            part.strip() for part in (result.stderr, result.stdout) if part and part.strip()
+        )
+        raise RuntimeError(
+            f"Scoped firewall operation failed while {action} "
+            f"(PowerShell exit code {result.returncode}). {advice}\n"
+            "PowerShell reported:\n" + (said or "(nothing on either output stream)")
         )
     return result.stdout.strip()
 
@@ -102,6 +126,16 @@ class MqttFirewall:
             raise RuntimeError("Firewall rule creation already attempted")
         program = _python_image(self.python)
         self.attempted = True
+        # One line, no backtick continuations: on the booth laptop (9 October 2026) a
+        # continued New-NetFirewallRule passed through -Command never returned.
+        create = (
+            f"New-NetFirewallRule -Name {_literal(self.name)} "
+            f"-DisplayName {_literal(self.display_name)} "
+            f"-Description {_literal(self.owner)} -Direction Inbound -Action Allow "
+            f"-Enabled True -Protocol TCP -LocalAddress {_literal(self.local_ip)} "
+            f"-LocalPort {self.port} -RemoteAddress {_literal(self.phone_ip)} "
+            f"-InterfaceAlias $alias -Profile $profile -Program {_literal(str(program))}"
+        )
         # Resolve the interface and its CURRENT profile from the explicit local IP.
         # Public here may be a trusted private router labelled Public by Windows;
         # it never implies authorisation to run this on public/venue Wi-Fi.
@@ -111,22 +145,39 @@ if (Get-NetFirewallRule -Name {_literal(self.name)} -ErrorAction SilentlyContinu
     throw 'Rule already exists; refusing to adopt or replace it'
 }}
 $adapter = @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress {_literal(self.local_ip)})
-if ($adapter.Count -ne 1) {{ throw 'Local MQTT IP must identify exactly one interface' }}
-$network = @(Get-NetConnectionProfile -InterfaceIndex $adapter[0].InterfaceIndex)
-if ($network.Count -ne 1) {{ throw 'MQTT interface must have exactly one network profile' }}
-$category = $network[0].NetworkCategory.ToString()
-$profile = if ($category -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ $category }}
-if ($profile -notin @('Private', 'Public', 'Domain')) {{ throw 'Unsupported firewall profile' }}
-New-NetFirewallRule -Name {_literal(self.name)} -DisplayName {_literal(self.display_name)} `
-    -Description {_literal(self.owner)} -Direction Inbound -Action Allow -Enabled True `
-    -Protocol TCP -LocalAddress {_literal(self.local_ip)} -LocalPort {self.port} `
-    -RemoteAddress {_literal(self.phone_ip)} -InterfaceAlias $adapter[0].InterfaceAlias `
-    -Profile $profile -Program {_literal(str(program))} | Out-Null
-@{{name={_literal(self.name)}; interface=$adapter[0].InterfaceAlias;
+if ($adapter.Count -ne 1) {{
+    throw "Local IP must identify exactly one interface; found $($adapter.Count)"
+}}
+$alias = $adapter[0].InterfaceAlias
+# -InterfaceAlias is a wildcard pattern and hidden adapters are named like
+# 'Local Area Connection* 2'. Refuse a name that could select a second interface.
+$named = @(Get-NetIPInterface -AddressFamily IPv4 |
+    Where-Object {{ $_.InterfaceAlias -like $alias }})
+if ($named.Count -ne 1) {{
+    throw "Interface name '$alias' selects $($named.Count) interfaces; refusing a wider rule"
+}}
+$index = $adapter[0].InterfaceIndex
+$network = @(Get-NetConnectionProfile -InterfaceIndex $index -ErrorAction SilentlyContinue)
+if ($network.Count -gt 1) {{ throw "Interface '$alias' has more than one network profile" }}
+if ($network.Count -eq 1) {{
+    $category = $network[0].NetworkCategory.ToString()
+    $profile = if ($category -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ $category }}
+    if ($profile -notin @('Private', 'Public', 'Domain')) {{
+        throw "Unsupported firewall profile '$category' on interface '$alias'"
+    }}
+}} else {{
+    # Windows gives the Mobile Hotspot adapter no connection profile, so there is no
+    # category to read. The rule stays bound to this one interface, both addresses,
+    # the port and the program; only the profile condition is left unset.
+    $profile = 'Any'
+}}
+{create} | Out-Null
+@{{name={_literal(self.name)}; interface=$alias;
     profile=$profile; program={_literal(str(program))}}} |
     ConvertTo-Json -Compress
+exit 0
 """
-        self.scope = json.loads(_powershell(script))
+        self.scope = json.loads(_powershell(script, f"creating rule {self.name}"))
         return self.scope
 
     def close(self):
@@ -134,7 +185,8 @@ New-NetFirewallRule -Name {_literal(self.name)} -DisplayName {_literal(self.disp
             return
         # Check the unguessable ownership description before removal. Even a name
         # collision or a replaced rule can never cause deletion of somebody else's.
-        _powershell(f"""
+        _powershell(
+            f"""
 $ErrorActionPreference = 'Stop'
 $rule = Get-NetFirewallRule -Name {_literal(self.name)} -ErrorAction SilentlyContinue
 if ($rule) {{
@@ -143,5 +195,10 @@ if ($rule) {{
     }}
     $rule | Remove-NetFirewallRule
 }}
-""")
+# A lookup that finds no rule leaves PowerShell's status false, which alone would end
+# this script with exit code 1 and no message: nothing to remove is not a failure.
+exit 0
+""",
+            f"removing rule {self.name}",
+        )
         self.attempted = False

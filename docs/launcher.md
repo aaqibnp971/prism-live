@@ -123,8 +123,20 @@ server does not itself refuse other source addresses, and an existing broader ex
 Python is neither audited nor changed. Own router only, never venue WiFi. `--headset-test`
 refuses `--booth`, `--single-display-test`, `--task-display` and MQTT input; use `--booth` for
 the armband. The launcher does not start, supervise or prove a connection from the headset.
-The real firewall rule has not been exercised on hardware yet; the scope is covered by mocked
-tests only.
+
+**Windows Mobile Hotspot.** The Quest can join the laptop's own hotspot instead of a router;
+`--lan-ip` is then the hotspot adapter's address, normally `192.168.137.1`. Windows gives that
+adapter no network profile, so the rule there carries no profile condition. It is still bound
+to that one adapter, both addresses, the port and this Python image. The launcher refuses an
+adapter whose name could select a second interface.
+
+If rule setup fails, the launcher prints what PowerShell itself reported and the step it was
+on, and a failure while shutting down no longer replaces the error that caused the shutdown.
+Creating the rule can take 10 to 25 s on this laptop.
+
+As of 9 October 2026 the rule script has been run on this laptop without elevation only: it
+resolves the hotspot adapter and stops where Windows refuses an unelevated change. A rule
+has not yet been created from an elevated launch here.
 
 ## Phone and router runbook (replacement for direct laptop BLE / prompt 2.8)
 
@@ -182,7 +194,8 @@ Before starting bridge/browser processes, the launcher creates a uniquely named
 destination IP and MQTT port, the selected interface, its current Windows profile, and this
 Python process image**. A Windows virtual environment's executable redirects to its base Python;
 the launcher resolves the actual image first so the program-scoped rule matches the listener.
-The rule can be scoped to a trusted router labelled Public by Windows;
+An adapter with no Windows network profile, such as the Mobile Hotspot adapter, gets the same
+rule without a profile condition. The rule can be scoped to a trusted router labelled Public by Windows;
 this does not make venue Wi-Fi acceptable. It never changes the network category or disables
 the firewall. An independent relay also rejects every source IP except the phone's.
 
