@@ -123,7 +123,8 @@ namespace Prism
             if (state.segment == "resolve" && remaining <= 20000f && !shownResolveLine)
             {
                 shownResolveLine = true;
-                ShowLine("This is your heart rate, from the moment you sat down.", 8f);
+                // the headset draws no trace; the spectator screen does
+                ShowLine("Your heart rate is on the screen outside.", 8f);
             }
 
             if (state.segment != "load")
