@@ -149,6 +149,10 @@ class BeatScheduler:
     def __init__(self, tuning: Tuning | None = None) -> None:
         self.t = tuning or Tuning()
         self.stats = Stats()
+        # Diagnostics for the session log only: why the latest packet's intervals were refused.
+        # Nothing reads these to schedule, accept or classify anything.
+        self.last_rejections: list[dict] = []
+        self._reject_reason: str | None = None
         # The reconstructed real timeline.
         self._chain_t: float | None = None  # last reported beat, accepted or not
         self._ref_t: float | None = None  # last accepted beat: the phase reference
@@ -181,6 +185,7 @@ class BeatScheduler:
         t = self.t
         packet = parse_hrm(payload)
         rrs = packet.rr_ms
+        self.last_rejections = []
         link_gap = self._last_arrival is not None and now - self._last_arrival > t.link_timeout_ms
         if link_gap:
             self.stats.link_gaps += 1
@@ -199,6 +204,10 @@ class BeatScheduler:
                 # is running late: pull it back.
                 self._chain_t = min(self._chain_t, now - t.min_lag_ms)
                 accepted, bootstrap = self._accept(rr)
+                if not accepted:
+                    self.last_rejections.append(
+                        {"t_beat": self._chain_t, "rr_ms": rr, "reason": self._reject_reason}
+                    )
                 intervals.append(
                     Interval(
                         self._chain_t,
@@ -263,13 +272,19 @@ class BeatScheduler:
         t = self.t
         lo, hi = t.plausible_ms
         bootstrap = False
+        self._reject_reason = None
         if not lo <= rr <= hi:
             plausible = False
+            self._reject_reason = f"outside {lo:g} to {hi:g} ms"
         elif len(self._window) < t.bootstrap:
             plausible = bootstrap = True
         else:
             centre = median(self._window)
             plausible = abs(rr - centre) <= t.reject_fraction * centre
+            if not plausible:
+                self._reject_reason = (
+                    f"more than {t.reject_fraction:.0%} from the recent median {centre:.0f} ms"
+                )
         if plausible:
             self._window.append(rr)
             self._rejects_in_a_row = 0

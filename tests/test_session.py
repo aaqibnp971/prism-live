@@ -175,7 +175,8 @@ def test_no_hr_base_by_the_cap_enters_load_degraded_on_the_cap_and_stays_degrade
     found = result(run)
     assert found["outcome"] == "no_threshold" and "degraded" in found["no_threshold"]
     (activation,) = run.events("load_activation")
-    assert activation["activated"] is None and activation["by_hr"] is None
+    assert activation["activated"] is False and activation["by_hr"] is None
+    assert activation["by_hr_or_rmssd"] is None  # nothing could be judged, so not activated
     assert "degraded" in activation["hr_unavailable"] and activation["rmssd_unavailable"]
     (back,) = run.events("rmssd_return")
     assert back["returned"] is None and back["rmssd_unavailable"]
@@ -591,13 +592,23 @@ def test_an_artefact_burst_late_in_load_leaves_its_rmssd_part_unavailable(tmp_pa
     assert activation["activated"] is True
 
 
-def test_stopping_just_into_regulate_still_records_the_threshold_and_activation(tmp_path):
+def test_stopping_just_into_regulate_records_the_threshold_but_judges_no_activation(tmp_path):
     clean = starts(live(tmp_path / "clean", REGULATED, until_s=150))
     stop_s = (clean["regulate"] + 900) / 1000
     run = live(tmp_path / "stop", REGULATED, stop_s=(stop_s,), until_s=150)
     (threshold,) = run.events("regulate_threshold")
     (activation,) = run.events("load_activation")
-    assert threshold["hr_load_bpm"] is not None and activation["by_hr"] is True
+    # HR_load is read early because of the stop, before load's last intervals have settled. The
+    # number is kept, but it is not allowed to decide activation: on the PPI path the same data
+    # read 0.1 s into regulate and read after settlement gave opposite answers.
+    assert threshold["hr_load_bpm"] is not None and activation["hr_load_bpm"] is not None
+    assert activation["by_hr"] is None and activation["activated"] is False
+    assert activation["judged"] is False and "settled" in activation["hr_unavailable"]
+    (verdict,) = run.events("activation_result")
+    assert verdict["activated"] is False and verdict["judged"] is False
+    assert "settled" in verdict["not_judged"] and verdict["hr_load_bpm"] is not None
+    (end,) = run.events("session_end")
+    assert end["activated"] is False and end["activation_judged"] is False
     assert "classification" in activation["rmssd_unavailable"]
     assert not run.events("regulate_result") and not run.events("rmssd_return")
 
@@ -901,3 +912,58 @@ def test_the_next_visitor_starts_with_an_empty_trace_and_gets_their_own_cards(tm
     rested = next(m["trace"]["at_rest_bpm"] for m in second if m["trace"]["at_rest_bpm"])
     earlier = next(m["trace"]["at_rest_bpm"] for m in first if m["trace"]["at_rest_bpm"])
     assert earlier < 75 < rested  # 68 bpm for the first visitor, 90 for the second
+
+MET_WITHOUT_RISE = "68:70,68-72:75,72-60:40,60:150"  # rises 4 bpm, then falls well below it
+
+
+def test_a_session_is_recorded_as_regulated_only_when_it_was_activated(tmp_path):
+    run = live(tmp_path / "activated", REGULATED)
+    found = result(run)
+    (activation,) = run.events("activation_result")
+    (end,) = run.events("session_end")
+    assert found["outcome"] == "regulated" and found["activated"] is True
+    assert found["activation_judged"] is True and activation["judged"] is True
+    assert activation["activated"] is True and activation["rise_bpm"] >= 6.0
+    assert end["activated"] is True and end["activation_judged"] is True
+    completed = next(m for m in first_session(run) if m["segment"] == "reset")
+    assert completed["trace"]["spoken_n_bpm"] is not None  # the same rule that lets N be spoken
+
+    flat = live(tmp_path / "not_activated", MET_WITHOUT_RISE)
+    found = result(flat)
+    (activation,) = flat.events("activation_result")
+    (end,) = flat.events("session_end")
+    # The threshold was met and regulate ended on it exactly as before; only the record differs.
+    assert found["first_met_ms"] is not None and found["threshold_bpm"] is not None
+    assert found["outcome"] == "met_not_activated" and found["activated"] is False
+    assert 0 < activation["rise_bpm"] < 6.0 and activation["activated"] is False
+    assert activation["not_judged"] is None  # it was judged, and the answer is no
+    assert end["activated"] is False and end["activation_judged"] is True
+    reasons = [e["reason"] for e in flat.events("segment") if e["segment"] == "resolve"]
+    assert reasons == ["met_not_activated"]
+    states = first_session(flat)
+    assert all(m["trace"]["spoken_n_bpm"] is None for m in states)
+    assert not any(value == "regulated" for e in flat.records() for value in e[1].values()
+                   if isinstance(value, str))
+
+
+def test_relabelling_the_record_does_not_move_the_end_of_regulate(tmp_path):
+    flat = live(tmp_path, MET_WITHOUT_RISE)
+    at, found = starts(flat), result(flat)
+    assert at["resolve"] - at["regulate"] == pytest.approx(found["ran_ms"])
+    assert found["ran_ms"] == pytest.approx(max(75_000, found["first_met_ms"]))
+
+
+def test_a_session_stopped_before_load_ends_is_recorded_as_not_activated_and_not_judged(tmp_path):
+    run = live(tmp_path, REGULATED, stop_s=(90.0,))
+    (end,) = run.events("session_end")
+    assert end["activated"] is False and end["activation_judged"] is False
+    assert not run.events("regulate_result") and not run.events("activation_result")
+
+
+def test_a_degraded_baseline_is_not_activated_and_says_it_could_not_be_judged(tmp_path):
+    run = live(tmp_path, FLAT, "disconnect@52:20", until_s=300, tick_jitter_ms=16.0)
+    (activation,) = run.events("activation_result")
+    (end,) = run.events("session_end")
+    assert activation["activated"] is False and "degraded" in activation["not_judged"]
+    assert end["activated"] is False and end["activation_judged"] is False
+    assert result(run)["activated"] is False

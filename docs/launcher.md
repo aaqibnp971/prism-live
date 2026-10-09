@@ -359,6 +359,57 @@ files, copy their readings into tracked documentation, or move them into `tools/
 Only generated synthetic fixtures belong in Git and canonical tests. Gitignore is a guard
 against accidental staging, not access control or a guarantee against an explicit force-add.
 
+## What the session log records about activation and the phone link (9 October)
+
+Everything here is written to the gitignored per-session JSONL under `logs/`. None of it is
+sent to a screen or the headset, and none of it changes a decision.
+
+**Activation.** One answer per session, by the same heart-rate test that lets a spoken N exist:
+HR_load at least 6 bpm above HR_base. RMSSD never counts toward it.
+
+- `activation_result`, when regulate ends: `activated`, `judged`, the two heart rates, the rise,
+  and `not_judged` with the reason when it could not be judged (degraded baseline, too little of
+  load's last 30 s, or a stop before load's last intervals had settled).
+- `session_end`: `activated` and `activation_judged`. A session that never reached the end of
+  load is `activated: false, activation_judged: false`.
+- `regulate_result.outcome` and the `segment` reason are `regulated` only for an activated
+  session. A threshold met without activation is `met_not_activated`. Regulate still ends at
+  exactly the same moment; only the label differs. `regulate_met` and `first_met_ms` still record
+  that the threshold was met.
+- `load_activation.activated` now follows the same rule. The experience script's wider test,
+  heart rate or RMSSD, is kept as `by_hr_or_rmssd`, with `by_hr` and `by_rmssd` beside it.
+- `activated` does not mean an N was shown: N also needs all three cards and a fall of at least
+  3 bpm.
+
+**The phone link.**
+
+- `mqtt_phone_connected`, `mqtt_phone_disconnected`: the phone's TCP connection through the LAN
+  relay. `mqtt_connection_refused` with the reason for anything turned away.
+- `mqtt_subscriber_connected`, `mqtt_subscriber_disconnected`: the bridge's own subscription to
+  the laptop's loopback broker, stamped with the time Paho reported it and its reason.
+- `ppi_burst`, one per burst handed to the scheduler: `arrived_ms` is the arrival of the burst's
+  last message, `t_engine` when the bridge handled it, with `intervals_accepted`,
+  `intervals_refused`, and `ignored` when a whole burst was skipped.
+- `interval_rejected`, one per refused interval, with its reason: `blockerBit set`,
+  `errorEstimate ... over 10% of the interval`, `outside 300 to 2000 ms`,
+  `more than 20% from the recent median ...`, or `overlaps the measurement timeline already
+  consumed`. The synthetic one-second path logs its refusals the same way.
+- `ppi_message_not_used`: a PPI message that arrived but never reached the scheduler, with its
+  arrival and why (`probation`, `duplicate`, `malformed`, `old_message`, `phone_backlog`,
+  `stale_callback`, `stale_burst`, `burst_overflow`, `retained`, `wrong_identity`).
+
+What it does not record: an accepted interval later dropped as too late to schedule shows only
+in the running `not_scheduled_total`; the HRV cleaner's exclusions and the legacy path's
+contact rule are not itemised; the subscriber closing at shutdown is not logged. Because the
+phone streams between visitors, these lines are also written while idle, into the next
+session's file: roughly 1 MB an hour with the armband off the arm.
+
+**Review:** one heavy-review round of two agents, then regression self-checks only. One
+compared the old and new schedulers on identical inputs (about 210,000 PPI bursts and 331,000
+one-second packets) and found results, counters and every published message identical; the
+other found that a stop in regulate's first seconds could record activation from heart-rate
+data that had not finished arriving, which is why such a session is now `judged: false`.
+
 ## Recovery diagnostics
 
 Repeat the measured kill/restart test (real audio, real clock, isolated headless browsers):

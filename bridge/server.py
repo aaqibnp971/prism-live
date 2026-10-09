@@ -410,12 +410,19 @@ def main(argv: list[str] | None = None) -> int:
             from bridge.mqtt_source import MqttConfig, MqttSource
             from bridge.ppi_scheduler import PpiBeatScheduler
 
+            def mqtt_event(name: str, **fields) -> None:
+                # A relay task can outlive the log at shutdown; writing then would open a
+                # stray one-line session file.
+                if log.is_open:
+                    log.event(name, **fields)
+
             broker = MqttBroker(args.mqtt_bind, args.mqtt_phone_ip,
-                                port=args.mqtt_port, broker_port=args.mqtt_broker_port)
+                                port=args.mqtt_port, broker_port=args.mqtt_broker_port,
+                                on_event=mqtt_event)
             packet_source = MqttSource(MqttConfig(
                 broker_port=args.mqtt_broker_port, topic_prefix=args.mqtt_topic_prefix,
                 client_id=args.mqtt_client_id, device_id=args.mqtt_device_id,
-            ), clock=t_engine_ms)
+            ), clock=t_engine_ms, on_event=mqtt_event)
             scheduler = PpiBeatScheduler()
         else:
             packet_source = SyntheticPacketSource(Profile.from_spec(args.profile), seed=args.seed,

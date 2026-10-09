@@ -26,7 +26,11 @@ def private_ipv4(value: str) -> str:
 
 
 class MqttBroker:
-    def __init__(self, bind_host: str, phone_ip: str, *, port=1883, broker_port=1884):
+    def __init__(
+        self, bind_host: str, phone_ip: str, *, port=1883, broker_port=1884, on_event=None
+    ):
+        # Session-log hook: on_event(name, **fields) for every phone connect and disconnect.
+        self.on_event = on_event
         self.bind_host = private_ipv4(bind_host)
         self.phone_ip = private_ipv4(phone_ip)
         if self.bind_host == self.phone_ip:
@@ -87,11 +91,18 @@ class MqttBroker:
         try:
             if self.closing or not peer or peer[0] != self.phone_ip or self.phone_connections >= 2:
                 self.rejected_connections += 1
+                self._event(
+                    "mqtt_connection_refused",
+                    reason="closing" if self.closing
+                    else "not the allowed phone address" if not peer or peer[0] != self.phone_ip
+                    else "two phone connections already open",
+                )
                 return
             # Allow a reconnect while the old phone TCP connection is closing, but not
             # unbounded sockets from even the approved address.
             accepted = True
             self.phone_connections += 1
+            self._event("mqtt_phone_connected", open_connections=self.phone_connections)
             upstream_reader, upstream_writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self.broker_port), 3
             )
@@ -122,7 +133,14 @@ class MqttBroker:
                         await asyncio.wait_for(stream.wait_closed(), 1)
             if accepted:
                 self.phone_connections -= 1
+                self._event("mqtt_phone_disconnected", open_connections=self.phone_connections)
             self.tasks.discard(task)
+
+    def _event(self, name: str, **fields) -> None:
+        # A log failure must never take the relay, and with it the heartbeat, down.
+        if self.on_event is not None:
+            with contextlib.suppress(Exception):
+                self.on_event(name, **fields)
 
     async def close(self):
         self.closing = True

@@ -84,3 +84,39 @@ def test_close_stops_ingress_then_phone_connections_then_broker():
         assert events == ["stop ingress", "listener closed", "phone closed", "broker closed"]
 
     asyncio.run(check())
+
+def test_phone_connects_disconnects_and_refusals_reach_the_session_log_hook(monkeypatch):
+    async def check():
+        events = []
+
+        def hook(name, **fields):
+            events.append((name, fields))
+            if name == "mqtt_phone_disconnected":
+                raise OSError("log disk full")  # a log failure must not break the relay
+
+        broker = MqttBroker("192.168.1.201", "192.168.1.135", on_event=hook)
+
+        async def wait_closed():
+            pass
+
+        async def refused_upstream(*args, **kwargs):
+            raise ConnectionRefusedError
+
+        def writer(address):
+            return SimpleNamespace(
+                get_extra_info=lambda _: (address, 5000),
+                close=lambda: None,
+                wait_closed=wait_closed,
+            )
+
+        monkeypatch.setattr(asyncio, "open_connection", refused_upstream)
+        await broker._relay(None, writer("192.168.1.136"))
+        await broker._relay(None, writer("192.168.1.135"))
+        assert events == [
+            ("mqtt_connection_refused", {"reason": "not the allowed phone address"}),
+            ("mqtt_phone_connected", {"open_connections": 1}),
+            ("mqtt_phone_disconnected", {"open_connections": 0}),
+        ]
+        assert broker.phone_connections == 0 and not broker.tasks
+
+    asyncio.run(check())

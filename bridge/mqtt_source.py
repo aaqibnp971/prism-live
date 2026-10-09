@@ -47,6 +47,12 @@ MAX_MESSAGE_SAMPLES = 64
 MAX_BURST_SAMPLES = 128
 MAX_MAILBOX_MESSAGES = 128
 MAX_DEDUP_KEYS = 512
+# Decoder and source counters that mean "this PPI message's intervals were not used". The
+# session log names them per message; hr-only and accepted messages are not listed.
+DROP_COUNTERS = (
+    "retained", "oversized", "wrong_topic", "wrong_identity", "malformed", "duplicate",
+    "old_message", "phone_backlog", "probation", "burst_overflow",
+)
 
 
 @dataclass(frozen=True)
@@ -221,10 +227,16 @@ class MqttSource:
     ppi_bursts = True
 
     def __init__(
-        self, config: MqttConfig | None = None, *, clock: Callable[[], float] = t_engine_ms
+        self,
+        config: MqttConfig | None = None,
+        *,
+        clock: Callable[[], float] = t_engine_ms,
+        on_event: Callable[..., None] | None = None,
     ):
         self.config = config or MqttConfig()
         self.clock = clock
+        # Session-log hook, called on the asyncio loop only: on_event(name, **fields).
+        self.on_event = on_event
         self.decoder = PpiDecoder(self.config)
         self.connected = False
         self.last_ppi_ms: float | None = None
@@ -287,24 +299,29 @@ class MqttSource:
                 self._wake_pending = True
                 self._loop.call_soon_threadsafe(self._wake.set)
 
+    # Connection items carry the callback's own time and a reason, for the session log.
     def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
-            self._post(("disconnected",))
+            self._post(("disconnected", self.clock(), f"connect refused: {reason_code}"))
             return
         result, _mid = client.subscribe(
             [(self.config.topic_prefix + "/ecg", 2), (self.config.topic_prefix + "/hr", 2)]
         )
         if result != 0:
-            self._post(("disconnected",))
+            self._post(("disconnected", self.clock(), f"subscribe not sent: {result}"))
 
     def _on_subscribe(self, client, userdata, mid, reasons, properties) -> None:
         connected = len(reasons) == 2 and not any(reason.is_failure for reason in reasons)
-        self._post(("connected" if connected else "disconnected",))
+        self._post(
+            ("connected", self.clock(), "subscribed")
+            if connected
+            else ("disconnected", self.clock(), "subscription refused")
+        )
         if connected and self._loop is not None and not self._closed:
             self._loop.call_soon_threadsafe(self._subscription_ready.set)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties) -> None:
-        self._post(("disconnected",))
+        self._post(("disconnected", self.clock(), f"disconnected: {reason_code}"))
 
     def _on_message(self, client, userdata, message) -> None:
         # Preserve callback arrival even if the asyncio loop stalls. Do not turn
@@ -410,6 +427,12 @@ class MqttSource:
         assert self._burst_source is not None and self._burst_last is not None
         if self.clock() - self._burst_last > MAX_CALLBACK_AGE_MS:
             self.decoder.counters["stale_burst"] += 1
+            self._emit(
+                "ppi_message_not_used",
+                arrived_ms=round(self._burst_last, 1),
+                samples=len(self._samples),
+                reason="stale_burst",
+            )
             self._reset()
             return None
         packet = PpiPacket(
@@ -430,6 +453,7 @@ class MqttSource:
             self._wake.clear()
         if overflowed:
             self.decoder.counters["mailbox_overflow"] += 1
+            self._emit("mqtt_mailbox_overflow", note="queued messages and link events were lost")
             self._reset()
         packets = []
         for item in items:
@@ -437,20 +461,36 @@ class MqttSource:
             if kind in ("connected", "disconnected"):
                 self.connected = kind == "connected"
                 self._reset()
+                # This subscriber's link to the laptop's own loopback broker, not the phone.
+                # t_engine is when Paho reported it, not when this loop got round to it.
+                self._emit(
+                    "mqtt_subscriber_" + kind,
+                    t_engine=item[1] if len(item) > 1 else self.clock(),
+                    reason=item[2] if len(item) > 2 else None,
+                )
             elif kind == "oversized":
                 self.decoder.counters["oversized"] += 1
+                self._emit("ppi_message_not_used", reason="oversized")
                 self._reset()
             elif kind == "message":
                 _, topic, payload, arrived, retained = item
+                ppi_topic = topic == self.config.topic_prefix + "/ecg"
                 if not self.connected:
+                    if ppi_topic:
+                        self._not_used(arrived, "subscriber_not_connected")
                     continue
                 if self.clock() - arrived > MAX_CALLBACK_AGE_MS:
                     self.decoder.counters["stale_callback"] += 1
+                    if ppi_topic:
+                        self._not_used(arrived, "stale_callback")
                     self._reset()
                     continue
+                before = {name: self.decoder.counters[name] for name in DROP_COUNTERS}
                 malformed_before = self.decoder.counters["malformed"]
                 message = self.decoder.decode(topic, payload, arrived, retained=retained)
                 if message is None:
+                    if ppi_topic:
+                        self._not_used(arrived, self._dropped_since(before))
                     # Losing unknown intervals is a discontinuity. Duplicates
                     # and retained messages are ignored without interrupting it.
                     if (
@@ -470,6 +510,8 @@ class MqttSource:
                     if packet is not None:
                         packets.append(packet)
                 self._accept(message)
+                if reason := self._dropped_since(before):
+                    self._not_used(arrived, reason, samples=len(message.samples))
         if self._burst_last is not None and (
             self.clock() - self._burst_last >= BURST_QUIET_MS
             or self.clock() - self._burst_first >= BURST_MAX_MS
@@ -478,6 +520,21 @@ class MqttSource:
             if packet is not None:
                 packets.append(packet)
         return packets
+
+    def _emit(self, name: str, **fields) -> None:
+        if self.on_event is not None:
+            self.on_event(name, **fields)
+
+    def _dropped_since(self, before: dict[str, int]) -> str:
+        counters = self.decoder.counters
+        return ",".join(name for name in DROP_COUNTERS if counters[name] > before[name])
+
+    def _not_used(self, arrived: float, reason: str, **fields) -> None:
+        """One PPI message that arrived but whose intervals never reach the scheduler."""
+        self._emit(
+            "ppi_message_not_used", arrived_ms=round(arrived, 1), reason=reason or "unknown",
+            **fields,
+        )
 
     async def __aiter__(self) -> AsyncIterator[PpiPacket]:
         if self._iterating:

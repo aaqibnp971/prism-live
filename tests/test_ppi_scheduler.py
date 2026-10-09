@@ -118,3 +118,67 @@ def test_missing_burst_marks_discontinuity_and_does_not_fill_the_gap():
     assert all(e.quality == OK for e in events)
     assert min(leads) >= 300
     assert scheduler.stats.link_gaps > 0
+
+def _settled():
+    scheduler = PpiBeatScheduler()
+    scheduler.on_packet(10_000, packet(10_000, [800] * 6))
+    assert scheduler.last_rejections == [] and scheduler.last_packet_skip is None
+    return scheduler
+
+
+def test_every_refused_interval_carries_its_reason_for_the_session_log():
+    scheduler = _settled()
+    burst = PpiPacket(
+        (
+            PpiSample(800, 1, True),  # blocker
+            PpiSample(800, 81, False),  # error estimate over 10 %
+            PpiSample(2500, 1, False),  # outside the plausible range
+            PpiSample(1100, 1, False),  # more than 20 % from the median
+            PpiSample(800, 1, False),  # fine
+        ),
+        "phone",
+        15_000,
+    )
+    result = scheduler.on_packet(15_000, burst)
+    reasons = [item["reason"] for item in scheduler.last_rejections]
+    assert len(reasons) == 4 == sum(not interval.accepted for interval in result.intervals)
+    assert reasons[0] == "blockerBit set"
+    assert reasons[1].startswith("errorEstimate 81 ms over 10%")
+    assert reasons[2].startswith("outside ") and "2000" in reasons[2]
+    assert "from the recent median 800 ms" in reasons[3]
+    refused = [i for i in result.intervals if not i.accepted]
+    assert [item["rr_ms"] for item in scheduler.last_rejections] == [i.rr_ms for i in refused]
+    assert [item["t_beat"] for item in scheduler.last_rejections] == [i.t_beat for i in refused]
+
+    # The next clean burst starts a fresh list: reasons never accumulate across bursts.
+    scheduler.on_packet(20_000, packet(20_000, [800] * 6))
+    assert scheduler.last_rejections == []
+
+
+def test_recording_reasons_does_not_change_what_the_scheduler_decides():
+    def run(read_diagnostics):
+        scheduler, out = PpiBeatScheduler(), []
+        for k in range(12):
+            arrival = 10_000 + 5_000 * k
+            samples = tuple(
+                PpiSample(780 + 7 * ((k + j) % 5), 90 if (k + j) % 4 == 0 else 1, (k + j) % 7 == 0)
+                for j in range(6)
+            )
+            result = scheduler.on_packet(arrival, PpiPacket(samples, "phone", arrival))
+            if read_diagnostics:
+                list(scheduler.last_rejections)
+            out.append((result, tuple(scheduler.tick(arrival + 100))))
+        return out, scheduler.stats
+
+    assert run(True) == run(False)
+
+
+def test_a_whole_burst_that_is_ignored_says_why():
+    scheduler = _settled()
+    scheduler.on_packet(17_000, packet(15_000, [800] * 6))
+    assert scheduler.last_packet_skip == "handled more than 1500 ms after it arrived"
+    scheduler.on_packet(20_000, packet(20_000, [800] * 6))
+    assert scheduler.last_packet_skip is None
+    scheduler.on_packet(20_100, packet(20_000, [800] * 6))
+    assert scheduler.last_packet_skip == "arrival time not after the previous burst"
+    assert scheduler.last_rejections == []

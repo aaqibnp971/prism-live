@@ -444,3 +444,65 @@ def test_task_events_reach_psv_only_for_the_current_session_during_load(tmp_path
         "not_load",
         "stale_session",
     }
+
+def test_ppi_bursts_and_refusal_reasons_are_written_to_the_session_log():
+    from types import SimpleNamespace
+
+    from bridge.live import LiveLoop
+    from bridge.packets import PpiPacket, PpiSample
+    from bridge.ppi_scheduler import PpiBeatScheduler
+
+    class Log:
+        def __init__(self):
+            self.events = []
+
+        def event(self, name, **fields):
+            self.events.append((name, fields))
+
+    scheduler, log = PpiBeatScheduler(), Log()
+    loop = SimpleNamespace(scheduler=scheduler, log=log)
+    first = PpiPacket(tuple(PpiSample(800, 1, False) for _ in range(6)), "phone", 10_000.0)
+    LiveLoop._log_packet(loop, 10_020.0, first, scheduler.on_packet(10_020.0, first))
+    second = PpiPacket(
+        (PpiSample(800, 1, False), PpiSample(800, 1, True), PpiSample(800, 200, False)),
+        "phone",
+        15_000.0,
+    )
+    LiveLoop._log_packet(loop, 15_030.0, second, scheduler.on_packet(15_030.0, second))
+    late = PpiPacket((PpiSample(800, 1, False),), "phone", 20_000.0)
+    LiveLoop._log_packet(loop, 22_000.0, late, scheduler.on_packet(22_000.0, late))
+
+    bursts = [fields for name, fields in log.events if name == "ppi_burst"]
+    assert [b["arrived_ms"] for b in bursts] == [10_000.0, 15_000.0, 20_000.0]
+    assert [b["t_engine"] for b in bursts] == [10_020.0, 15_030.0, 22_000.0]
+    counts = [(b["samples"], b["intervals_accepted"], b["intervals_refused"]) for b in bursts]
+    assert counts == [(6, 6, 0), (3, 1, 2), (1, 0, 0)]
+    assert [b["not_scheduled_total"] for b in bursts] == [
+        scheduler.stats.skipped - 1,
+        scheduler.stats.skipped - 1,
+        scheduler.stats.skipped,
+    ]
+    assert bursts[2]["ignored"] == "handled more than 1500 ms after it arrived"
+    refused = [fields for name, fields in log.events if name == "interval_rejected"]
+    assert [r["reason"].split()[0] for r in refused] == ["blockerBit", "errorEstimate"]
+    assert all(r["rr_ms"] == 800.0 and r["t_engine"] == 15_030.0 for r in refused)
+
+    # The legacy one-second path logs its refusals the same way, and no burst line.
+    legacy = SimpleNamespace(
+        scheduler=SimpleNamespace(
+            last_rejections=[{"t_beat": 1.26, "rr_ms": 250.04, "reason": "outside 300 to 2000 ms"}]
+        ),
+        log=Log(),
+    )
+    LiveLoop._log_packet(legacy, 2_000.0, b"\x10\x48", SimpleNamespace(intervals=()))
+    assert legacy.log.events == [
+        (
+            "interval_rejected",
+            {
+                "t_engine": 2_000.0,
+                "t_beat": 1.3,
+                "rr_ms": 250.0,
+                "reason": "outside 300 to 2000 ms",
+            },
+        )
+    ]

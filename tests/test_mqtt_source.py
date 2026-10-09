@@ -412,3 +412,54 @@ def test_local_broker_lifecycle_and_actual_pubsub():
         assert not source.ready
 
     asyncio.run(run())
+
+def test_every_subscriber_connect_and_disconnect_reaches_the_session_log_hook():
+    clock, events = Clock(), []
+    source = MqttSource(clock=clock, on_event=lambda name, **fields: events.append((name, fields)))
+    # Paho reports each change on its own thread with the time it happened; the loop drains
+    # later. The log keeps the callback's time and reason, not the drain's.
+    for when, kind, why in (
+        (100.0, "connected", "subscribed"),
+        (900.0, "disconnected", "disconnected: Unspecified error"),
+        (2_400.0, "connected", "subscribed"),
+    ):
+        source._mailbox.append((kind, when, why))
+        clock.value = when + 700.0
+        assert source._drain() == []
+    assert events == [
+        ("mqtt_subscriber_connected", {"t_engine": 100.0, "reason": "subscribed"}),
+        (
+            "mqtt_subscriber_disconnected",
+            {"t_engine": 900.0, "reason": "disconnected: Unspecified error"},
+        ),
+        ("mqtt_subscriber_connected", {"t_engine": 2_400.0, "reason": "subscribed"}),
+    ]
+    assert source.connected
+
+
+def test_a_ppi_message_that_never_reaches_the_scheduler_is_logged_with_its_arrival_and_reason():
+    source, clock = source_ready()
+    events = []
+    source.on_event = lambda name, **fields: events.append((name, fields))
+
+    def reasons():
+        found = [(f["arrived_ms"], f["reason"]) for n, f in events if n == "ppi_message_not_used"]
+        events.clear()
+        return found
+
+    assert deliver(source, clock, 0) == []  # first burst after connecting: quarantined
+    assert reasons() == [(0.0, "probation")]
+    first = payload(BASE_TIME + 5000)
+    assert deliver(source, clock, 5000, first) == []  # live from here: used, so not listed
+    assert reasons() == []
+    deliver(source, clock, 5010, first)  # the same message again
+    assert reasons() == [(5010.0, "duplicate")]
+    deliver(source, clock, 5020, b"{not json")
+    assert reasons() == [(5020.0, "malformed")]
+    deliver(source, clock, 10_000, payload(BASE_TIME + 10_000), retained=True)
+    assert reasons() == [(10_000.0, "retained")]
+    deliver(source, clock, 10_500, topic=TOPIC.replace("/ecg", "/hr"), data=b'{"hr": 70}')
+    assert reasons() == []  # heart-rate-only messages are not PPI and are not listed
+    quiet = MqttSource(clock=clock)  # no hook: unchanged behaviour
+    quiet._mailbox.append(("connected",))
+    assert quiet._drain() == [] and quiet.connected

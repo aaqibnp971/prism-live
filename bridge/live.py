@@ -358,6 +358,37 @@ class LiveLoop:
             self.model.on_packet(now, result)
             for event in result.events:
                 self._publish_beat(event)
+            self._log_packet(now, payload, result)
+
+    def _log_packet(self, now: float, payload: object, result) -> None:
+        """Session-log diagnostics only: each PPI burst's arrival, and why each refused interval
+        was refused. Written after the packet has been handled; nothing here feeds back."""
+        rejections = getattr(self.scheduler, "last_rejections", ())
+        if isinstance(payload, PpiPacket):
+            stats = getattr(self.scheduler, "stats", None)
+            self.log.event(
+                "ppi_burst",
+                t_engine=now,  # when the bridge handled it
+                # Paho's callback time for the burst's LAST message, on T_engine.
+                arrived_ms=round(payload.arrived_ms, 1),
+                samples=len(payload.samples),
+                discontinuity=payload.discontinuity,
+                # Passed the quality and plausibility tests. Not the same as played: an
+                # accepted interval can still be too late or before the session to schedule,
+                # which shows only in the running total below.
+                intervals_accepted=sum(1 for interval in result.intervals if interval.accepted),
+                intervals_refused=len(rejections),
+                not_scheduled_total=None if stats is None else stats.skipped,
+                ignored=getattr(self.scheduler, "last_packet_skip", None),
+            )
+        for rejection in rejections:
+            self.log.event(
+                "interval_rejected",
+                t_engine=now,
+                t_beat=round(rejection["t_beat"], 1),
+                rr_ms=round(rejection["rr_ms"], 1),
+                reason=rejection["reason"],
+            )
 
     async def _tick_loop(self) -> None:
         last_tick_ms: float | None = None

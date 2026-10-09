@@ -158,7 +158,13 @@ class RegulateResult:
     """What regulate found, for the log. Never the attendant's close, which follows the visible
     fall on the trace screen (experience script §3). Times are into regulate."""
 
-    outcome: str  # regulated, timeout, unjudged, or no_threshold
+    # regulated, met_not_activated, timeout, unjudged, or no_threshold. "regulated" is recorded
+    # only for an activated session: a threshold met without activation is met_not_activated.
+    outcome: str
+    # The heart-rate rule that gates the spoken N: HR_load >= HR_base + 6 bpm. RMSSD never
+    # counts. False with activation_judged False means it could not be judged, not "judged no".
+    activated: bool
+    activation_judged: bool
     ran_ms: float
     hr_base_bpm: float | None
     hr_load_bpm: float | None
@@ -184,6 +190,7 @@ class _Regulate:
         self.rise: float | None = None
         self.no_threshold = None if hr_base is not None else "no hr_base: the baseline was degraded"
         self.load_known = False
+        self.load_unsettled = False  # HR_load was forced before its last intervals could arrive
         self.windows = 0  # judged so far
         self.first_met: float | None = None
         self.first_met_decided_ms: float | None = None  # PPI: don't backdate a late decision
@@ -213,6 +220,7 @@ class _Regulate:
         if self.load_known or (now < self.start + settle and not force):
             return False
         self.load_known = True
+        self.load_unsettled = now < self.start + settle
         window = model.heart_rate(self.start - TAIL_MS, self.start)
         self.hr_load, self.covered = window.bpm, window.covered_ms
         hr_load = self.usable_hr_load
@@ -250,10 +258,14 @@ class _Regulate:
                     self.first_met_decided_ms = now
         return met
 
-    def result(self, outcome: str, end_ms: float) -> RegulateResult:
+    def result(
+        self, outcome: str, end_ms: float, activated: bool, activation_judged: bool
+    ) -> RegulateResult:
         hr_load = self.usable_hr_load
         return RegulateResult(
             outcome=outcome,
+            activated=activated,
+            activation_judged=activation_judged,
             ran_ms=end_ms - self.start,
             hr_base_bpm=self.hr_base,
             hr_load_bpm=self.hr_load,
@@ -472,11 +484,20 @@ class Session:
         if leaving == "baseline":
             self._end_baseline(to, at, reason, now)
         elif leaving == "regulate":
-            self._end_regulate(to, at, reason, now)
+            reason = self._end_regulate(to, at, reason, now)
         elif leaving == "resolve":
             self._try_return(now, final=True)
         if to == "idle":
-            self._log.event("session_end", t_engine=now, at_ms=at, outcome=self._outcome)
+            self._log.event(
+                "session_end",
+                t_engine=now,
+                at_ms=at,
+                outcome=self._outcome,
+                # One answer per session, by the spoken-N rule. A session that never reached
+                # the end of load, or had no usable heart rates, is not activated and says so.
+                activated=self._heart_rate_activation_passed is True,
+                activation_judged=self._heart_rate_activation_passed is not None,
+            )
             self._model.reset()
             self._log.start_session()
             self._open(self._log.session, at)
@@ -524,15 +545,40 @@ class Session:
             self._baseline = baseline  # the one this session took, whatever the model does next
         self._log.event("baseline_end", t_engine=now, **fields)
 
-    def _end_regulate(self, to: str, at: float, reason: str, now: float) -> None:
+    def _end_regulate(self, to: str, at: float, reason: str, now: float) -> str:
+        """Close regulate's records and return the reason to log for leaving it.
+
+        Timing is untouched: regulate still ends when its threshold is met. Only the RECORD
+        changes: a session is written down as "regulated" only if it was activated, by the
+        same heart-rate rule that gates the spoken N. Otherwise the fall has no rise behind it.
+        """
         r = self._regulate
         if r.take_hr_load(self._model, now, force=True):
             self._log_threshold(now)
         self._try_activation(now, final=True)
+        judged = self._heart_rate_activation_passed is not None
+        activated = self._heart_rate_activation_passed is True
+        self._log.event(
+            "activation_result",
+            t_engine=now,
+            activated=activated,
+            judged=judged,
+            # The same test that lets a spoken N exist at all. N also needs all three cards
+            # and a fall of at least 3 bpm, so activated does not mean an N was shown.
+            rule=f"HR_load >= HR_base + {ACTIVATION_BPM:g} bpm; RMSSD not counted",
+            hr_base_bpm=r.hr_base,
+            hr_load_bpm=r.hr_load,
+            hr_load_covered_ms=r.covered,
+            rise_bpm=r.rise,
+            not_judged=None if judged else self._activation_unjudged(r),
+        )
+        if reason == "regulated" and not activated:
+            reason = "met_not_activated"
         if to == "resolve":
-            self._result = r.result(reason, at)
+            self._result = r.result(reason, at, activated, judged)
             self._log.event("regulate_result", t_engine=now, **dataclasses.asdict(self._result))
             self._return_window = (at - TAIL_MS, at)
+        return reason
 
     # --- records, kept each tick ---
 
@@ -577,7 +623,9 @@ class Session:
             return
         hr_load = r.usable_hr_load
         by_hr = None
-        if hr_load is not None and r.hr_base is not None:
+        # A stop in regulate's first seconds forces HR_load before load's last intervals have
+        # arrived. That reading can flip either way, so it judges nothing.
+        if hr_load is not None and r.hr_base is not None and not r.load_unsettled:
             by_hr = hr_load >= r.hr_base + ACTIVATION_BPM
             self._heart_rate_activation_passed = by_hr
         if self._activation_logged:
@@ -591,9 +639,13 @@ class Session:
         self._log.event(
             "load_activation",
             t_engine=now,
-            activated=any(parts) if parts else None,
+            # "activated" is the spoken-N rule, heart rate alone. The experience script's wider
+            # test, heart rate or RMSSD, is kept beside it and decides nothing.
+            activated=by_hr is True,
+            judged=by_hr is not None,
+            by_hr_or_rmssd=any(parts) if parts else None,
             by_hr=by_hr,
-            hr_unavailable=r.no_threshold if by_hr is None else None,
+            hr_unavailable=self._activation_unjudged(r) if by_hr is None else None,
             hr_base_bpm=r.hr_base,
             hr_load_bpm=r.hr_load,
             hr_load_covered_ms=r.covered,
@@ -602,6 +654,14 @@ class Session:
             **self._rmssd_fields(window, base),
         )
         self._activation_logged = True
+
+    @staticmethod
+    def _activation_unjudged(r: _Regulate) -> str:
+        if r.no_threshold is not None:
+            return r.no_threshold
+        if r.load_unsettled:
+            return "stopped before load's last intervals had settled"
+        return "no usable HR_load or HR_base"
 
     def _try_return(self, now: float, *, final: bool) -> None:
         """Regulate's RMSSD return: RMSSD over its last 30 s >= 0.95 x rmssd_base. Recorded."""

@@ -47,6 +47,7 @@ class PpiBeatScheduler(BeatScheduler):
         self.discontinuities = 0
         self._session_start = -math.inf
         self.before_session = 0
+        self.last_packet_skip: str | None = None  # diagnostic: why a whole burst was ignored
 
     def begin_session(self, now: float) -> None:
         """Never relabel queued or subsequently arriving pre-visitor measurements."""
@@ -64,10 +65,13 @@ class PpiBeatScheduler(BeatScheduler):
             raise TypeError("PPI scheduler requires PpiPacket, not a fabricated HRM packet")
         if not math.isfinite(now) or not math.isfinite(payload.arrived_ms):
             raise ValueError("finite monotonic arrival required")
+        self.last_rejections = []
+        self.last_packet_skip = None
         if payload.arrived_ms > now or now - payload.arrived_ms > 1500:
             # An event-loop stall must not freshen an old packet.
             self.stats.skipped += len(payload.samples)
             self._needs_anchor = True
+            self.last_packet_skip = "handled more than 1500 ms after it arrived"
             return PacketResult((), ())
         samples = payload.samples
         if not samples:
@@ -80,6 +84,7 @@ class PpiBeatScheduler(BeatScheduler):
         arrival = payload.arrived_ms
         if self._last_arrival is not None and arrival <= self._last_arrival:
             self.stats.skipped += len(samples)
+            self.last_packet_skip = "arrival time not after the previous burst"
             return PacketResult((), ())
         gap = (
             self._needs_anchor or payload.discontinuity or payload.source_id != self._source_id
@@ -117,6 +122,10 @@ class PpiBeatScheduler(BeatScheduler):
             if previous is not None and chain <= previous:
                 self.stats.skipped += 1
                 gap = True
+                self.last_rejections.append({
+                    "t_beat": chain, "rr_ms": sample.rr_ms,
+                    "reason": "overlaps the measurement timeline already consumed",
+                })
                 continue
             quality_ok = (
                 not sample.blocked
@@ -124,9 +133,19 @@ class PpiBeatScheduler(BeatScheduler):
             )
             if quality_ok:
                 accepted, bootstrap = self._accept(sample.rr_ms)
+                reason = self._reject_reason
             else:
                 accepted, bootstrap = False, False
                 self.quality_rejected += 1
+                reason = (
+                    "blockerBit set" if sample.blocked
+                    else f"errorEstimate {sample.error_ms:g} ms over "
+                         f"{PPI_MAX_ERROR_FRACTION:.0%} of the interval"
+                )
+            if not accepted:
+                self.last_rejections.append(
+                    {"t_beat": chain, "rr_ms": sample.rr_ms, "reason": reason}
+                )
             interval = Interval(
                 chain, sample.rr_ms, accepted, arrival,
                 contiguous=not gap, bootstrap=bootstrap,
