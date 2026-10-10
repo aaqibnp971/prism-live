@@ -185,6 +185,9 @@ class LiveLoop:
         self._completed_event: asyncio.Event | None = None
         self.sound_check: SoundCheckGate | None = None
         self.last_state: dict | None = None
+        # Set by the server wiring: the laptop's view of the headset link, or None when no
+        # headset is expected. Read by the state message and the attendant console.
+        self.headset_status: Callable[[], dict | None] | None = None
 
     @property
     def completed_metrics(self) -> tuple[SessionMetrics, ...]:
@@ -420,6 +423,9 @@ class LiveLoop:
             await asyncio.sleep(CONTROL_POLL_S)
 
     def _publish_state(self, msg: dict) -> bool | None:
+        headset = self.headset_status() if self.headset_status is not None else None
+        if headset is not None:
+            msg = {**msg, "headset": headset}
         validate(msg, "out")
         measurement = self._measurement
         if measurement is not None and msg["session"] != measurement.session:

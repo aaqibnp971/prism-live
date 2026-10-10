@@ -30,6 +30,8 @@ REGULATE_OVERRUN_MS = 30_000
 QUALITIES = ("ok", "interpolated", "rejected")
 TASK_EVENTS = ("split", "lock", "miss", "abandon")
 CLIENTS = ("task-screen", "spectator", "quest")
+# The laptop's view of the headset's link, sent only when it is run for a headset (§2, v1.10).
+HEADSET_LINKS = ("connected", "not_connected", "lost")
 DIMENSIONS = ("arousal", "valence", "cognitive_load", "readiness")
 SESSION_ID = re.compile(r"S-\d{8}-\d{4}")  # a date and a counter, never a name
 
@@ -130,6 +132,7 @@ def _state(msg: dict, _direction: str) -> None:
         "session", "seq", "t_engine", "t_session", "segment",
         "segment_elapsed_ms", "segment_nominal_ms", "psv", "confidence", "authority",
         "hr_bpm", "hr_base", "signal", "trace",
+        *(("headset",) if "headset" in msg else ()),  # optional (§2, v1.10)
     )  # fmt: skip
     _session(msg)
     _count(msg, "seq")
@@ -186,6 +189,21 @@ def _state(msg: dict, _direction: str) -> None:
         if not _is_number(signal[key]) or not 0 <= signal[key] <= 1:
             raise ContractError(f"state: signal.{key} is a number from 0 to 1")
     _trace(msg["trace"])
+    if "headset" in msg:
+        _headset(msg["headset"])
+
+
+def _headset(value: object) -> None:
+    if not isinstance(value, dict) or value.keys() != {"link", "silent_ms"}:
+        raise ContractError("state: headset is {link, silent_ms}")
+    if value["link"] not in HEADSET_LINKS:
+        raise ContractError(f"state: headset.link is one of {', '.join(HEADSET_LINKS)}")
+    silent = value["silent_ms"]
+    if value["link"] == "lost":
+        if not _is_int(silent) or silent < 0:
+            raise ContractError("state: headset.silent_ms is whole milliseconds when lost")
+    elif silent is not None:
+        raise ContractError("state: headset.silent_ms is null unless the link is lost")
 
 
 def _clock(msg: dict, direction: str) -> None:

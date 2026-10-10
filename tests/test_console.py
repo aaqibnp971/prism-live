@@ -459,3 +459,175 @@ def test_start_rule_and_host_heart_rate_are_shown_before_a_start_without_a_verdi
 
     bridge.session.segment = "load"  # the rule is for the moment before a start only
     assert "START RULE" not in "\n".join(screen_lines(console.snapshot(), 160))
+
+
+class HeadsetBridge(StubBridge):
+    def __init__(self, link):
+        super().__init__()
+        self.link = link
+        self.log = EventLog()
+        self.log.baseline_notice = ""
+
+    def headset_status(self):
+        if self.link is None:
+            return None
+        return {"link": self.link, "silent_ms": 6400 if self.link == "lost" else None}
+
+
+@pytest.mark.parametrize("link", ["not_connected", "lost"])
+def test_a_press_without_the_headset_warns_and_only_a_second_press_starts(link):
+    async def scenario():
+        bridge = HeadsetBridge(link)
+        ui = AttendantConsole(bridge)
+        now = [100.0]
+        ui.monotonic = lambda: now[0]
+        # The line the attendant trusts says beforehand that this press will not arm.
+        assert ui.snapshot()["action"] == "WARN ONLY - HEADSET NOT CONNECTED"
+        await ui.press()
+        assert not ui.armed and bridge.starts == 0
+        assert "NOT STARTED - THE HEADSET IS NOT CONNECTED" in ui.notice
+        assert ui.snapshot()["action"] == "START WITHOUT THE HEADSET (OVERRIDE)"
+        assert [name for name, _ in bridge.log.events] == ["attendant_start_headset_warning"]
+        now[0] += 0.9
+        await ui.press()  # a double tap has not read the warning: nothing happens
+        assert not ui.armed and len(bridge.log.events) == 1
+        assert ui.snapshot()["action"] == "START WITHOUT THE HEADSET (OVERRIDE)"
+        now[0] += 9.0
+        await ui.press()  # the deliberate second press, 9.9 s after the warning
+        assert ui.armed
+        assert [name for name, _ in bridge.log.events][-1] == "attendant_start_headset_override"
+        assert bridge.log.events[-1][1]["headset"]["link"] == link
+        await ui.press()  # cancel the countdown: the override is spent, the next press warns
+        assert not ui.armed
+        assert ui.snapshot()["action"] == "WARN ONLY - HEADSET NOT CONNECTED"
+        await ui.press()
+        assert not ui.armed and "NOT STARTED" in ui.notice
+        bridge.fire.set()
+        assert bridge.starts == 0
+
+    asyncio.run(scenario())
+
+
+def test_the_warning_expires_after_ten_seconds_and_takes_its_text_with_it():
+    async def scenario():
+        bridge = HeadsetBridge("not_connected")
+        ui = AttendantConsole(bridge)
+        now = [100.0]
+        ui.monotonic = lambda: now[0]
+        await ui.press()
+        now[0] += 10.0  # too late: the next press is a first press again
+        view = ui.snapshot()
+        assert view["action"] == "WARN ONLY - HEADSET NOT CONNECTED"
+        assert "NOT STARTED" not in view["notice"]
+        await ui.press()
+        assert not ui.armed and "NOT STARTED" in ui.notice
+        assert [name for name, _ in bridge.log.events] == ["attendant_start_headset_warning"] * 2
+
+    asyncio.run(scenario())
+
+
+def test_a_warning_never_outlives_the_headset_connecting_and_dropping_again():
+    async def scenario():
+        bridge = HeadsetBridge("not_connected")
+        ui = AttendantConsole(bridge)
+        now = [100.0]
+        ui.monotonic = lambda: now[0]
+        await ui.press()  # warned at t = 0
+        now[0] += 2.0
+        bridge.link = "connected"
+        view = ui.snapshot()  # the console repaints ten times a second
+        assert view["action"] == "ARM START" and "NOT STARTED" not in view["notice"]
+        now[0] += 3.0
+        bridge.link = "lost"
+        assert ui.snapshot()["action"] == "WARN ONLY - HEADSET NOT CONNECTED"
+        now[0] += 3.0  # 8 s after the first warning, inside its 10 s
+        await ui.press()
+        assert not ui.armed and "NOT STARTED" in ui.notice
+
+        # Even with no repaint between the reconnect and the drop, a press that finds the
+        # headset connected arms and spends the warning.
+        other = AttendantConsole(HeadsetBridge("not_connected"))
+        other.monotonic = lambda: now[0]
+        await other.press()
+        other.bridge.link = "connected"
+        now[0] += 2.0
+        await other.press()
+        assert other.armed and other.headset_warned_at is None
+        await other.press()
+
+    asyncio.run(scenario())
+
+
+def test_the_headset_warning_waits_behind_an_unconfirmed_sound_check():
+    async def scenario():
+        bridge = HeadsetBridge("not_connected")
+        check = SimpleNamespace(
+            confirmed=False, state="awaiting_confirmation", device_name="Speaker"
+        )
+
+        def confirm_heard():
+            check.confirmed, check.state = True, "confirmed"
+            return True
+
+        check.confirm_heard = confirm_heard
+        bridge.sound_check = check
+        ui = AttendantConsole(bridge)
+        await ui.press()  # confirms the sound check only
+        assert bridge.sound_check.confirmed and bridge.log.events == []
+        assert ui.snapshot()["action"] == "WARN ONLY - HEADSET NOT CONNECTED"
+        await ui.press()
+        assert not ui.armed and "NOT STARTED" in ui.notice
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("link", ["connected", None])
+def test_a_connected_headset_or_a_mode_without_one_arms_on_the_first_press(link):
+    async def scenario():
+        bridge = HeadsetBridge(link)
+        ui = AttendantConsole(bridge)
+        await ui.press()
+        assert ui.armed and bridge.log.events == []
+        await ui.press()
+
+    asyncio.run(scenario())
+
+
+def test_the_headset_warning_never_touches_stop_cancel_or_the_sound_check():
+    async def scenario():
+        bridge = HeadsetBridge("connected")
+        ui = AttendantConsole(bridge)
+        await ui.press()
+        bridge.link = "lost"  # dropped during the countdown and the session
+        await ui.press()
+        assert not ui.armed and "CANCELLED" in ui.notice
+        bridge.link = "connected"
+        await ui.press()
+        bridge.fire.set()
+        await ui.start_task
+        bridge.link = "lost"
+        assert ui.snapshot()["action"] == "STOP - 3 SECOND RESET"
+        await ui.press()
+        assert bridge.stops == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "link, expected",
+    [
+        ("connected", "HEADSET: CONNECTED"),
+        ("not_connected", "HEADSET: NOT CONNECTED"),
+        ("lost", "HEADSET: CONNECTION LOST - 6 s since its last message"),
+    ],
+)
+def test_console_shows_the_headset_link_only_when_a_headset_is_expected(link, expected):
+    lines = screen_lines(AttendantConsole(HeadsetBridge(link)).snapshot())
+    assert sum(line.startswith("HEADSET:") for line in lines) == 1
+    assert any(line.startswith(expected) for line in lines)
+    short = render(AttendantConsole(HeadsetBridge(link)).snapshot(), columns=80, rows=12)
+    assert "HEADSET:" in short  # kept on a short terminal
+    none = screen_lines(AttendantConsole(HeadsetBridge(None)).snapshot())
+    assert not any("HEADSET" in line for line in none)
+    plain = screen_lines(AttendantConsole(StubBridge()).snapshot())
+    assert not any("HEADSET" in line for line in plain)

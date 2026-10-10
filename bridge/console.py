@@ -38,6 +38,15 @@ HEART_RATE_LOOKBACK_MS = 30_000
 # A baseline taken while heart rate is still falling scores quality 0, and that multiplies the
 # heart's confidence, so its authority, for the rest of the session (docs/known-limits.md).
 # The console shows the rate and leaves the judgement to the attendant; it computes no verdict.
+# A first press with no headset link only warns. A second press starts anyway, but only from
+# HEADSET_OVERRIDE_MIN_S after the warning (a double tap has not read it) to HEADSET_OVERRIDE_S.
+HEADSET_OVERRIDE_MIN_S = 1.0
+HEADSET_OVERRIDE_S = 10.0
+HEADSET_WARNING = "NOT STARTED - THE HEADSET IS NOT CONNECTED."
+HEADSET_LABEL = {
+    "connected": "HEADSET: CONNECTED",
+    "not_connected": "HEADSET: NOT CONNECTED - nothing has arrived from the headset",
+}
 START_RULE = (
     "START RULE: let the visitor settle for a full minute. Arm only once this heart rate has "
     "stopped falling; a heart still falling during baseline gets no say for the whole session."
@@ -142,6 +151,31 @@ class AttendantConsole:
         self.fault: Exception | None = None
         # (t_engine, hr_bpm) from the host's own state messages, for the start rule's display.
         self.heart_rates: deque[tuple[float, float]] = deque()
+        # time.monotonic() of the warning press that a second press may override.
+        self.headset_warned_at: float | None = None
+        self.monotonic = time.monotonic
+
+    def _headset(self):
+        """The server's view of the headset link; None when this mode expects no headset."""
+        status = getattr(self.bridge, "headset_status", None)
+        return status() if status is not None else None
+
+    def _headset_missing(self):
+        """The link when a headset is expected and not connected, else None.
+
+        A warning belongs to one unbroken absence: a headset that connects, or 10 s without a
+        second press, ends it, and the next press without a headset warns afresh.
+        """
+        headset = self._headset()
+        missing = headset is not None and headset["link"] != "connected"
+        warned = self.headset_warned_at
+        if warned is not None and (
+            not missing or self.monotonic() - warned >= HEADSET_OVERRIDE_S
+        ):
+            self.headset_warned_at = None
+            if self.notice.startswith(HEADSET_WARNING):
+                self.notice = "Waiting for your press."
+        return headset if missing else None
 
     def _heart_rate(self):
         """Current state heart rate and the one about 30 s earlier. Display only: no verdict."""
@@ -220,6 +254,21 @@ class AttendantConsole:
                 await self.start_task
             self.notice = "COUNTDOWN CANCELLED - disarmed."
         elif self.bridge.session.segment == "idle":
+            headset = self._headset_missing()
+            if headset is not None:
+                if self.headset_warned_at is None:
+                    self.headset_warned_at = self.monotonic()
+                    self.notice = (
+                        f"{HEADSET_WARNING} The visitor would see nothing follow this "
+                        "session. Check the headset, or press again within "
+                        f"{HEADSET_OVERRIDE_S:g} s to start without it."
+                    )
+                    self.bridge.log.event("attendant_start_headset_warning", headset=headset)
+                    return
+                if self.monotonic() - self.headset_warned_at < HEADSET_OVERRIDE_MIN_S:
+                    return  # the second half of a double tap: the warning has not been read
+                self.bridge.log.event("attendant_start_headset_override", headset=headset)
+            self.headset_warned_at = None
             self.notice = "Arming start..."
             self.start_task = asyncio.create_task(self._start(), name="attendant countdown")
             # Log/arm now, not on an unrelated later event-loop turn.
@@ -263,6 +312,8 @@ class AttendantConsole:
             wait = max(0, alignment.fire_frame - self.bridge.phase.frame()) / SAMPLE_RATE
         check = self.sound_check
         check_state = None if check is None else check.state
+        missing = self._headset_missing()  # also retires a warning that no longer applies
+        warned = self.headset_warned_at is not None
         state = (
             "SOUND CHECK"
             if check is not None and not check.confirmed
@@ -279,6 +330,10 @@ class AttendantConsole:
             if check_state == "failed"
             else "CANCEL COUNTDOWN"
             if self.armed
+            else "START WITHOUT THE HEADSET (OVERRIDE)"
+            if session.segment == "idle" and missing is not None and warned
+            else "WARN ONLY - HEADSET NOT CONNECTED"
+            if session.segment == "idle" and missing is not None
             else "ARM START"
             if session.segment == "idle"
             else "WAIT FOR RESET"
@@ -309,6 +364,7 @@ class AttendantConsole:
             "baseline_notice": getattr(self.bridge.log, "baseline_notice", ""),
             "source": source_label,
             "source_status": source_status,
+            "headset": self._headset(),
             "psv_source": getattr(self.bridge.psv_feed, "source", "body"),
             "audio_device": None if check is None else check.device_name,
             "sound_check_state": check_state,
@@ -348,6 +404,14 @@ def screen_lines(view, columns=80):
             "closed": "MQTT SOURCE CLOSED - NO NEW PPI",
         }.get(status, "MQTT DATA STATUS UNKNOWN - check phone and stream")
         lines += [data_notice, ""]
+    headset = view.get("headset")
+    if headset is not None:
+        lines += [
+            f"HEADSET: CONNECTION LOST - {headset['silent_ms'] / 1000:.0f} s since its last message"
+            if headset["link"] == "lost"
+            else HEADSET_LABEL[headset["link"]],
+            "",
+        ]
     if view["signal_lost"]:
         lines += ["  ".join(_LETTER[c][row] for c in "LOST") for row in range(5)]
         lines += ["SIGNAL LOST / NO ACCEPTED BEAT", "No automatic stop. Check the armband.", ""]
@@ -592,6 +656,7 @@ async def run_console(
                             if view["source_status"] == "synthetic"
                             else "mqtt",
                             "source_status": view["source_status"],
+                            "headset": view.get("headset"),
                             "clients": clients(),
                         },
                     )

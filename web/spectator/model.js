@@ -401,8 +401,30 @@
       nullablePositive(message.hr_bpm) &&
       nullablePositive(message.hr_base) &&
       validSignal(message.signal) &&
-      validTrace(message.trace)
+      validTrace(message.trace) &&
+      (message.headset === undefined || validHeadset(message.headset))
     );
+  }
+
+  // Optional (contract v1.10): the host's own view of the headset link. Display only.
+  function validHeadset(headset) {
+    if (headset === null || typeof headset !== "object") return false;
+    if (Object.keys(headset).sort().join("|") !== "link|silent_ms") return false;
+    if (headset.link === "lost") return whole(headset.silent_ms);
+    return (
+      (headset.link === "connected" || headset.link === "not_connected") &&
+      headset.silent_ms === null
+    );
+  }
+
+  function headsetLabel(headset) {
+    if (headset === undefined) return null; // this laptop mode expects no headset
+    if (headset.link === "connected") return { state: "live", text: "HEADSET CONNECTED" };
+    if (headset.link === "not_connected") return { state: "lost", text: "HEADSET NOT CONNECTED" };
+    return {
+      state: "lost",
+      text: `HEADSET CONNECTION LOST · ${Math.floor(headset.silent_ms / 1000)} S`,
+    };
   }
 
   function validBeat(message) {
@@ -500,6 +522,7 @@
       confidence: Object.freeze({ ...message.confidence }),
       authority: Object.freeze({ ...message.authority }),
       signal: Object.freeze({ ...message.signal }),
+      ...(message.headset === undefined ? {} : { headset: Object.freeze({ ...message.headset }) }),
       trace: Object.freeze({
         ...message.trace,
         average_30s: Object.freeze(message.trace.average_30s.map((point) => Object.freeze({ ...point }))),
@@ -562,6 +585,7 @@
     VERSION,
     BUILD,
     STATE_STALE_MS,
+    headsetLabel,
     FULL_RESET_MS,
     REVEAL_REMAINING_MS,
     DIMENSIONS,

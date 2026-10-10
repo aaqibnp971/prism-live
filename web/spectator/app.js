@@ -29,6 +29,8 @@
   let lastStateAt = null;
   let hasState = false;
   let feedFrozen = false;
+  // True only between a verified state and the feed next going quiet or failing.
+  let headsetCurrent = false;
   let failedOnce = false;
   let blockedConnection = null;
 
@@ -121,6 +123,7 @@
         }
         lastStateAt = performance.now();
         fieldView.onState(message, lastStateAt);
+        headsetCurrent = true;
         hasState = true;
         feedFrozen = false;
         failedOnce = false;
@@ -285,6 +288,17 @@
       elements.sessionTime.textContent = "—:—";
     }
     if (held || view.reveal) renderReveal(view, held);
+    renderHeadset();
+  }
+
+  // The host's view of the headset link, exactly as the last state carried it. A frozen or
+  // lost feed hides it: an old report must not read as the headset's link now, whatever
+  // else redraws the page (a resize does).
+  function renderHeadset() {
+    const label =
+      headsetCurrent && model.state ? Spectator.headsetLabel(model.state.headset) : null;
+    elements.headsetBadge.dataset.state = label === null ? "none" : label.state;
+    elements.headsetLabel.textContent = label === null ? "" : label.text;
   }
 
   function renderActive(view) {
@@ -427,6 +441,8 @@
     elements.connectionBanner.dataset.mode = "waiting";
     elements.connectionTitle.textContent = title;
     elements.connectionDetail.textContent = "The display will use only verified host messages.";
+    headsetCurrent = false;
+    renderHeadset();
     elements.linkBadge.dataset.state = "waiting";
     elements.linkLabel.textContent = failedOnce ? "RECONNECTING" : "CONNECTING";
   }
@@ -436,6 +452,8 @@
     elements.connectionBanner.dataset.mode = "lost";
     elements.connectionTitle.textContent = title;
     elements.connectionDetail.textContent = detail;
+    headsetCurrent = false;
+    renderHeadset();
     elements.linkBadge.dataset.state = "lost";
     elements.linkLabel.textContent = "FEED LOST";
   }
@@ -522,6 +540,8 @@
       idleCopy: required("idle-copy"),
       idleFoot: required("idle-foot"),
       linkBadge: required("link-badge"),
+      headsetBadge: required("headset-badge"),
+      headsetLabel: required("headset-label"),
       linkLabel: required("link-label"),
       liveTrace: traceElements("live"),
       segmentStrip: required("segment-strip"),

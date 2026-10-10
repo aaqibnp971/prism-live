@@ -19,6 +19,12 @@ Policy where the contract leaves the laptop to decide:
   it shows its disconnected marker, which is the contract's behaviour for a lost connection.
 - Only one configured task-event client owns the input stream at a time. A second producer is
   refused, and ownership is released when the first connection closes so a reload can take over.
+- When the headset is the task-event client, the laptop keeps its own view of that link from
+  the messages the headset sends (it pings every second): silent for HEADSET_STALE_MS is
+  "lost", and a headset connection silent for HEADSET_DROP_MS is closed. That drop releases
+  the task-event stream at once and ignores anything further from the dropped connection, so
+  the headset's reconnect can take the stream without waiting for the old socket to finish
+  closing. These are the headset's own freeze and reconnect times for a silent laptop.
 
 Run from the repo root as a module:  python -m bridge.server
 """
@@ -70,6 +76,10 @@ HELLO_TIMEOUT_S = 5.0
 SLOW_CLIENT_BYTES = 64 * 1024  # about 40 s of backlog: far past any use to a client
 MAX_FRAME_BYTES = 16 * 1024  # the largest contract message is under 1 KB
 KEEPALIVE_S = 5.0  # a client that vanishes without closing is noticed within about 10 s
+HEADSET = "quest"
+HEADSET_STALE_MS = 2_500.0  # PrismLink.cs StateStaleSeconds
+HEADSET_DROP_MS = 8_000.0  # PrismLink.cs StaleReconnectSeconds
+HEADSET_WATCH_S = 0.25
 
 
 @dataclass
@@ -78,6 +88,7 @@ class Client:
     connection: ServerConnection
     kind: str | None = None  # task-screen, spectator or quest, once hello arrives
     build: str | None = None
+    last_message_ms: float | None = None  # T_engine of its latest valid message
 
     @property
     def label(self) -> str:
@@ -139,9 +150,16 @@ class LiveServer:
         self._connections = 0
         self._closing: set[asyncio.Task] = set()
         self._task_event_producer: Client | None = None
+        # Latest valid message from any headset connection since this process started.
+        self._headset_last_ms: float | None = None
+        self._headset_watch: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
+        if self.task_event_client == HEADSET:
+            self._headset_watch = asyncio.create_task(
+                self._drop_silent_headsets(), name="headset link watch"
+            )
         self._server = await serve(
             self._handle,
             self.host,
@@ -153,6 +171,12 @@ class LiveServer:
         )
 
     async def stop(self) -> None:
+        if self._headset_watch is not None:
+            self._headset_watch.cancel()
+            # Whatever ended the watcher, the listening socket below must still be closed.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._headset_watch
+            self._headset_watch = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -178,6 +202,50 @@ class LiveServer:
     @property
     def task_event_producer(self) -> Client | None:
         return self._task_event_producer
+
+    def headset_status(self) -> dict | None:
+        """The laptop's own view of the headset link, or None when no headset is expected.
+
+        ``connected``: a headset is past hello and its latest message is at most
+        HEADSET_STALE_MS old. ``lost``: one was heard from in this process but not within that
+        time, with the whole milliseconds since. ``not_connected``: none has been heard from.
+        This is evidence that messages arrive from the headset, not of what it is showing.
+        """
+        if self.task_event_client != HEADSET:
+            return None
+        last = self._headset_last_ms
+        if last is None:
+            return {"link": "not_connected", "silent_ms": None}
+        silent = max(0, round(self.clock() - last))
+        present = any(client.kind == HEADSET for client in self._clients.values())
+        if present and silent <= HEADSET_STALE_MS:
+            return {"link": "connected", "silent_ms": None}
+        return {"link": "lost", "silent_ms": silent}
+
+    def _heard_from(self, client: Client, t: float) -> None:
+        client.last_message_ms = t
+        if client.kind == HEADSET:
+            self._headset_last_ms = t
+
+    async def _drop_silent_headsets(self) -> None:
+        while True:
+            await asyncio.sleep(HEADSET_WATCH_S)
+            try:
+                now = self.clock()
+                for client in list(self._clients.values()):
+                    if (
+                        client.kind == HEADSET
+                        and client.last_message_ms is not None
+                        and now - client.last_message_ms > HEADSET_DROP_MS
+                    ):
+                        self._close(
+                            client,
+                            CloseCode.TRY_AGAIN_LATER,
+                            f"no message from the headset for {HEADSET_DROP_MS / 1000:g} s",
+                        )
+            except Exception as error:  # one bad pass must not end the watch for good
+                with contextlib.suppress(Exception):
+                    self.log.event("headset_watch_failed", error=repr(error))
 
     async def wait_for_client(self, poll_s: float = 0.05) -> None:
         while not self._clients:
@@ -221,10 +289,17 @@ class LiveServer:
         self._loop.call_soon_threadsafe(self.publish, msg)
 
     def _close_slow(self, client: Client) -> None:
-        self._clients.pop(client.connection, None)
         self.stats.too_slow += 1
-        code, reason = CloseCode.TRY_AGAIN_LATER, "too far behind the stream"
+        self._close(client, CloseCode.TRY_AGAIN_LATER, "too far behind the stream")
+
+    def _close(self, client: Client, code: CloseCode, reason: str) -> None:
+        self._clients.pop(client.connection, None)
         self.log.event("closed", client=client.label, code=int(code), reason=reason)
+        # The closing handshake can take 10 s with a peer that never answers it (the headset
+        # does not). The stream is free now, not when the old handler finally returns.
+        if self._task_event_producer is client:
+            self._task_event_producer = None
+            self.log.event("task_event_producer_released", client=client.label)
         task = asyncio.ensure_future(client.connection.close(code, reason))
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
@@ -283,11 +358,15 @@ class LiveServer:
             self.log.message("in", msg, client.label, t)
             raise _Refuse(CloseCode.POLICY_VIOLATION, "the first message must be hello")
         client.kind, client.build = msg["client"], msg["build"]
+        self._heard_from(client, t)
         self.log.message("in", msg, client.label, t)
 
     async def _on_message(self, client: Client, data: str | bytes) -> None:
+        if client.connection not in self._clients:
+            return  # a frame from a connection the laptop has already dropped
         t = self.clock()
         msg = self._parse(client, data, t)
+        self._heard_from(client, t)
         if msg["type"] == "clock":
             # Stamp and reply before anything else. Time spent here before the reply is
             # half-counted as network delay by the client's offset arithmetic.
@@ -448,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             return bridge.on_task_event(arrival_ms, msg)
 
         server.on_task_event = task_event
+        # None unless the headset is the task producer; then every state carries the link.
+        bridge.headset_status = server.headset_status
         log.event("engine_scene_loaded", elapsed_ms=host.scene_load_ms, manifest=args.scene)
         started = False
         runtime: asyncio.Task | None = None

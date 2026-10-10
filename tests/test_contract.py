@@ -283,3 +283,38 @@ def test_error_text_is_ascii_whatever_the_client_sent():
 def test_encode_refuses_nan():
     with pytest.raises(ValueError):
         encode(with_(BEAT, rr_ms=math.inf))
+
+
+@pytest.mark.parametrize(
+    "headset",
+    [
+        {"link": "connected", "silent_ms": None},
+        {"link": "not_connected", "silent_ms": None},
+        {"link": "lost", "silent_ms": 0},
+        {"link": "lost", "silent_ms": 6400},
+    ],
+)
+def test_state_may_carry_the_laptops_view_of_the_headset_link(headset):
+    validate(STATE, "out")  # still valid without it: only headset modes send it
+    validate(with_(STATE, headset=headset), "out")
+
+
+@pytest.mark.parametrize(
+    "headset",
+    [
+        None,
+        "connected",
+        {"link": "connected"},
+        {"link": "connected", "silent_ms": 0},
+        {"link": "not_connected", "silent_ms": 100},
+        {"link": "lost", "silent_ms": None},
+        {"link": "lost", "silent_ms": 6.5},
+        {"link": "lost", "silent_ms": -1},
+        {"link": "lost", "silent_ms": True},
+        {"link": "frozen", "silent_ms": None},
+        {"link": "lost", "silent_ms": 5, "build": "0.1.0"},
+    ],
+)
+def test_a_malformed_headset_link_is_refused(headset):
+    with pytest.raises(ContractError, match="headset"):
+        validate(with_(STATE, headset=headset), "out")

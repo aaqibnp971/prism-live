@@ -1,7 +1,9 @@
-# Prism Live: Message Contract v1.9
+# Prism Live: Message Contract v1.10
 
-**Status:** FROZEN as of 10 September 2026. v1.9 (9 October 2026) only makes two properties
-of the trace explicit (see the changelog). v1.8 (5 October 2026) adds the
+**Status:** FROZEN as of 10 September 2026. v1.10 (10 October 2026) adds the optional
+`state.headset` object, the laptop's own view of the headset link (see the changelog).
+v1.9 (9 October 2026) only makes two properties
+of the trace explicit. v1.8 (5 October 2026) adds the
 host-calculated trace evidence required by the approved close; both browser clients and the host
 change together. The schema version `v` remains `1` because no deployed external client exists.
 **Owner:** Ridhwan
@@ -125,6 +127,24 @@ Sent every **2000 ms**, and additionally at every segment boundary.
 | `hr_base` | Heart rate over the last 30 s of baseline. `null` until baseline has ended. **A degraded session keeps it `null` to the end:** when the baseline result does not come within 12 s of the baseline window closing, load starts without it, and every later `state` in that session sends `hr_base` `null` and `signal.baseline_quality` 0.0 |
 | `signal` | `contact` is a deprecated diagnostic, **never wear evidence**. Legacy HRM may forward its bit; unknown/unreliable contact (including all Verity Sense PPI) sends `false`. Neither value may label the armband worn or unworn, or gate PPI confidence. `baseline_quality` is 0.0 through baseline and its hold, and takes the baseline result's value from the first `load` message. Nothing uses it during baseline: the baseline visual is driven by confidence (VR handoff §9) |
 | `trace` | Host-calculated evidence for the trace reveal. Its exact rules are below. Clients display it and never derive, substitute or reclassify these values. |
+| `headset` | **Optional (v1.10).** Present in every `state` when the laptop is run with the headset as its task-event client (`--booth`, `--headset-test`), absent otherwise. `{ "link": "connected", "silent_ms": null }`. `link` is `connected`, `not_connected` or `lost`; `silent_ms` is whole milliseconds since the headset's last message when `lost`, and `null` otherwise. The rules are below. A client that shows it shows exactly this and nothing when it is absent; the headset itself ignores it |
+
+#### The laptop's view of the headset link (v1.10)
+
+The headset pings every **1 s** (`clock`; other clients keep 2 s, and the offset arithmetic
+is unchanged), so the laptop judges the link from the messages it receives from `quest`
+clients, with the headset's own two times for a silent laptop. At 2 s pings the 8 October
+logs showed about one gap in eighty over 2500 ms on a healthy link; a 1 s ping leaves 1.5 s
+of margin:
+
+- `connected`: a `quest` client is past `hello` and its latest message arrived at most **2500 ms** ago.
+- `lost`: a `quest` client was heard from since the laptop's process started, but not within 2500 ms, or it has closed. `silent_ms` counts from its last message and keeps counting until one arrives.
+- `not_connected`: no `quest` client has been heard from since the laptop's process started.
+- A `quest` connection silent for **8000 ms** is closed by the laptop (code 1013). The task-event stream is released at that moment and later frames from that connection are ignored, so the headset's reconnect can take the stream at once.
+
+It says that messages arrive from the headset. It does not say what the headset is showing:
+a headset running its offline preview never connects and reads `not_connected`. Like every
+`state` field it is at most 2 s old when it arrives; a client does not count on from it.
 
 #### Host-calculated trace evidence
 
@@ -290,6 +310,7 @@ baseline when accepted-only gate and `hr_base` are available by the unchanged ho
 
 | Version | Date | Change |
 |---|---|---|
+| 1.10 | 10 Oct 2026 | Added optional `state.headset` `{link, silent_ms}`: the laptop's own view of the headset link, sent only in headset modes, for the attendant's spectator indicator. Wire `v` stays `1`. The host and the spectator screen update together; the task screen and the headset do not read it, and a `state` without it is still valid, so recorded fixtures are unchanged. Added on the developer's instruction after a headset ran a stale offline build through a whole session unnoticed; **not yet countersigned by the contract owner.** |
 | 1.0 | 10 Sep 2026 | Frozen. State cadence 30 s to 2 s. Beat scheduling via `t_play`. Added `task_event`, `hello`, `clock`. Transport fixed to WebSocket. Authority moved laptop-side. |
 | 1.1 | 13 Sep 2026 | Five gaps made explicit, all as already implemented in `bridge/contract.py` and `bridge/clock_sync.py`. No field added or removed; `v` stays `1`. §1: no integer past 2^53 − 1; laptop timestamps are whole ms, client times may be fractional. §2 `state`: `hr_bpm` and `hr_base` may be `null`, and when. §2 ceilings: `idle` and `reset` are 0. §2 `clock`: the median rtt covers every observed rtt, and twice the median is never under 4 ms. |
 | 1.2 | 13 Sep 2026 | Two more gaps made explicit, both as already implemented. No field added or removed; `v` stays `1`. §2 `beat` and `state`: each message type keeps its own `seq` counter per session; a gap is a missing number within one type in one session, and a new session is not a gap. §2 `clock`: an offset estimate belongs to one connection and is rebuilt on every reconnect, because `T_engine` restarts with the laptop's process. |

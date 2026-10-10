@@ -321,6 +321,35 @@ A bridge restart opens the device again, plays the check again, and requires a n
 restarting only a browser does not. The non-interactive `bridge.server --one-session` timing
 diagnostic bypasses this human interlock and is not a booth launch path.
 
+## Headset link on the console and the spectator (10 October)
+
+In `--booth` and `--headset-test` the console carries one more line, from the laptop's own
+record of messages received from the headset (it pings every second):
+
+- `HEADSET: CONNECTED`: a message from the headset arrived within the last 2.5 s.
+- `HEADSET: NOT CONNECTED - nothing has arrived from the headset`: none since this bridge started.
+- `HEADSET: CONNECTION LOST - 6 s since its last message`: it was connected and went quiet, or closed.
+
+The spectator screen shows the same three words as a small badge in its footer, taken from
+the `state` message (`state.headset`, contract v1.10), and hides it while its own feed is
+frozen. A headset connection silent for 8 s is closed by the laptop so the headset reconnects
+cleanly; 2.5 s and 8 s are the headset's own freeze and reconnect times.
+
+**Arming without the headset.** While the line is not `CONNECTED`, idle shows
+`NEXT PRESS: WARN ONLY - HEADSET NOT CONNECTED`. That press arms nothing: the console says
+`NOT STARTED - THE HEADSET IS NOT CONNECTED` and `NEXT PRESS: START WITHOUT THE HEADSET
+(OVERRIDE)`. A second press between 1 s and 10 s later starts anyway and is logged as
+`attendant_start_headset_override`; a double tap inside the first second does nothing more.
+After 10 s, or as soon as the headset connects, the warning is withdrawn and a later press
+without the headset warns afresh. Cancel, stop and the sound check are never affected, and a
+headset that drops during a countdown or a session changes the line but stops nothing.
+
+`CONNECTED` means messages arrive from the headset. It is not a check of what the visitor
+sees. A headset running an old app or its Offline Preview never connects, so it reads
+`NOT CONNECTED`: this is what happened on 10 October, when three failed Unity builds left the
+6 October app on the headset and it ran its own pretend session beside the real one.
+Browser test modes expect no headset and show no line, badge or warning.
+
 ## The attendant button
 
 ### Start rule: a settling minute, then a heart rate that has stopped falling (9 October)

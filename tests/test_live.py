@@ -506,3 +506,34 @@ def test_ppi_bursts_and_refusal_reasons_are_written_to_the_session_log():
             },
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "status",
+    [None, {"link": "not_connected", "silent_ms": None}, {"link": "lost", "silent_ms": 3100}],
+)
+def test_every_state_carries_the_servers_headset_link_only_when_one_is_expected(
+    tmp_path, status
+):
+    async def run():
+        sent = []
+        clock = RealClock()
+        log = SessionLog(tmp_path, clock=clock)
+        live = LiveLoop(SyntheticBurst(), sent.append, log, clock=clock, tick_ms=20.0)
+        if status is not None:
+            live.headset_status = lambda: dict(status)
+        task = asyncio.create_task(live.run())
+        while not sent:
+            await asyncio.sleep(0.01)
+        await stop_task(task)
+        log.close()
+        return sent, live
+
+    sent, live = asyncio.run(run())
+    states = [msg for msg in sent if msg["type"] == "state"]
+    assert states
+    for msg in states:
+        validate(msg, "out")
+        assert msg.get("headset") == status
+        assert ("headset" in msg) == (status is not None)
+    assert live.last_state.get("headset") == status

@@ -136,7 +136,10 @@ output, strong, .time-heading { font-variant-numeric: tabular-nums; }
 #playback-disclosure { color: var(--muted); font-size: 16px; white-space: nowrap; }
 .system-footer button { background: var(--panel); color: var(--muted); border: 1px solid var(--line); padding: 5px 8px; cursor: pointer; }
 .system-footer button:focus-visible { outline: 2px solid var(--accent); }
-#link-badge { display: flex; align-items: center; gap: 6px; }
+#link-badge, #headset-badge { display: flex; align-items: center; gap: 6px; }
+#headset-badge[data-state="none"] { display: none; }
+#headset-badge { font-size: 16px; white-space: nowrap; }
+#headset-badge[data-state="lost"] { color: #ff554f; }
 .link-dot { display: inline-block; width: 6px; height: 6px; background: var(--quiet); border-radius: 50%; }
 [data-state="live"] .link-dot { background: var(--accent); }
 [data-state="lost"] { color: #ffb3ad; }

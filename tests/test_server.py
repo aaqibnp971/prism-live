@@ -402,3 +402,153 @@ def test_publish_from_another_thread(tmp_path):
             assert decode(await asyncio.wait_for(ws.recv(), 3)) == msg
 
     with_server(tmp_path, scenario)
+
+
+class ManualClock:
+    def __init__(self, now=60_000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+QUEST_HELLO = encode(dict(HELLO, client="quest"))
+PING = encode({"type": "clock", "v": 1, "role": "ping", "t_client_sent": 1.0})
+
+
+def test_no_headset_status_exists_unless_the_headset_is_the_task_producer(tmp_path):
+    async def scenario(server, url):
+        assert server.headset_status() is None
+        async with connect(url) as quest:  # a stray headset does not create a status
+            await quest.send(QUEST_HELLO)
+            await quest.send(PING)
+            await quest.recv()
+            assert server.headset_status() is None
+
+    with_server(tmp_path, scenario)
+
+
+def test_headset_link_follows_the_headsets_own_messages_and_stale_time(tmp_path):
+    clock = ManualClock()
+
+    async def scenario(server, url):
+        assert server.headset_status() == {"link": "not_connected", "silent_ms": None}
+        async with connect(url) as spectator:  # another client is not the headset
+            await spectator.send(encode(HELLO))
+            await spectator.send(PING)
+            await spectator.recv()
+            assert server.headset_status() == {"link": "not_connected", "silent_ms": None}
+            async with connect(url) as quest:
+                await quest.send(QUEST_HELLO)
+                await quest.send(PING)
+                await quest.recv()
+                assert server.headset_status() == {"link": "connected", "silent_ms": None}
+                clock.now += live.HEADSET_STALE_MS
+                assert server.headset_status() == {"link": "connected", "silent_ms": None}
+                clock.now += 1
+                assert server.headset_status() == {"link": "lost", "silent_ms": 2501}
+                await quest.send(PING)  # any valid message from it ends the silence
+                await quest.recv()
+                assert server.headset_status() == {"link": "connected", "silent_ms": None}
+            while any(client.kind == "quest" for client in server.clients):
+                await asyncio.sleep(0.01)
+            # A closed headset is lost at once, counted from its last message, not hidden
+            # for the stale time and never back to "not connected".
+            assert server.headset_status() == {"link": "lost", "silent_ms": 0}
+            clock.now += 41_000
+            assert server.headset_status() == {"link": "lost", "silent_ms": 41_000}
+            await spectator.send(PING)
+            await spectator.recv()
+            assert server.headset_status()["link"] == "lost"
+
+    with_server(tmp_path, scenario, clock=clock, task_event_client="quest")
+
+
+def test_a_headset_silent_for_the_reconnect_time_is_closed_and_can_come_back(
+    tmp_path, monkeypatch
+):
+    clock = ManualClock()
+    monkeypatch.setattr(live, "HEADSET_WATCH_S", 0.01)
+
+    async def scenario(server, url):
+        async with connect(url) as spectator, connect(url) as quest:
+            await spectator.send(encode(HELLO))
+            await quest.send(QUEST_HELLO)
+            await quest.send(encode(task_event(server.log.session)))
+            await quest.send(PING)
+            await quest.recv()
+            assert server.task_event_producer is not None
+            clock.now += live.HEADSET_DROP_MS
+            await asyncio.sleep(0.05)
+            assert sorted(client.kind for client in server.clients) == ["quest", "spectator"]
+            clock.now += 1
+            with pytest.raises(ConnectionClosed) as closed:
+                await asyncio.wait_for(quest.recv(), 2)
+            assert closed.value.rcvd.code == 1013
+            # Only the silent headset goes; the spectator, silent just as long, stays.
+            assert [client.kind for client in server.clients] == ["spectator"]
+        async with connect(url) as again:
+            await again.send(QUEST_HELLO)
+            await again.send(encode(task_event(server.log.session)))
+            await again.send(PING)
+            await again.recv()
+            assert server.headset_status() == {"link": "connected", "silent_ms": None}
+            assert server.task_event_producer is not None
+
+    lines = with_server(
+        tmp_path, scenario, clock=clock, task_event_client="quest",
+        on_task_event=lambda *_: True,
+    )  # fmt: skip
+    closed = [line for line in lines if line.get("event") == "closed"]
+    assert [line["reason"] for line in closed] == ["no message from the headset for 8 s"]
+
+
+def test_a_dropped_headset_that_never_answers_the_close_cannot_hold_the_task_stream(
+    tmp_path, monkeypatch
+):
+    """The real headset does not answer a close: the old handler lingers for seconds."""
+    clock = ManualClock()
+    monkeypatch.setattr(live, "HEADSET_WATCH_S", 0.01)
+    received = []
+
+    async def scenario(server, url):
+        deaf = await connect(url, close_timeout=0.1)
+        await deaf.send(QUEST_HELLO)
+        await deaf.send(encode(task_event(server.log.session)))
+        await deaf.send(PING)
+        await deaf.recv()
+        producer = server.task_event_producer
+        assert producer is not None
+        # Stop this client's own protocol from answering the laptop's close frame.
+        monkeypatch.setattr(deaf.protocol, "receive_data", lambda data: None)
+        clock.now += live.HEADSET_DROP_MS + 1
+        while server.task_event_producer is producer:
+            await asyncio.sleep(0.005)
+        # Released by the drop itself, while the old handler is still inside its close.
+        assert server.task_event_producer is None
+        assert server.headset_status()["link"] == "lost"
+        async with connect(url) as again:
+            await again.send(QUEST_HELLO)
+            await again.send(encode(task_event(server.log.session)))
+            await again.send(PING)
+            await again.recv()  # a pong, not a 1008 refusal
+            assert server.task_event_producer is not None
+            assert server.task_event_producer is not producer
+            before = len(received)
+            # A late frame on the dropped connection is ignored: no event, no new "heard from".
+            last = server._headset_last_ms
+            await server._on_message(producer, encode(task_event(server.log.session)))
+            assert len(received) == before and server._headset_last_ms == last
+        deaf.transport.abort()
+
+    def receive(msg, client, arrival_ms):
+        received.append(client.number)
+        return True
+
+    lines = with_server(
+        tmp_path, scenario, clock=clock, task_event_client="quest", on_task_event=receive
+    )
+    events = [line["event"] for line in lines if line.get("dir") == "event"]
+    dropped = events.index("closed")
+    assert events[dropped + 1] == "task_event_producer_released"
+    assert events.count("task_event_producer_released") == 2  # the drop, then the reconnect

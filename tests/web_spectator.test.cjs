@@ -498,3 +498,44 @@ test("a page that drew no beat still holds the host's cards and average through 
   assert.equal(view.kind, "idle-trace");
   assert.equal(view.summary.highestDuringTask, 88.5);
 });
+
+test("the headset link is shown exactly as the host sent it, or not at all", () => {
+  const model = new Spectator.SpectatorModel();
+  assert.equal(model.onState(state("idle", { psv: { ...ZERO, valence: 0.5 }, confidence: ZERO, authority: ZERO })), true);
+  assert.equal(model.state.headset, undefined);
+  assert.equal(Spectator.headsetLabel(model.state.headset), null);
+
+  const cases = [
+    [{ link: "connected", silent_ms: null }, { state: "live", text: "HEADSET CONNECTED" }],
+    [{ link: "not_connected", silent_ms: null }, { state: "lost", text: "HEADSET NOT CONNECTED" }],
+    [{ link: "lost", silent_ms: 6_900 }, { state: "lost", text: "HEADSET CONNECTION LOST · 6 S" }],
+    [{ link: "lost", silent_ms: 0 }, { state: "lost", text: "HEADSET CONNECTION LOST · 0 S" }],
+  ];
+  cases.forEach(([headset, expected], index) => {
+    const message = { ...state("load", { seq: index + 2 }), headset };
+    assert.equal(model.onState(message), true);
+    assert.deepEqual(model.state.headset, headset);
+    assert.ok(Object.isFrozen(model.state.headset));
+    assert.deepEqual(Spectator.headsetLabel(model.state.headset), expected);
+  });
+});
+
+test("a malformed headset link is invalid state data, never a guessed indicator", () => {
+  const bad = [
+    null,
+    "connected",
+    {},
+    { link: "connected" },
+    { link: "connected", silent_ms: 0 },
+    { link: "not_connected", silent_ms: 5 },
+    { link: "lost", silent_ms: null },
+    { link: "lost", silent_ms: 1.5 },
+    { link: "lost", silent_ms: -1 },
+    { link: "frozen", silent_ms: null },
+    { link: "lost", silent_ms: 5, extra: 1 },
+  ];
+  for (const headset of bad) {
+    const model = new Spectator.SpectatorModel();
+    assert.equal(model.onState({ ...state("load"), headset }), false, JSON.stringify(headset));
+  }
+});
