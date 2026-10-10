@@ -299,6 +299,7 @@ GameObject:
   - component: {fileID: 263048203}
   - component: {fileID: 263048204}
   - component: {fileID: 263048206}
+  - component: {fileID: 263048205}
   - component: {fileID: 263048208}
   - component: {fileID: 263048209}
   m_Layer: 0
@@ -340,6 +341,20 @@ MonoBehaviour:
   diffuseLight: {fileID: 0}
   viewWidthDegrees: 100
   viewHeightDegrees: 90
+--- !u!114 &263048205
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 263048200}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bceb1bb4ecb61884284c553d0e49b953, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismHaptics
+  strength: 0.3
+  tapSeconds: 0.06
 --- !u!114 &263048206
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -375,11 +390,12 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 263048200}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: cca23a1dfc421cb4e86912d8e440d4af, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismWarp
+  tunnelWorld: 1
   warpShader: {fileID: 4800000, guid: 19a38e21f50fa2a408c851244affaf45, type: 3}
   spaceShader: {fileID: 4800000, guid: 6d7a6fd7605e75f499231d3d4bcdee53, type: 3}
   streakCount: 1800

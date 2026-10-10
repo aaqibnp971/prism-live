@@ -1,6 +1,9 @@
 // Prism Live: a softly winding tunnel of light you travel through (GPU only, one draw call).
 // Streaks sit on the tunnel wall; faint rings mark the distance so it feels like moving inside.
-// Everything is computed from one shared "travel" distance, so speed changes are always smooth.
+// The streak distance (_Travel) wraps every _Span metres and is used ONLY to recycle streaks.
+// The spiral and the bends take their own phases (_TwistPhase, _BendA, _BendB), each wrapped
+// at 2 pi where sin and cos repeat exactly, so no wrap moves anything (PrismWarpMotion.cs
+// mirrors this file line for line and is what the EditMode test steps across the wraps).
 Shader "Prism/Warp"
 {
     Properties { }
@@ -22,7 +25,7 @@ Shader "Prism/Warp"
             // No heartbeat input here on purpose. The streaks fill the whole view, and the
             // flashing-light rule forbids a full-field pulse; only PrismSpace's glow may brighten.
             float _Travel, _Span, _Far, _Len, _Width, _Density;
-            float _Twist, _Spin, _CurveAmp, _CurveK, _RingArc, _RingBright;
+            float _Twist, _TwistPhase, _Spin, _CurveAmp, _CurveK, _BendA, _BendB, _RingArc, _RingBright;
             float4 _Color;
 
             struct appdata
@@ -42,18 +45,17 @@ Shader "Prism/Warp"
             };
 
             // centre line of the tunnel, zero at the viewer so the tube always starts around you
-            float2 bend(float u)
+            float2 bend(float z)
             {
-                float2 a = float2(sin(_CurveK * u), sin(_CurveK * 0.73 * u + 1.7));
-                float2 b = float2(sin(_CurveK * _Travel), sin(_CurveK * 0.73 * _Travel + 1.7));
+                float2 a = float2(sin(_CurveK * z + _BendA), sin(_CurveK * 0.73 * z + _BendB + 1.7));
+                float2 b = float2(sin(_BendA), sin(_BendB + 1.7));
                 return (a - b) * _CurveAmp;
             }
 
             float3 wall(float th, float r, float z)
             {
-                float u = z + _Travel;                       // fixed tunnel coordinate
-                float ang = th + _Twist * u + _Spin;          // gentle spiral
-                float2 c = bend(u);
+                float ang = th + _Twist * z + _TwistPhase + _Spin;   // gentle spiral
+                float2 c = bend(z);
                 return float3(cos(ang) * r + c.x, sin(ang) * r + c.y, z);
             }
 
@@ -81,7 +83,7 @@ Shader "Prism/Warp"
                 vp.xy += perp * v.uv.x * w;
 
                 float fade = smoothstep(_Far, _Far * 0.55, z) * smoothstep(-8.0, -1.0, z);
-                float visible = v.p.w <= _Density ? 1.0 : 0.0;
+                float visible = saturate((_Density - v.p.w) / 0.05);   // fades, never pops
                 float along = ring ? _RingBright : lerp(1.0, 0.04, v.uv.y);
 
                 o.col = _Color * (fade * visible * along);

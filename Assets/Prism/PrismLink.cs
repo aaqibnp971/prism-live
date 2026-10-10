@@ -344,7 +344,7 @@ namespace Prism
             // The pulse follows this state at once (its amplitude is not eased, so a drop is
             // never delayed), and only a fresh state ends a freeze: after a reconnect nothing
             // pulses on what was known before the link dropped.
-            field.SetPulseContext(m.session, m.segment, remainingMs, t.pulse);
+            field.SetPulseContext(m.session, m.segment, remainingMs, t.pulse, hr);
             if (field.Frozen) field.Frozen = false;
 
             // ease from what is on screen now to the new report over 250 ms

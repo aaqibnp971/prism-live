@@ -38,14 +38,36 @@ namespace Prism
             if (!ActiveSegment(segment)) return 0.0;
             double gain = VisualRateGain(bpm);
             if (gain == 0.0) return 0.0;
-            if (segment == "resolve")
-            {
-                if (!(remainingMs > 0.0)) return 0.0;
-                return 0.08 * gain * Math.Cos(Math.PI / 2.0 * Clamp01((3000.0 - remainingMs) / 3000.0));
-            }
+            if (segment == "resolve") return 0.08 * gain * ResolveFade(remainingMs);
             double lo = segment == "baseline" ? 0.06 : segment == "load" ? 0.10 : 0.08;
             double hi = segment == "baseline" ? 0.10 : 0.16;
             return (lo + (hi - lo) * Clamp01((bpm - 62.0) / 33.0)) * gain;
+        }
+
+        /// Resolve's last three seconds fade to nothing; 1 before them, 0 at and after the end.
+        public static double ResolveFade(double remainingMs) =>
+            remainingMs > 0.0 ? Math.Cos(Math.PI / 2.0 * Clamp01((3000.0 - remainingMs) / 3000.0)) : 0.0;
+
+        /// The share of a full-strength pulse the rules allow for one beat in one segment: the
+        /// 95 to 120 bpm taper, times resolve's final fade. 0 outside the four running segments.
+        /// The controller tap uses this, so it gives way exactly as the picture does.
+        public static double Taper(string segment, double bpm, double remainingMs)
+        {
+            if (!ActiveSegment(segment)) return 0.0;
+            return VisualRateGain(bpm) * (segment == "resolve" ? ResolveFade(remainingMs) : 1.0);
+        }
+
+        public const double MaxHapticStrength = 0.5;   // "gentle", whatever the Inspector says
+        public const double MinHapticStrength = 0.02;  // under this nothing is sent at all
+
+        /// The strength of one controller tap, 0 for none. A tap exists only at the start of a
+        /// pulse the visual rules allowed (beatStarted), while really linked to the laptop,
+        /// scaled by that pulse's taper. Nothing here can create a beat.
+        public static double HapticAmplitude(bool beatStarted, bool linked, double taper, double strength)
+        {
+            if (!beatStarted || !linked || !Finite(taper) || !Finite(strength)) return 0.0;
+            double amplitude = Math.Max(0.0, Math.Min(MaxHapticStrength, strength)) * Clamp01(taper);
+            return amplitude >= MinHapticStrength ? amplitude : 0.0;
         }
 
         /// What may actually be shown. The state can be two seconds older than the beat on screen,
@@ -91,7 +113,7 @@ namespace Prism
     {
         readonly PrismBeatGate gate = new PrismBeatGate();
         string segment = "";
-        double remainingMs, statePulse;
+        double remainingMs, statePulse, stateBpm = double.NaN;
         double shownBeat = double.NaN;
         bool frozen;
 
@@ -103,6 +125,10 @@ namespace Prism
 
         /// Amplitude times envelope, at most 0.22: the only number a shader may brighten by.
         public double Gain => PrismPulseSafety.PulseGain(Amplitude, Envelope);
+
+        /// 0..1: the taper of the beat on screen (95 to 120 bpm, resolve's final fade), and 0
+        /// whenever no pulse is allowed on screen. For the controller tap.
+        public double Taper { get; private set; }
 
         /// Goes up by one each time a pulse starts.
         public int BeatCount { get; private set; }
@@ -120,12 +146,16 @@ namespace Prism
         /// What the laptop's latest state says. statePulse is that state's own amplitude,
         /// before any easing. A new session forgets the old one's beats; outside the four
         /// running segments nothing may flash.
-        public void OnState(string session, string stateSegment, double stateRemainingMs, double stateAmplitude)
+        /// stateHeartRate is that state's hr_bpm; it only tapers the controller tap, which
+        /// must give way to the state's rate as well as the beat's, as the amplitude does.
+        public void OnState(string session, string stateSegment, double stateRemainingMs, double stateAmplitude,
+                            double stateHeartRate = double.NaN)
         {
             if (session != gate.Session) gate.Reset(session);
             segment = stateSegment ?? "";
             remainingMs = stateRemainingMs;
             statePulse = stateAmplitude;
+            stateBpm = stateHeartRate;
             if (!PrismPulseSafety.ActiveSegment(segment)) gate.Clear();
         }
 
@@ -149,6 +179,12 @@ namespace Prism
             shownBeat = start;
             Amplitude = PrismPulseSafety.DisplayAmplitude(
                 Math.Min(easedPulse, statePulse), segment, gate.ActiveRate, remainingMs);
+            // The smaller of the beat's taper and the state's, never their product: the same
+            // rule as the amplitude above. A state with no rate given tapers by the beat alone.
+            double taper = PrismPulseSafety.Taper(segment, gate.ActiveRate, remainingMs);
+            if (!double.IsNaN(stateBpm))
+                taper = Math.Min(taper, PrismPulseSafety.Taper(segment, stateBpm, remainingMs));
+            Taper = Amplitude > 0.0 ? taper : 0.0;
         }
     }
 

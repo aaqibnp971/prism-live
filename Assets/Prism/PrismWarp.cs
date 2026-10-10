@@ -14,6 +14,11 @@ namespace Prism
     [RequireComponent(typeof(PrismField))]
     public class PrismWarp : MonoBehaviour
     {
+        [Header("World")]
+        [Tooltip("On: the tunnel of light with stars and sky. Off: the fog field. " +
+                 "This is the one switch between the two worlds; nothing else changes.")]
+        public bool tunnelWorld = true;
+
         public Shader warpShader, spaceShader;
 
         [Header("Tunnel")]
@@ -53,12 +58,13 @@ namespace Prism
         public string segment = "idle";
         public float speed, density, brightness;
 
-        const float Behind = 12f;
-
         PrismField field;
         PrismLink link;
         Material warpMat, spaceMat;
-        float travel, spin;
+        WarpPhase phase;
+        float heldProgress;
+        Color shownTint;
+        bool haveTint;
         double segElapsedMs, segNominalMs;
         float segStamp;
 
@@ -73,6 +79,12 @@ namespace Prism
 
         void Start()
         {
+            if (!tunnelWorld)
+            {
+                Debug.Log("[Prism] Warp: Tunnel World is off, the fog field stays.");
+                enabled = false;
+                return;
+            }
             field = GetComponent<PrismField>();
             link = GetComponent<PrismLink>();
             if (link) link.StateReceived += OnState;
@@ -102,15 +114,20 @@ namespace Prism
             segStamp = Time.unscaledTime;
         }
 
+        /// How far through the segment the laptop says we are, carried forward between its
+        /// 2 s reports. While the link is frozen it holds where it was: the headset never
+        /// finishes a segment by itself.
         float Progress()
         {
-            if (segNominalMs <= 0) return 0f;
+            if (field.Frozen) return heldProgress;
+            if (segNominalMs <= 0) return heldProgress = 0f;
             double el = segElapsedMs + (Time.unscaledTime - segStamp) * 1000.0;
-            return Mathf.Clamp01((float)(el / segNominalMs));
+            return heldProgress = Mathf.Clamp01((float)(el / segNominalMs));
         }
 
         void Update()
         {
+            if (!warpMat) return;                          // switched off at Start
             float p = Progress();
             float s, d, b;
             switch (segment)
@@ -140,22 +157,31 @@ namespace Prism
             density += (d - density) * k;
             brightness += (b - brightness) * k;
 
-            float span = tunnelLength + Behind;
-            travel = Mathf.Repeat(travel + speed * dt, span);
-            spin = Mathf.Repeat(spin + spinSpeed * dt * Mathf.Clamp01(speed / Mathf.Max(0.1f, baselineSpeed)), Mathf.PI * 2f);
+            // One step along the endless tunnel. The streak distance, the spiral and the two
+            // bends each wrap at their own period (PrismWarpMotion), so no wrap is ever visible.
+            float span = PrismWarpMotion.Span(tunnelLength);
+            float spinRate = spinSpeed * Mathf.Clamp01(speed / Mathf.Max(0.1f, baselineSpeed));
+            phase = PrismWarpMotion.Step(phase, speed, dt, span, twist, curveFrequency, spinRate);
 
-            FieldTokens c = field.Current;
-            float h = Mathf.Repeat(c.hue, 360f) / 360f;
-            Color tint = Color.HSVToRGB(h, Mathf.Clamp01(c.sat * 0.6f), 1f).linear;
+            // The fog field's colour rule: a segment change dissolves between two palettes.
+            // Eased like speed and brightness, so even a dissolve cut short (the 3 s reset
+            // after a stop) never changes the tunnel's colour in one frame.
+            Color target = PrismWarpMotion.Tint(field.Previous, field.Current, field.Blend);
+            shownTint = haveTint ? Color.Lerp(shownTint, target, k) : target;
+            haveTint = true;
+            Color tint = shownTint;
 
-            warpMat.SetFloat("_Travel", travel);
+            warpMat.SetFloat("_Travel", phase.travel);
+            warpMat.SetFloat("_TwistPhase", phase.twist);
+            warpMat.SetFloat("_BendA", phase.bendA);
+            warpMat.SetFloat("_BendB", phase.bendB);
             warpMat.SetFloat("_Span", span);
             warpMat.SetFloat("_Far", tunnelLength);
             warpMat.SetFloat("_Len", 0.3f + speed * 0.45f);        // faster = longer streaks
             warpMat.SetFloat("_Width", streakWidth);
             warpMat.SetFloat("_Density", density);
             warpMat.SetFloat("_Twist", twist);
-            warpMat.SetFloat("_Spin", spin);
+            warpMat.SetFloat("_Spin", phase.spin);
             warpMat.SetFloat("_CurveAmp", curveAmount);
             warpMat.SetFloat("_CurveK", curveFrequency);
             warpMat.SetFloat("_RingArc", Mathf.PI * 2f / Mathf.Max(8, ringSegments) * 0.7f);

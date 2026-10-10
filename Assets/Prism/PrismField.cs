@@ -50,6 +50,12 @@ namespace Prism
 
         public FieldTokens Current => current;
 
+        /// The palette being dissolved away since the last segment change, and how far the
+        /// dissolve has gone (0 = all Previous, 1 = all Current). Another world that takes its
+        /// colour from the field must mix these two, never read Current's hue alone.
+        public FieldTokens Previous => previous;
+        public float Blend => blend;
+
         /// Goes up by one each time a heartbeat pulse starts.
         public int BeatCount => pulse.BeatCount;
 
@@ -64,6 +70,9 @@ namespace Prism
         /// Amplitude times envelope, at most 0.22: the only number a shader may brighten by.
         public float PulseGain => (float)pulse.Gain;
 
+        /// 0..1 taper of the beat on screen, 0 when no pulse is allowed (PrismHaptics).
+        public float PulseTaper => (float)pulse.Taper;
+
         /// Freeze the last picture (connection lost). Clears future beats.
         public bool Frozen
         {
@@ -73,8 +82,9 @@ namespace Prism
 
         /// Tell the pulse what the laptop's latest state says: session, segment, time left in
         /// the segment and that state's own pulse amplitude before any easing.
-        public void SetPulseContext(string session, string segment, float remainingMs, float statePulse) =>
-            pulse.OnState(session, segment, remainingMs, statePulse);
+        public void SetPulseContext(string session, string segment, float remainingMs, float statePulse,
+                                    float stateHeartRate = float.NaN) =>
+            pulse.OnState(session, segment, remainingMs, statePulse, stateHeartRate);
 
 #if UNITY_EDITOR
         void Reset() => OnValidate();
@@ -173,7 +183,9 @@ namespace Prism
         }
 
         // Global token limits (experience-script §4), same as web/shared/field_renderer.js
-        static FieldTokens Clamp(FieldTokens t) => new FieldTokens(
+        static FieldTokens Clamp(FieldTokens t) => Limits(t);
+
+        public static FieldTokens Limits(FieldTokens t) => new FieldTokens(
             Mathf.Clamp(t.fog, .18f, .62f), Mathf.Clamp(t.light, .35f, 1.10f), Mathf.Clamp(t.hue, 18f, 216f),
             Mathf.Clamp(t.sat, .08f, .36f), Mathf.Clamp(t.horizon, .38f, .62f), Mathf.Clamp(t.pulse, 0f, MaxPulse),
             Mathf.Clamp(t.motion, .004f, .045f));
