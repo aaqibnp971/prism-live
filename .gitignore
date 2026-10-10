@@ -58,3 +58,7 @@ crashlytics-build.properties
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Written by Prism > Build headset APK; names one build
+/Assets/Resources/PrismBuildStamp.txt
+/Assets/Resources/PrismBuildStamp.txt.meta

@@ -418,10 +418,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 070300e0399e2894ca61f84486d8a938, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismLink
-  laptopIp: 127.0.0.1
+  laptopIp: 192.168.1.175
   port: 8787
   offlinePreview: 0
   previewSpeed: 1
+  markerShader: {fileID: 4800000, guid: 7d3a9c5e1b464f0a9e2c8b6f4a1d5e37, type: 3}
   status: starting
   segment: '-'
   heartRate: 0

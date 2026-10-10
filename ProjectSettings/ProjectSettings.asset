@@ -153,6 +153,9 @@ PlayerSettings:
   preloadedAssets:
   - {fileID: 11400000, guid: d235db56bea3cfa488854a6c27474524, type: 2}
   - {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+  - {fileID: -5134039615489367524, guid: 95073a7e0afcbb04380a9dbbfdd2a217, type: 2}
+  - {fileID: -9158421326784012708, guid: 8e06ffb9a63857140ac7bbbc593aada4, type: 2}
+  - {fileID: 11400000, guid: fd9b01aee6179094189b03528c268fdb, type: 2}
   metroInputSource: 0
   wsaTransparentSwapchain: 0
   xboxOneDisableKinectGpuReservation: 1
@@ -190,7 +193,7 @@ PlayerSettings:
   stripEngineCode: 1
   iPhoneStrippingLevel: 0
   iPhoneScriptCallOptimization: 0
-  ForceInternetPermission: 0
+  ForceInternetPermission: 1
   ForceSDCardPermission: 0
   CreateWallpaper: 0
   androidSplitApplicationBinary: 0

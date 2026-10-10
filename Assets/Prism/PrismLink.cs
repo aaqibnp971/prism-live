@@ -24,6 +24,9 @@ namespace Prism
     /// Connects to the laptop (ws://<ip>:8787/live), follows its state and heartbeat.
     /// Never decides anything itself: segment, timing and authority all come from the laptop.
     /// If the link drops, the picture freezes and a small red dot appears below your view.
+    /// The red dot shows whenever the headset is not following the laptop, Offline Preview
+    /// included, and Offline Preview is labelled in view for as long as it runs.
+    /// Every change of link status is logged: adb logcat -s Unity | findstr PrismLink
     [RequireComponent(typeof(PrismField))]
     public class PrismLink : MonoBehaviour
     {
@@ -36,6 +39,8 @@ namespace Prism
                  "countdown and game in Unity Play mode or on the Quest. Untick for real sessions.")]
         public bool offlinePreview = false;
         [Range(1f, 4f)] public float previewSpeed = 1f;
+        [Tooltip("Prism/Marker, for the red not-linked dot. Set automatically in the Editor.")]
+        public Shader markerShader;
 
         [Header("Read-only, for watching in the Inspector")]
         public string status = "starting";
@@ -45,8 +50,11 @@ namespace Prism
 
         /// Raised on the main thread for every state message (the attention task listens).
         public event Action<LinkMsg> StateReceived;
-        /// True only while the laptop is both connected and still sending states.
+        /// True while states are arriving: from the laptop, or from Offline Preview's pretend
+        /// session. The attention task runs on this.
         public bool IsOpen => open && !stale;
+        /// True only while a real laptop is connected and still sending states.
+        public bool IsLinked => PrismLinkStatus.Linked(offlinePreview, open, haveState, stale);
         public static double ClientNowMs => Time.realtimeSinceStartupAsDouble * 1000.0;
 
         /// Send one JSON message to the laptop (used for task_event).
@@ -74,8 +82,11 @@ namespace Prism
         CancellationTokenSource cts;
         readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         bool open, stale;
+        bool haveState;                                   // a state has arrived on this connection
+        string build;
         float nextPing, reconnectAt = -1f, lastStateAt;
-        GameObject marker;
+        GameObject marker, offlineLabel;
+        string loggedStatus;
 
         // clock sync (contract §2 clock): median of last 9, discard rtt > max(2 × median rtt, 4 ms)
         readonly List<double> rtts = new List<double>(), offsets = new List<double>();
@@ -95,11 +106,20 @@ namespace Prism
         string Url => $"ws://{laptopIp}:{port}/live";
         static double NowMs => Time.realtimeSinceStartupAsDouble * 1000.0;
 
+#if UNITY_EDITOR
+        void Reset() => OnValidate();
+        void OnValidate() { if (!markerShader) markerShader = Shader.Find("Prism/Marker"); }
+#endif
+
         void Start()
         {
             field = GetComponent<PrismField>();
             fromTokens = toTokens = field.Current;
-            MakeMarker();
+            var stamp = Resources.Load<TextAsset>("PrismBuildStamp");
+            build = PrismLinkStatus.BuildLabel(Application.version, stamp ? stamp.text : null);
+            Debug.Log($"[PrismLink] build {build}, scene " +
+                      $"{UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}, " +
+                      $"offlinePreview={offlinePreview}, laptop {Url}");
             if (offlinePreview)
             {
                 open = true;
@@ -107,11 +127,27 @@ namespace Prism
                 status = "OFFLINE PREVIEW (not connected to the laptop)";
             }
             else Connect();
+            ShowLinkStatus();
+        }
+
+        /// The red dot and the Offline Preview label, and one log line per change of status.
+        void ShowLinkStatus()
+        {
+            if (!marker) MakeMarker();                    // the camera rig may appear after Start
+            if (marker) marker.SetActive(PrismLinkStatus.ShowMarker(offlinePreview, open, haveState, stale));
+            if (PrismLinkStatus.ShowOfflineLabel(offlinePreview) && !offlineLabel) MakeOfflineLabel();
+            if (offlineLabel) offlineLabel.SetActive(PrismLinkStatus.ShowOfflineLabel(offlinePreview));
+            if (status != loggedStatus)
+            {
+                loggedStatus = status;
+                Debug.Log("[PrismLink] " + status);
+            }
         }
 
         async void Connect()
         {
             rtts.Clear(); offsets.Clear(); haveOffset = false;   // an estimate belongs to one connection
+            haveState = false;
             status = "connecting to " + Url;
             cts?.Cancel();
             cts = new CancellationTokenSource();
@@ -125,7 +161,7 @@ namespace Prism
             stale = false;
             lastStateAt = Time.unscaledTime;
             status = "connected";
-            SendText("{\"type\":\"hello\",\"v\":1,\"client\":\"quest\",\"build\":\"" + Application.version + "\"}");
+            SendText("{\"type\":\"hello\",\"v\":1,\"client\":\"quest\",\"build\":\"" + build + "\"}");
             SendPing();
 
             // receive loop; awaits resume on Unity's main thread, so Handle runs there
@@ -142,6 +178,10 @@ namespace Prism
                 }
             }
             catch (Exception e) { status = "error: " + e.Message; }
+            // Drop the socket outright. Left half-closed after the laptop's close, the laptop
+            // waited 10 s on it and refused this headset's reconnect as a second producer.
+            try { socket.Abort(); } catch (Exception) { }
+            if (socket != ws) return;                     // an older socket ending: not the link's news
             Lost();
         }
 
@@ -150,6 +190,7 @@ namespace Prism
             if (reconnectAt > 0f) return;
             open = false;
             stale = false;
+            haveState = false;
             field.Frozen = true;                          // freeze the last picture, drop future beats
             if (!status.StartsWith("error")) status = "disconnected";
             reconnectAt = Time.unscaledTime + 2f;
@@ -174,7 +215,7 @@ namespace Prism
                     Lost();
                 }
             }
-            if (marker) marker.SetActive(!IsOpen);
+            ShowLinkStatus();
 
             if (open && !offlinePreview && Time.unscaledTime >= nextPing) SendPing();
 
@@ -191,7 +232,9 @@ namespace Prism
 
         void SendPing()
         {
-            nextPing = Time.unscaledTime + 2f;
+            // Every second, not the contract's 2 s: the laptop reads its own "headset
+            // connected" from these, with 2.5 s of silence meaning lost (contract v1.10).
+            nextPing = Time.unscaledTime + 1f;
             SendText("{\"type\":\"clock\",\"v\":1,\"role\":\"ping\",\"t_client_sent\":" +
                         NowMs.ToString("F3", CultureInfo.InvariantCulture) + "}");
         }
@@ -209,6 +252,7 @@ namespace Prism
                 case "beat": Beat(m); break;
                 case "state":
                     lastStateAt = Time.unscaledTime;
+                    haveState = true;
                     if (stale) { stale = false; status = "connected"; }
                     State(m); StateReceived?.Invoke(m); break;
             }
@@ -395,7 +439,7 @@ namespace Prism
             return n == 0 ? 0 : (n % 2 == 1 ? s[n / 2] : 0.5 * (s[n / 2 - 1] + s[n / 2]));
         }
 
-        void MakeMarker()
+        static Camera ViewCamera()
         {
             Camera cam = Camera.main;
             if (!cam)
@@ -403,17 +447,62 @@ namespace Prism
                 var cams = FindObjectsByType<Camera>(FindObjectsSortMode.None);
                 if (cams.Length > 0) cam = cams[0];
             }
+            return cam;
+        }
+
+        void MakeMarker()
+        {
+            Camera cam = ViewCamera();
             if (!cam) return;
 
-            marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            // A disc from Prism/Marker: unlit, opaque and drawn over everything. Without the
+            // shader, the sphere and default material this used before.
+            marker = GameObject.CreatePrimitive(markerShader ? PrimitiveType.Quad : PrimitiveType.Sphere);
             marker.name = "Prism Disconnected Marker";
             Destroy(marker.GetComponent<Collider>());
             marker.transform.SetParent(cam.transform, false);
             marker.transform.localPosition = new Vector3(0f, -0.18f, 0.8f);
             marker.transform.localScale = Vector3.one * 0.025f;
-            var mat = marker.GetComponent<Renderer>().material;
-            mat.color = Color.red;
-            mat.SetColor("_BaseColor", Color.red);
+            var renderer = marker.GetComponent<Renderer>();
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            if (markerShader)
+            {
+                var mat = new Material(markerShader);
+                mat.SetColor("_Color", Color.red);
+                renderer.material = mat;
+            }
+            else
+            {
+                Debug.LogError("[PrismLink] markerShader is not set on Prism Link: the red " +
+                               "not-linked dot may not be visible in this build.");
+                var mat = renderer.material;
+                mat.color = Color.red;
+                mat.SetColor("_BaseColor", Color.red);
+            }
+            marker.SetActive(false);                      // ShowLinkStatus decides, every frame
+        }
+
+        void MakeOfflineLabel()
+        {
+            Camera cam = ViewCamera();
+            if (!cam) return;
+
+            offlineLabel = new GameObject("Prism Offline Preview Label");
+            offlineLabel.transform.SetParent(cam.transform, false);
+            offlineLabel.transform.localPosition = new Vector3(0f, 0.2f, 1.6f);
+            var text = offlineLabel.AddComponent<TextMesh>();
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font)
+            {
+                text.font = font;
+                offlineLabel.GetComponent<MeshRenderer>().material = font.material;
+            }
+            text.anchor = TextAnchor.MiddleCenter;
+            text.alignment = TextAlignment.Center;
+            text.characterSize = 0.02f;
+            text.fontSize = 64;
+            text.color = new Color(1f, 0.25f, 0.2f, 1f);
+            text.text = PrismLinkStatus.OfflineLabel;
         }
 
         void OnDestroy()
