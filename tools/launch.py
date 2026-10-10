@@ -244,7 +244,7 @@ class Config:
     def mqtt_bind_host(self) -> str:
         # MQTT ingress is independent of the WebSocket listener: browser tests keep
         # task events on localhost even while the phone sends real PPI over the LAN.
-        address = self.mqtt_bind or (self.lan_ip if self.booth else None)
+        address = self.mqtt_bind or (self.lan_ip if self.quest_input else None)
         if address is None:
             raise ValueError("MQTT requires an explicit laptop LAN address")
         return address
@@ -321,6 +321,10 @@ def browser_command(config: Config, role: str, profile: Path) -> list[str]:
     command = [
         str(config.browser),
         "--inprivate",  # No account sign-in / sync setup dialog in an owned booth profile.
+        # Started from Administrator PowerShell, Edge otherwise relaunches itself unelevated
+        # through Explorer: outside the owned Job, and unable to open this elevated-owned
+        # profile. No window appeared and the supervisor relaunched it every two seconds.
+        "--do-not-de-elevate",
         f"--user-data-dir={profile}",
         "--remote-debugging-port=0",
         "--remote-debugging-address=127.0.0.1",
@@ -656,7 +660,8 @@ class Supervisor:
         self.stopping = False
         self.status_path = config.status_dir / "launcher.json"
         self._lock_file = None
-        self.firewall = None
+        # Owned temporary rules, at most one for the phone and one for the Quest.
+        self.firewalls: dict[str, MqttFirewall] = {}
 
     def event(self, kind: str, role: str, **detail: Any) -> None:
         record = {"event": kind, "role": role, "at": time.time(), **detail}
@@ -902,7 +907,8 @@ class Supervisor:
             "headset_test": self.config.headset_test,
             "single_display_test": self.config.single_display_test,
             "packet_source": self.config.packet_source,
-            "mqtt_firewall": self.firewall.scope if self.firewall is not None else None,
+            "mqtt_firewall": self._firewall_scope("mqtt"),
+            "quest_firewall": self._firewall_scope("quest"),
             "stopping": self.stopping,
             "children": children,
             "bridge": bridge,
@@ -913,6 +919,32 @@ class Supervisor:
         write_json(self.status_path, value)
         return value
 
+    def _firewall_scope(self, link: str) -> dict[str, Any] | None:
+        rule = self.firewalls.get(link)
+        return rule.scope if rule is not None else None
+
+    def _open_firewalls(self) -> None:
+        for rule in tuple(self.firewalls.values()):
+            # An interrupted startup finishes the creation in flight, never begins another.
+            if self.stopping:
+                return
+            rule.open()
+
+    def _close_firewalls(self) -> None:
+        """Remove every owned rule; a failure on one never leaves the other behind."""
+        failures = []
+        for link, rule in reversed(tuple(self.firewalls.items())):
+            try:
+                rule.close()
+                del self.firewalls[link]
+            except Exception as error:
+                failures.append(error)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            # Each message names its own rule: the operator must see every one left behind.
+            raise RuntimeError("\n".join(str(error) for error in failures))
+
     async def close(self) -> None:
         self.stopping = True
         try:
@@ -920,9 +952,8 @@ class Supervisor:
                 await self.stop_child(role)
         finally:
             try:
-                if self.firewall is not None:
-                    await asyncio.to_thread(self.firewall.close)
-                    self.firewall = None
+                if self.firewalls:
+                    await asyncio.to_thread(self._close_firewalls)
             finally:
                 if self._lock_file is not None:
                     self.snapshot()
@@ -932,19 +963,18 @@ class Supervisor:
     async def run(self) -> None:
         self._acquire()
         try:
-            purpose = ""
+            purposes = {"mqtt": "MQTT", "quest": "headset link"}
             if self.config.packet_source == "mqtt":
-                purpose = "MQTT"
-                self.firewall = MqttFirewall(
+                self.firewalls["mqtt"] = MqttFirewall(
                     self.config.mqtt_bind_host,
                     self.config.mqtt_phone_ip,
                     self.config.python,
                     port=self.config.mqtt_port,
                 )
-            elif self.config.headset_test and self.config.lan_ip is not None:
+            if self.config.headset_test and self.config.lan_ip is not None:
                 # Same narrow scope as the phone's rule: one Quest address, one port.
-                purpose = "headset link"
-                self.firewall = MqttFirewall(
+                # With the armband it is a second rule beside the phone's, never a wider one.
+                self.firewalls["quest"] = MqttFirewall(
                     self.config.lan_ip,
                     self.config.quest_ip,
                     self.config.python,
@@ -952,23 +982,27 @@ class Supervisor:
                     name_prefix="PrismQuestLink-",
                     display_name="Prism Quest link (temporary)",
                 )
-            if self.firewall is not None:
+            if self.firewalls:
                 # Print before creation: even interruption during setup leaves a named,
                 # owned rule whose emergency cleanup command is visible to the operator.
-                print(
-                    f"Temporary {purpose} firewall: {self.firewall.name}. "
-                    "Removed on normal shutdown; after a forced supervisor kill use "
-                    f'Remove-NetFirewallRule -Name "{self.firewall.name}"',
-                    flush=True,
-                )
-                setup = asyncio.create_task(asyncio.to_thread(self.firewall.open))
+                for link, rule in self.firewalls.items():
+                    print(
+                        f"Temporary {purposes[link]} firewall: {rule.name}. "
+                        "Removed on normal shutdown; after a forced supervisor kill use "
+                        f'Remove-NetFirewallRule -Name "{rule.name}"',
+                        flush=True,
+                    )
+                setup = asyncio.create_task(asyncio.to_thread(self._open_firewalls))
                 try:
                     await asyncio.shield(setup)
                 except asyncio.CancelledError:
                     # The OS command is not cancelled with its awaiting coroutine.
-                    # Wait for it before finally removes the rule; no late creation leak.
-                    with contextlib.suppress(Exception):
-                        await setup
+                    # Wait for it before finally removes the rule; no late creation leak,
+                    # not even when a second Ctrl+C interrupts this wait.
+                    self.stopping = True
+                    while not setup.done():
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await asyncio.shield(setup)
                     raise
             while await self.step():
                 await asyncio.sleep(POLL_SECONDS)
@@ -1035,7 +1069,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--headset-test",
         action="store_true",
-        help="Fake heart, Quest task input, no browser task; localhost unless --lan-ip",
+        help="Quest task input, no browser task, fake heart unless --packet-source mqtt; "
+        "localhost unless --lan-ip",
     )
     parser.add_argument(
         "--lan-ip",
@@ -1111,8 +1146,11 @@ def main(argv: list[str] | None = None) -> None:
                     "--headset-test is its own mode: no --booth, --single-display-test "
                     "or --task-display"
                 )
-            if args.packet_source == "mqtt":
-                raise ValueError("--headset-test uses the fake heart; use --booth for the armband")
+            if args.packet_source == "mqtt" and args.lan_ip is None:
+                raise ValueError(
+                    "The armband in a headset test needs --lan-ip, --quest-ip and "
+                    "--mqtt-phone-ip: the phone cannot reach a localhost listener"
+                )
             if (args.lan_ip is None) != (args.quest_ip is None):
                 raise ValueError(
                     "A LAN headset test needs both --lan-ip (this laptop) and --quest-ip "
@@ -1129,22 +1167,28 @@ def main(argv: list[str] | None = None) -> None:
         packet_source = args.packet_source or ("mqtt" if args.booth else "synthetic")
         mqtt_bind = None
         if packet_source == "mqtt":
-            if args.booth and args.mqtt_bind is not None:
-                raise ValueError("Booth MQTT uses --lan-ip; --mqtt-bind is for browser testing")
-            mqtt_address = args.lan_ip if args.booth else args.mqtt_bind
+            # The Quest modes already name the laptop's one LAN address; MQTT shares it.
+            lan_mode = args.booth or args.headset_test
+            if lan_mode and args.mqtt_bind is not None:
+                raise ValueError(
+                    "Booth and headset MQTT use --lan-ip; --mqtt-bind is for browser testing"
+                )
+            mqtt_address = args.lan_ip if lan_mode else args.mqtt_bind
             if mqtt_address is None or args.mqtt_phone_ip is None:
                 raise ValueError(
-                    "MQTT requires --mqtt-phone-ip and an explicit laptop address: "
-                    "--lan-ip in booth mode, --mqtt-bind in browser test mode; trusted router only"
+                    "MQTT requires --mqtt-phone-ip and an explicit laptop address: --lan-ip in "
+                    "booth and headset modes, --mqtt-bind in browser test mode; trusted router only"
                 )
             private_ipv4(args.mqtt_phone_ip)
             if args.mqtt_phone_ip == mqtt_address:
                 raise ValueError("Laptop and phone must have different fixed addresses")
+            if args.mqtt_phone_ip == args.quest_ip:
+                raise ValueError("Phone and headset must have different fixed addresses")
             if not all(1024 <= port <= 65535 for port in (args.mqtt_port, args.mqtt_broker_port)):
                 raise ValueError("MQTT ports must be between 1024 and 65535")
             if len({args.port, args.mqtt_port, args.mqtt_broker_port}) != 3:
                 raise ValueError("WebSocket, MQTT LAN and MQTT loopback ports must differ")
-            if not args.booth:
+            if not lan_mode:
                 mqtt_bind = select_lan_address(mqtt_address, flag="--mqtt-bind")
         elif args.mqtt_phone_ip is not None or args.mqtt_bind is not None:
             raise ValueError("--mqtt-bind and --mqtt-phone-ip require --packet-source mqtt")
@@ -1202,9 +1246,13 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print("HEADLESS RECOVERY DIAGNOSTIC — display placement is not tested.", flush=True)
         if config.headset_test:
+            heart = (
+                "real armband over MQTT"
+                if config.packet_source == "mqtt"
+                else "fake heart (no armband)"
+            )
             print(
-                "HEADSET TEST: fake heart (no armband), no browser task; "
-                "the headset is the only task producer.",
+                f"HEADSET TEST: {heart}, no browser task; the headset is the only task producer.",
                 flush=True,
             )
             if config.lan_ip is None:

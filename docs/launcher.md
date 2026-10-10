@@ -121,8 +121,54 @@ attendant button work as in every other mode.
 The rule is the only restriction on who can reach the WebSocket: unlike the MQTT relay, the
 server does not itself refuse other source addresses, and an existing broader exception for
 Python is neither audited nor changed. Own router only, never venue WiFi. `--headset-test`
-refuses `--booth`, `--single-display-test`, `--task-display` and MQTT input; use `--booth` for
-the armband. The launcher does not start, supervise or prove a connection from the headset.
+refuses `--booth`, `--single-display-test` and `--task-display`. The launcher does not start,
+supervise or prove a connection from the headset.
+
+### Headset test with the real armband (10 October)
+
+The same layout and Quest link, with the phone's measured PPI in place of the synthetic heart.
+From **Administrator PowerShell**, on your own router:
+
+```powershell
+.venv\Scripts\python.exe -m tools.launch --headset-test --lan-ip 192.168.1.175 --quest-ip 192.168.1.152 --packet-source mqtt --mqtt-phone-ip 192.168.1.196
+```
+
+Those are the 10 October home-router addresses, not defaults. All three addresses are
+required; MQTT listens on `--lan-ip` (`--mqtt-bind` is refused here) and the phone's settings
+are the table in the runbook below with that address as the broker. The launcher owns **two**
+rules and nothing wider: `PrismPolarMqtt-<id>` admits only the phone on the MQTT port and
+`PrismQuestLink-<id>` only the Quest on the WebSocket port, each with the exact laptop
+address, interface, profile and Python image described below. Both names and their removal
+commands are printed before either is created. They are created one after the other, so
+allow up to a minute before the console appears. If the second cannot be created the first is
+removed; on Q, Ctrl+C or a failure both are removed, and a failure removing one does not stop
+the attempt on the other. The console's second line reads `POLAR SENSOR LOGGER / MQTT /
+MEASURED PPI, BUFFERED PLAYBACK`, never `SYNTHETIC INPUT - NO ARMBAND`. `--booth` still adds
+no Quest rule of its own.
+
+Ctrl+C during rule setup finishes the creation in flight, starts no other, and then removes
+what exists; a second Ctrl+C no longer cuts that wait short. If both removals fail, both rule
+names are reported.
+
+**Review:** one heavy-review round of two agents on the firewall scoping. One compared old
+and new launchers over 32,400 argument combinations with a recording fake in place of the
+rule and found no wrong, extra or wider rule and no change to an existing mode. The other
+found the two-removal report and the interrupted-setup behaviour above, fixed afterwards
+with regression self-checks only. No rule has been created by this mode on the laptop yet.
+
+### The spectator under an elevated launch (10 October)
+
+On 9 and 10 October every LAN headset test left the spectator window missing. Edge 154,
+started from an elevated process, relaunches itself unelevated through Explorer. That copy is
+outside the launcher's Job and cannot open the profile folder the elevated launcher created,
+so no window appeared, the first process exited 0 and the supervisor started another about
+every two seconds (778 times in one half-hour run). Owned browsers are now started with
+Edge's `--do-not-de-elevate`, so the browser stays in the Job as it did on 26 September.
+This was confirmed in the logs and by an unelevated run with the flag; **an elevated launch
+with the flag has not yet been run.** If the spectator is still missing, `spectator` lines
+repeating `process exited 0` in `logs/launcher/supervisor.jsonl` mean the flag was not
+honoured. The earlier runs also left about 2,800 `prism-live-spectator-*` profile folders in
+the Windows temporary directory, removable only from an elevated prompt.
 
 **Windows Mobile Hotspot.** The Quest can join the laptop's own hotspot instead of a router;
 `--lan-ip` is then the hotspot adapter's address, normally `192.168.137.1`. Windows gives that

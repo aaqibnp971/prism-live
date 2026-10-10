@@ -477,6 +477,9 @@ def test_headset_test_cli_is_localhost_unless_both_lan_addresses_are_given(
         assert "ws://127.0.0.1:8787/live" in output and "No LAN listener" in output
 
 
+HEADSET_LAN = ["--headset-test", "--lan-ip", "192.168.8.20", "--quest-ip", "192.168.8.31"]
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -489,6 +492,17 @@ def test_headset_test_cli_is_localhost_unless_both_lan_addresses_are_given(
         ["--headset-test", "--lan-ip", "192.168.8.20", "--quest-ip", "192.168.8.20"],
         ["--headset-test", "--lan-ip", "192.168.8.20", "--quest-ip", "8.8.8.8"],
         ["--quest-ip", "192.168.8.31"],
+        HEADSET_LAN + ["--packet-source", "mqtt"],
+        HEADSET_LAN + ["--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.31"],
+        HEADSET_LAN + ["--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.20"],
+        HEADSET_LAN + ["--packet-source", "mqtt", "--mqtt-phone-ip", "8.8.8.8"],
+        HEADSET_LAN + ["--mqtt-phone-ip", "192.168.8.40"],
+        HEADSET_LAN
+        + ["--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.40"]
+        + ["--mqtt-bind", "192.168.8.20"],
+        HEADSET_LAN
+        + ["--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.40", "--mqtt-port", "8787"],
+        ["--headset-test", "--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.40"],
     ],
 )
 def test_headset_test_cli_rejects_mixed_or_incomplete_flags(args):
@@ -531,6 +545,190 @@ def test_headset_test_firewall_exists_only_for_the_lan_link(config, monkeypatch,
     monkeypatch.setattr(launch, "MqttFirewall", Firewall)
     asyncio.run(check())
     assert events == (["open", "step", "close"] if lan else ["step"])
+
+
+def test_headset_armband_cli_keeps_headset_layout_with_the_real_source(monkeypatch, capsys):
+    settings = []
+
+    class FakeSupervisor:
+        def __init__(self, config):
+            settings.append(config)
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr(launch, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launch, "local_lan_addresses", lambda: ["192.168.8.20"])
+    monkeypatch.setattr(launch, "find_browser", lambda _: Path("edge.exe"))
+    monkeypatch.setattr(launch, "list_displays", lambda: displays()[:1])
+    launch.main(
+        ["--python", sys.executable]
+        + HEADSET_LAN
+        + ["--packet-source", "mqtt", "--mqtt-phone-ip", "192.168.8.40"]
+    )
+    config = settings[0]
+    output = capsys.readouterr().out
+    assert config.headset_test and not config.booth and not config.browser_task
+    assert config.roles == ("bridge", "spectator")
+    assert set(config.displays) == {"console", "spectator"} and config.headset_tiled
+    assert config.mqtt_bind is None and config.mqtt_bind_host == "192.168.8.20"
+    for generation in (0, 1):  # A bridge restart keeps the real source and both peers.
+        command = launch.bridge_command(config, generation)
+        assert command[command.index("--host") + 1] == "192.168.8.20"
+        assert command[command.index("--task-event-client") + 1] == "quest"
+        assert command[command.index("--packet-source") + 1] == "mqtt"
+        assert command[command.index("--mqtt-bind") + 1] == "192.168.8.20"
+        assert command[command.index("--mqtt-phone-ip") + 1] == "192.168.8.40"
+        assert "--console-fullscreen" not in command
+    assert "real armband over MQTT" in output and "fake heart" not in output
+    assert "only 192.168.8.31" in output and "only 192.168.8.40" in output
+
+
+@pytest.mark.parametrize("fault", [None, "open_quest", "close_quest", "close_mqtt", "step"])
+def test_headset_armband_owns_two_exact_rules_and_removes_both(config, monkeypatch, fault):
+    events = []
+
+    class Firewall:
+        scope = None
+
+        def __init__(self, local_ip, remote_ip, python, *, port, **naming):
+            # One rule per peer: the phone on the MQTT port, the Quest on the WebSocket port.
+            self.name = {
+                ("192.168.8.40", 1883): "mqtt",
+                ("192.168.8.31", 8787): "quest",
+            }[remote_ip, port]
+            assert local_ip == "192.168.8.20"
+            assert naming == (
+                {}
+                if self.name == "mqtt"
+                else {
+                    "name_prefix": "PrismQuestLink-",
+                    "display_name": "Prism Quest link (temporary)",
+                }
+            )
+
+        def open(self):
+            events.append(f"open_{self.name}")
+            if fault == f"open_{self.name}":
+                raise RuntimeError("firewall unavailable")
+
+        def close(self):
+            events.append(f"close_{self.name}")
+            if fault == f"close_{self.name}":
+                raise RuntimeError("removal failed")
+
+    async def check():
+        config.headset_test, config.packet_source = True, "mqtt"
+        config.lan_ip, config.quest_ip = "192.168.8.20", "192.168.8.31"
+        config.mqtt_phone_ip = "192.168.8.40"
+        sup = launch.Supervisor(config)
+
+        async def step():
+            events.append("step")
+            assert set(sup.firewalls) == {"mqtt", "quest"}
+            if fault == "step":
+                raise RuntimeError("startup failed")
+            return False
+
+        monkeypatch.setattr(sup, "step", step)
+        if fault is None:
+            await sup.run()
+        else:
+            with pytest.raises(RuntimeError):
+                await sup.run()
+        assert sup._lock_file is None
+        # Only a rule whose removal failed is still held, and still named in the status.
+        assert set(sup.firewalls) == ({fault[6:]} if (fault or "").startswith("close") else set())
+
+    monkeypatch.setattr(launch, "MqttFirewall", Firewall)
+    asyncio.run(check())
+    started = ["open_mqtt", "open_quest"] + ([] if fault == "open_quest" else ["step"])
+    # Every created rule gets a removal attempt, whichever step or removal failed.
+    assert events == started + ["close_quest", "close_mqtt"]
+
+
+def two_rule_supervisor(config, firewall, monkeypatch):
+    monkeypatch.setattr(launch, "MqttFirewall", firewall)
+    config.headset_test, config.packet_source = True, "mqtt"
+    config.lan_ip, config.quest_ip = "192.168.8.20", "192.168.8.31"
+    config.mqtt_phone_ip = "192.168.8.40"
+    return launch.Supervisor(config)
+
+
+def test_two_failed_removals_are_both_reported(config, monkeypatch):
+    class Firewall:
+        scope = None
+
+        def __init__(self, local_ip, remote_ip, python, *, port, **naming):
+            self.name = f"rule-{port}"
+
+        def open(self):
+            pass
+
+        def close(self):
+            raise RuntimeError(f"could not remove {self.name}")
+
+    async def check():
+        sup = two_rule_supervisor(config, Firewall, monkeypatch)
+
+        async def stop():
+            return False
+
+        monkeypatch.setattr(sup, "step", stop)
+        with pytest.raises(RuntimeError) as error:
+            await sup.run()
+        assert "rule-1883" in str(error.value) and "rule-8787" in str(error.value)
+        assert set(sup.firewalls) == {"mqtt", "quest"}
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+def test_interrupted_two_rule_setup_finishes_one_creation_and_starts_no_other(
+    config, monkeypatch, cancels
+):
+    began, finish = threading.Event(), threading.Event()
+    events = []
+
+    class Firewall:
+        scope = None
+
+        def __init__(self, local_ip, remote_ip, python, *, port, **naming):
+            self.name = f"rule-{port}"
+            self.attempted = False
+
+        def open(self):
+            self.attempted = True
+            began.set()
+            assert finish.wait(3), "test did not release the simulated OS operation"
+            events.append(f"created {self.name}")
+
+        def close(self):
+            if self.attempted:
+                events.append(f"removed {self.name}")
+
+    async def check():
+        sup = two_rule_supervisor(config, Firewall, monkeypatch)
+        run = asyncio.create_task(sup.run())
+        try:
+            while not began.is_set():
+                await asyncio.sleep(0.001)
+            for _ in range(cancels):  # A second Ctrl+C must not start cleanup early.
+                run.cancel()
+                await asyncio.sleep(0.01)
+            assert not events
+        finally:
+            finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        assert events == ["created rule-1883", "removed rule-1883"]
+
+    asyncio.run(check())
+
+
+def test_owned_browser_stays_in_its_job_under_an_elevated_launcher(config):
+    for role in ("task", "spectator"):
+        assert "--do-not-de-elevate" in launch.browser_command(config, role, Path(role))
 
 
 def test_cancelled_firewall_setup_waits_for_os_command_before_cleanup(config, monkeypatch):
