@@ -151,7 +151,14 @@ A review round that was interrupted before any reviewer inspected the change doe
 
 ## Out of scope, and it stays that way
 
-No haptics. No controllers. No multiplayer. No app store build. No engine port to the headset. No personalised email. No elaborate particle work. No eye tracking, because the Quest 3S does not have it.
+No haptics or controller use beyond the one exception below. No multiplayer. No app store build. No engine port to the headset. No personalised email. No elaborate particle work. No eye tracking, because the Quest 3S does not have it.
+
+**One exception, in scope since 10 October 2026: the right-controller heartbeat tap** (`PrismHaptics` in the PrismVR repo). Do not remove it. Its limits are part of the rule:
+
+- A short, gentle tap in the **right controller only**. The armband is on the left forearm and that hand stays still in the lap, so nothing may drive, or ask the visitor to hold, a left controller.
+- It taps only at the start of a visual pulse, so only for a beat the laptop scheduled, at that beat's `t_play`. The headset never makes a beat of its own.
+- It passes the same safety gate as the visual pulse: full to 95 bpm, zero from 120 bpm, nothing while the feed is stale, when the laptop reports no heart rate, outside a running session, for another session's beats, or in Offline Preview.
+- No other haptics and no controller input: the task stays head gaze.
 
 ---
 
