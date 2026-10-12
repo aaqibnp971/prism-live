@@ -58,6 +58,9 @@ namespace Prism
         /// True only while a real laptop is connected and still sending states.
         public bool IsLinked => PrismLinkStatus.Linked(offlinePreview, open, haveState, stale);
         public static double ClientNowMs => Time.realtimeSinceStartupAsDouble * 1000.0;
+        /// How long ago the laptop stamped this state, on the synced clock; NaN before the
+        /// clock is known. A state delayed on the way (a WiFi stall) shows its age here.
+        public double StateAgeMs(LinkMsg m) => haveOffset && m != null ? NowMs + offset - m.t_engine : double.NaN;
 
         /// Send one JSON message to the laptop (used for task_event).
         public void Send(string json) => SendText(json);

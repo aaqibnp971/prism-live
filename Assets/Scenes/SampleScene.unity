@@ -353,7 +353,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bceb1bb4ecb61884284c553d0e49b953, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Prism.PrismHaptics
-  strength: 0.3
+  strength: 0.35
   tapSeconds: 0.06
 --- !u!114 &263048206
 MonoBehaviour:

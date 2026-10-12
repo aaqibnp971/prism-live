@@ -70,6 +70,15 @@ namespace Prism
             return amplitude >= MinHapticStrength ? amplitude : 0.0;
         }
 
+        /// Why a pulse that started gave no tap, for the log; null when HapticAmplitude gives one.
+        public static string HapticBlock(bool linked, double taper, double strength)
+        {
+            if (HapticAmplitude(true, linked, taper, strength) > 0.0) return null;
+            if (!linked) return "not linked to the laptop";
+            if (!Finite(strength) || Math.Min(MaxHapticStrength, strength) < MinHapticStrength) return "strength set to nothing";
+            return "tapered away (heart rate toward 120 bpm, or the session's last fade)";
+        }
+
         /// What may actually be shown. The state can be two seconds older than the beat on screen,
         /// so the amplitude is capped by BOTH the state's and the active beat's tapered amplitude:
         /// the smaller of the two, never their product. No active beat means no pulse.
@@ -185,6 +194,50 @@ namespace Prism
             if (!double.IsNaN(stateBpm))
                 taper = Math.Min(taper, PrismPulseSafety.Taper(segment, stateBpm, remainingMs));
             Taper = Amplitude > 0.0 ? taper : 0.0;
+        }
+    }
+
+    /// The attendant's controller check: one tap, once per run of the app, when the right
+    /// controller is first found, so it can be felt to work before a visitor puts the headset
+    /// on. It is not a beat and must never be felt in a session, so it can fire in one place
+    /// only: while handling a state message from a really linked laptop that says "idle" and
+    /// was stamped by the laptop under half a second ago (a state held up by a WiFi stall may
+    /// say "idle" after the session has begun). A state from any of the four running segments
+    /// cancels the check for the rest of the run; it is never kept for later. Not linked,
+    /// "reset", an old or undated state, or anything unrecognised waits and fires nothing.
+    /// The laptop also says "idle" during the attendant's countdown to a session.
+    public sealed class PrismTestTap
+    {
+        public enum Verdict { Nothing, Wait, Fire, Drop }
+
+        public const double MaxStateAgeMs = 500.0;
+
+        bool present, done;
+
+        public bool Pending { get; private set; }
+
+        /// Once per frame: is the right controller there now? True on the frame it appears.
+        /// A controller that goes away before its check takes the check along, and may ask
+        /// again; once the one check has fired or been cancelled, nothing asks again.
+        public bool Seen(bool controllerPresent)
+        {
+            bool found = controllerPresent && !present;
+            present = controllerPresent;
+            Pending = controllerPresent && !done && (Pending || found);
+            return found;
+        }
+
+        /// For each state message, as it arrives and never later. linked is PrismLink.IsLinked;
+        /// stateAgeMs is how long ago the laptop stamped the state (NaN when not known).
+        public Verdict OnState(bool linked, string segment, double stateAgeMs)
+        {
+            if (!Pending) return Verdict.Nothing;
+            if (PrismPulseSafety.ActiveSegment(segment)) { Pending = false; done = true; return Verdict.Drop; }
+            bool fresh = stateAgeMs >= -MaxStateAgeMs && stateAgeMs <= MaxStateAgeMs;   // false for NaN
+            if (!linked || segment != "idle" || !fresh) return Verdict.Wait;
+            Pending = false;
+            done = true;
+            return Verdict.Fire;
         }
     }
 

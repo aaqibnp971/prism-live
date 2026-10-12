@@ -196,6 +196,172 @@ namespace Prism.Tests
                 StringAssert.DoesNotContain(invented, logic);
         }
 
+        static readonly string[] Segments = { "idle", "baseline", "load", "regulate", "resolve", "reset", "", null, "Idle", "idle ", "-" };
+        static readonly double[] Ages = { 0, 40, 500, -500, 501, -501, 2400, 9000, double.NaN, double.PositiveInfinity };
+
+        static bool Fresh(double age) => age >= -500 && age <= 500;
+
+        [Test]
+        public void TheControllerCheckFiresOnlyOnAFreshLinkedIdleState()
+        {
+            foreach (string segment in Segments)
+                foreach (bool linked in new[] { false, true })
+                    foreach (double age in Ages)
+                    {
+                        var check = new PrismTestTap();
+                        Assert.AreEqual(PrismTestTap.Verdict.Nothing, check.OnState(linked, segment, age), "no controller yet");
+                        Assert.IsTrue(check.Seen(true));
+                        PrismTestTap.Verdict verdict = check.OnState(linked, segment, age);
+                        string what = $"{segment} linked {linked} age {age}";
+                        if (PrismPulseSafety.ActiveSegment(segment)) Assert.AreEqual(PrismTestTap.Verdict.Drop, verdict, what);
+                        else if (linked && segment == "idle" && Fresh(age)) Assert.AreEqual(PrismTestTap.Verdict.Fire, verdict, what);
+                        else Assert.AreEqual(PrismTestTap.Verdict.Wait, verdict, what);
+                        Assert.AreEqual(verdict == PrismTestTap.Verdict.Wait, check.Pending);
+                        // fired or cancelled: nothing asks again for the rest of the run
+                        if (verdict != PrismTestTap.Verdict.Wait)
+                        {
+                            check.Seen(false);
+                            Assert.IsTrue(check.Seen(true), "still reported as found, for the log");
+                            Assert.IsFalse(check.Pending);
+                            Assert.AreEqual(PrismTestTap.Verdict.Nothing, check.OnState(true, "idle", 0));
+                        }
+                    }
+        }
+
+        [Test]
+        public void AControllerFoundInASessionIsNeverCheckedInItOrAfterIt()
+        {
+            // woken mid-session, in every running segment, linked or with the feed gone
+            foreach (string segment in new[] { "baseline", "load", "regulate", "resolve" })
+                foreach (bool linked in new[] { false, true })
+                {
+                    var check = new PrismTestTap();
+                    check.Seen(true);
+                    Assert.AreEqual(PrismTestTap.Verdict.Drop, check.OnState(linked, segment, 0));
+                    foreach (string later in new[] { segment, "resolve", "reset", "idle", "idle" })
+                        Assert.AreEqual(PrismTestTap.Verdict.Nothing, check.OnState(true, later, 0), "kept for later");
+                }
+
+            // found while the feed was gone, session still running when it comes back
+            var waiting = new PrismTestTap();
+            waiting.Seen(true);
+            Assert.AreEqual(PrismTestTap.Verdict.Wait, waiting.OnState(false, "idle", 0));
+            Assert.AreEqual(PrismTestTap.Verdict.Wait, waiting.OnState(true, "reset", 0));
+            Assert.AreEqual(PrismTestTap.Verdict.Drop, waiting.OnState(true, "load", 0));
+            Assert.AreEqual(PrismTestTap.Verdict.Nothing, waiting.OnState(true, "idle", 0));
+
+            // WiFi stalls in idle, the attendant starts the session, then the backlog arrives in
+            // order: the held-up "idle" is old and fires nothing, and "baseline" cancels
+            var stalled = new PrismTestTap();
+            stalled.Seen(true);
+            Assert.AreEqual(PrismTestTap.Verdict.Wait, stalled.OnState(true, "idle", 4000));
+            Assert.AreEqual(PrismTestTap.Verdict.Wait, stalled.OnState(true, "idle", 2000));
+            Assert.AreEqual(PrismTestTap.Verdict.Drop, stalled.OnState(true, "baseline", 30));
+            Assert.AreEqual(PrismTestTap.Verdict.Nothing, stalled.OnState(true, "idle", 0));
+
+            // before the clock is known nothing is fresh
+            var undated = new PrismTestTap();
+            undated.Seen(true);
+            Assert.AreEqual(PrismTestTap.Verdict.Wait, undated.OnState(true, "idle", double.NaN));
+            Assert.AreEqual(PrismTestTap.Verdict.Fire, undated.OnState(true, "idle", 12));
+
+            // a controller that goes away before its check may ask again; after it, never
+            var gone = new PrismTestTap();
+            gone.Seen(true);
+            Assert.IsFalse(gone.Seen(false));
+            Assert.AreEqual(PrismTestTap.Verdict.Nothing, gone.OnState(true, "idle", 0));
+            Assert.IsTrue(gone.Seen(true));
+            Assert.IsFalse(gone.Seen(true), "found once, not every frame");
+            Assert.AreEqual(PrismTestTap.Verdict.Fire, gone.OnState(true, "idle", 0));
+            for (int wake = 0; wake < 5; wake++)
+            {
+                gone.Seen(false);
+                gone.Seen(true);
+                Assert.AreEqual(PrismTestTap.Verdict.Nothing, gone.OnState(true, "idle", 0), "one check per run");
+            }
+        }
+
+        [Test]
+        public void NoRunOfStatesEverFiresTheCheckTwiceOrOnAnythingButFreshLinkedIdle()
+        {
+            var random = new System.Random(20261012);
+            for (int run = 0; run < 2000; run++)
+            {
+                var check = new PrismTestTap();
+                bool over = false;
+                for (int step = 0; step < 40; step++)
+                {
+                    if (random.Next(4) == 0) check.Seen(random.Next(3) != 0);
+                    string segment = Segments[random.Next(Segments.Length)];
+                    double age = Ages[random.Next(Ages.Length)];
+                    bool linked = random.Next(3) != 0;
+                    bool pending = check.Pending;
+                    PrismTestTap.Verdict verdict = check.OnState(linked, segment, age);
+                    if (over) Assert.AreEqual(PrismTestTap.Verdict.Nothing, verdict, "after the one check or its cancelling");
+                    if (verdict == PrismTestTap.Verdict.Fire)
+                        Assert.IsTrue(pending && linked && segment == "idle" && Fresh(age));
+                    if (pending && PrismPulseSafety.ActiveSegment(segment))
+                        Assert.AreEqual(PrismTestTap.Verdict.Drop, verdict);
+                    over |= verdict == PrismTestTap.Verdict.Fire || verdict == PrismTestTap.Verdict.Drop;
+                }
+            }
+        }
+
+        [Test]
+        public void TheCheckTapHasOneWayOutAndTheBeatTapItsOwn()
+        {
+            string code = File.ReadAllText(Path.Combine(Application.dataPath, "Prism", "PrismHaptics.cs")).Replace("\r\n", "\n");
+            // two places send a tap: the gated beat, and the check inside the state handler
+            int sends = 0, at = 0;
+            while ((at = code.IndexOf(" Send(amp)", at, System.StringComparison.Ordinal)) >= 0) { sends++; at++; }
+            Assert.AreEqual(2, sends);
+            int handler = code.IndexOf("void OnState(LinkMsg m)", System.StringComparison.Ordinal);
+            int fire = code.IndexOf("case PrismTestTap.Verdict.Fire:", System.StringComparison.Ordinal);
+            int handlerEnd = code.IndexOf("string Send(float amp)", System.StringComparison.Ordinal);
+            Assert.IsTrue(handler > 0 && fire > handler && fire < handlerEnd);
+            Assert.IsTrue(code.IndexOf(" Send(amp)", fire, System.StringComparison.Ordinal) < handlerEnd);
+            StringAssert.Contains("switch (check.OnState(link.IsLinked, m.segment, link.StateAgeMs(m)))", code);
+            string linkCode = File.ReadAllText(Path.Combine(Application.dataPath, "Prism", "PrismLink.cs"));
+            StringAssert.Contains("haveOffset && m != null ? NowMs + offset - m.t_engine : double.NaN", linkCode);
+            StringAssert.Contains("link.StateReceived += OnState;", code);
+            // nothing else reaches a controller
+            int vibrations = 0; at = 0;
+            while ((at = code.IndexOf("SetControllerVibration(", at, System.StringComparison.Ordinal)) >= 0) { vibrations++; at++; }
+            Assert.AreEqual(2, vibrations, "one tap call and its stop");
+            int impulses = 0; at = 0;
+            while ((at = code.IndexOf("SendHapticImpulse(", at, System.StringComparison.Ordinal)) >= 0) { impulses++; at++; }
+            Assert.AreEqual(1, impulses);
+        }
+
+        [Test]
+        public void EveryBeatWithoutATapHasAReasonAndEveryTapHasNone()
+        {
+            foreach (bool linked in new[] { false, true })
+                foreach (double taper in new[] { 0.0, 0.03, 0.5, 1.0, double.NaN })
+                    foreach (double strength in new[] { 0.0, 0.01, 0.35, 5.0, double.NaN })
+                    {
+                        bool tap = PrismPulseSafety.HapticAmplitude(true, linked, taper, strength) > 0.0;
+                        string why = PrismPulseSafety.HapticBlock(linked, taper, strength);
+                        Assert.AreEqual(tap, why == null, $"linked {linked}, taper {taper}, strength {strength}");
+                    }
+            StringAssert.Contains("not linked", PrismPulseSafety.HapticBlock(false, 1.0, 0.35));
+            StringAssert.Contains("tapered", PrismPulseSafety.HapticBlock(true, 0.0, 0.35));
+        }
+
+        [Test]
+        public void TheAppIsControllersOnlySoTheHeadsetDoesNotSleepTheController()
+        {
+            // With hand tracking allowed, the headset put the still right controller to sleep
+            // ("sent to sleep as hand tracking is enabled and controllers are not in use").
+            string config = File.ReadAllText("Assets/Oculus/OculusProjectConfig.asset");
+            StringAssert.Contains("handTrackingSupport: 0", config);
+            string manifest = File.ReadAllText("Assets/Plugins/Android/AndroidManifest.xml");
+            StringAssert.DoesNotContain("handtracking", manifest.ToLowerInvariant());
+            StringAssert.DoesNotContain("hand_tracking", manifest.ToLowerInvariant());
+            string scene = File.ReadAllText("Assets/Scenes/SampleScene.unity").Replace("\r\n", "\n");
+            StringAssert.Contains("  strength: 0.35\n  tapSeconds: 0.06\n", scene);
+        }
+
         [Test]
         public void TheSceneCarriesTheHapticsComponentOnce()
         {

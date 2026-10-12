@@ -73,6 +73,9 @@ namespace Prism
         /// 0..1 taper of the beat on screen, 0 when no pulse is allowed (PrismHaptics).
         public float PulseTaper => (float)pulse.Taper;
 
+        /// The beat gate's refusal counts for the current session, to read only (PrismHaptics' record).
+        public PrismBeatGate Gate => pulse.Gate;
+
         /// Freeze the last picture (connection lost). Clears future beats.
         public bool Frozen
         {
