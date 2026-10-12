@@ -30,8 +30,10 @@ namespace Prism
     [RequireComponent(typeof(PrismField))]
     public class PrismLink : MonoBehaviour
     {
-        [Tooltip("The laptop's WiFi IPv4 address, from ipconfig (e.g. 192.168.1.20)")]
-        public string laptopIp = "192.168.1.20";
+        [Tooltip("The laptop's address built into the app: 192.168.137.1 is the laptop's own " +
+                 "Windows Mobile Hotspot. On the headset a laptop-ip.txt pushed over USB replaces " +
+                 "it without a rebuild (see PrismLaptopAddress.cs).")]
+        public string laptopIp = "192.168.137.1";
         public int port = 8787;
 
         [Header("Offline preview (testing only)")]
@@ -103,7 +105,9 @@ namespace Prism
         FieldTokens fromTokens, toTokens;
         float fromBlend, toBlend = 1f, easeStart = -10f;
 
-        string Url => $"ws://{laptopIp}:{port}/live";
+        // Decided once in Start: laptop-ip.txt, else Laptop Ip above, else the hotspot default.
+        string address = PrismLaptopAddress.Default;
+        string Url => $"ws://{address}:{port}/live";
         static double NowMs => Time.realtimeSinceStartupAsDouble * 1000.0;
 
 #if UNITY_EDITOR
@@ -117,9 +121,11 @@ namespace Prism
             fromTokens = toTokens = field.Current;
             var stamp = Resources.Load<TextAsset>("PrismBuildStamp");
             build = PrismLinkStatus.BuildLabel(Application.version, stamp ? stamp.text : null);
+            string addressFrom = ChooseAddress();
             Debug.Log($"[PrismLink] build {build}, scene " +
                       $"{UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}, " +
                       $"offlinePreview={offlinePreview}, laptop {Url}");
+            Debug.Log($"[PrismLink] laptop address {address} from {addressFrom}");
             if (offlinePreview)
             {
                 open = true;
@@ -128,6 +134,41 @@ namespace Prism
             }
             else Connect();
             ShowLinkStatus();
+        }
+
+        /// Reads laptop-ip.txt from the app's own storage, if there is one, and settles the
+        /// address for this run. No network is touched; any failure falls back.
+        string ChooseAddress()
+        {
+            string text = null, problem = null, path = "";
+            try
+            {
+                path = System.IO.Path.Combine(Application.persistentDataPath, PrismLaptopAddress.FileName);
+                if (System.IO.File.Exists(path))
+                {
+                    // An address is a few bytes: read at most 257 and refuse anything longer,
+                    // however large the file is or becomes while it is being read.
+                    var bytes = new byte[4 * PrismLaptopAddress.MaxFileChars + 1];
+                    int count = 0;
+                    using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open,
+                                                                 System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+                    {
+                        int read;
+                        while (count < bytes.Length && (read = stream.Read(bytes, count, bytes.Length - count)) > 0)
+                            count += read;
+                    }
+                    if (count == bytes.Length) problem = "too large";
+                    else
+                        using (var reader = new System.IO.StreamReader(new System.IO.MemoryStream(bytes, 0, count), true))
+                            text = reader.ReadToEnd();       // honours a byte-order mark, as Notepad or PowerShell write
+                }
+            }
+            catch (Exception e) { text = null; problem = e.GetType().Name; }
+
+            PrismLaptopAddress.Choice choice =
+                PrismLaptopAddress.Resolve(text, problem, laptopIp, Application.isEditor);
+            address = choice.address;
+            return choice.source + ", looked in " + path;
         }
 
         /// The red dot and the Offline Preview label, and one log line per change of status.

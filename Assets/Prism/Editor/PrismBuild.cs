@@ -70,10 +70,12 @@ namespace Prism
         {
             var problems = SceneProblems(out scenePath);
             if (problems.Count > 0) return problems;
+            // The same rule the headset applies at start (PrismLaptopAddress): a value it would
+            // discard for the default must not pass the build quietly.
             string ip = Field(LinkBlock(File.ReadAllText(scenePath)), "laptopIp") ?? "";
-            if (ip == "" || ip == "localhost" || ip.StartsWith("127."))
-                problems.Add($"Laptop Ip is '{ip}' in {scenePath}: the headset cannot reach the laptop " +
-                             "there. Set it to the laptop's address on your own router.");
+            if (!PrismLaptopAddress.TryParse(ip, false, out _, out string reason))
+                problems.Add($"Laptop Ip in {scenePath} cannot be used on the headset: {reason}. Set it to the " +
+                             "laptop's address (192.168.137.1 on its own hotspot); laptop-ip.txt can still replace it.");
             if (!PlayerSettings.Android.forceInternetPermission)
                 problems.Add("Player Settings > Android > Internet Access must be Require.");
             return problems;
