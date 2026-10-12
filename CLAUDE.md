@@ -158,6 +158,8 @@ No haptics or controller use beyond the one exception below. No multiplayer. No 
 - A short, gentle tap in the **right controller only**. The armband is on the left forearm and that hand stays still in the lap, so nothing may drive, or ask the visitor to hold, a left controller.
 - It taps only at the start of a visual pulse, so only for a beat the laptop scheduled, at that beat's `t_play`. The headset never makes a beat of its own.
 - It passes the same safety gate as the visual pulse: full to 95 bpm, zero from 120 bpm, nothing while the feed is stale, when the laptop reports no heart rate, outside a running session, for another session's beats, or in Offline Preview.
+- One controller check tap for the attendant (`PrismTestTap`, added 12 October 2026): once per run of the app, when the right controller is first found, and only while handling a fresh laptop state that says `idle`. Any running segment cancels it. It is never felt in a session or in Offline Preview.
+- The app is controllers only. With hand tracking allowed, the headset puts a still controller to sleep and the tap is lost.
 - No other haptics and no controller input: the task stays head gaze.
 
 ---
